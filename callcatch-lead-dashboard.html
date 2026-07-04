@@ -384,8 +384,22 @@
     }
     function outreach(lead){
       const profile = weaknessProfile(lead);
+      const city = [lead.city, lead.state].filter(Boolean).join(", ") || lead.area || "your area";
+      const subjectA = `Subject: ${["Quick idea for","Question about","Thought this might help"][Math.floor(Math.random()*3)]} ${lead.business}`;
+      const subjectB = `Subject: ${["Possible missed calls at","Helping","One idea for"][Math.floor(Math.random()*3)]} ${lead.business}`;
+      const greeting = `${["Hi","Good morning"][Math.floor(Math.random()*2)]} ${lead.business} team,`;
+      const opening = lead.website
+        ? `I came across ${lead.business} while reviewing ${lead.trade} companies serving ${city}.`
+        : `I came across ${lead.business} while researching ${lead.trade} companies in ${city}.`;
+      const revenue = lead.revenueOpportunityEstimate
+        ? `Based on businesses similar to yours, even recovering one additional missed ${profile.weakness.includes("emergency") ? "emergency " : ""}call every few days could represent roughly ${money(lead.revenueOpportunityEstimate)}/month in additional booked work.`
+        : `Even a few recovered missed callers each month can make a real difference.`;
+      const signature = `Best,\n\nPrince Esien\nFounder, CallCatch\nEmail: hello@callcatch.site\nWeb: https://callcatch.site\n\nHelping home service businesses recover missed revenue.`;
+      const emailA = `${subjectA}\n\n${greeting}\n\n${opening}\n\n${profile.proof}. ${revenue}\n\nWould you be open to a quick 10-minute walkthrough next week?\n\n${signature}`;
+      const emailB = `${subjectB}\n\n${greeting}\n\n${opening}\n\nI noticed a possible ${profile.weakness} gap: ${profile.pain}.\n\nFor ${lead.trade} companies, response speed matters. ${profile.proof}.\n\n${revenue}\n\nMost homeowners call the next contractor within minutes when they cannot reach someone.\n\nWould Tuesday or Wednesday work for a short walkthrough?\n\n${signature}`;
       return {
-        email: `Subject: Quick idea for ${lead.business}\n\nHi,\n\nI noticed a possible ${profile.weakness} gap for ${lead.business}: ${profile.pain}.\n\n${profile.hook}. ${profile.proof}. Estimated monthly opportunity: ${money(lead.revenueOpportunityEstimate)}.\n\nWorth a quick walkthrough?\n\n${settings.sender}\n${settings.demo}`,
+        emailA,
+        emailB,
         sms: `Hi, quick idea for ${lead.business}: ${profile.proof}. Useful if ${profile.weakness} is costing jobs. Worth a quick look?`,
         linkedin: `Hi, I work with ${lead.trade} businesses on ${profile.weakness}. Thought ${lead.business} might be a fit.`,
         call: `Opening: I help ${lead.trade} companies fix ${profile.weakness}.\nObservation: ${profile.pain}.\nDiscovery: When do you miss the most calls: after hours, on jobs, while driving, or during peak demand?\nClose: Want to see what the missed caller receives in the first 30 seconds?`
@@ -393,7 +407,13 @@
     }
     function queueOutreach(lead, notify=true){
       const assets = outreach(lead);
-      Object.entries(assets).forEach(([channel, body]) => queue.unshift({ id:id(), leadId:lead.id, business:lead.business, channel, body, to: channel === "email" ? (lead.email || "") : "", recipient: channel === "email" ? (lead.email || "") : "", status:"Needs Approval", createdAt:now() }));
+      [
+        { channel:"email", title:"Cold Email - Version A", body:assets.emailA, emailVariant:"A" },
+        { channel:"email", title:"Cold Email - Version B", body:assets.emailB, emailVariant:"B" },
+        { channel:"sms", title:"SMS", body:assets.sms },
+        { channel:"linkedin", title:"LinkedIn Message", body:assets.linkedin },
+        { channel:"call", title:"Cold Call Script", body:assets.call }
+      ].forEach(item => queue.unshift({ id:id(), leadId:lead.id, business:lead.business, ...item, to: item.channel === "email" ? (lead.email || "") : "", recipient: item.channel === "email" ? (lead.email || "") : "", status:"Needs Approval", createdAt:now() }));
       addTimeline(lead, "Outreach drafts generated and queued for approval");
       save(); syncCrm(true); if(notify) toast("Outreach queued for approval");
     }
@@ -458,7 +478,7 @@
       $("saveLeadBtn").onclick=()=>{ Object.assign(l,{owner:$("owner").value,nextFollowUp:$("nextFollow").value,assignedTeamMember:$("assigned").value,notes:$("notes").value}); addTimeline(l,"Lead profile updated"); save(); render(); toast("Lead saved"); };
       $("scanBtn").onclick=()=>scanSelected(l);
       $("queueBtn").onclick=()=>queueOutreach(l);
-      $("copyEmailBtn").onclick=()=>copy(outreach(l).email);
+      $("copyEmailBtn").onclick=()=>copy(outreach(l).emailA);
     }
     function renderPipeline(){
       $("pipelineBoard").innerHTML = STAGES.map(stage=>`<div class="stage" data-stage="${stage}"><h3>${stage}<span>${stageCount(stage)}</span></h3>${leads.filter(l=>l.stage===stage).map(l=>`<div class="card" draggable="true" data-id="${l.id}"><strong>${esc(l.business)}</strong><div class="meta"><span>${l.callCatchFitScore} fit</span><span>${money(l.revenueOpportunityEstimate)}</span></div></div>`).join("")}</div>`).join("");
@@ -475,7 +495,7 @@
           }
         }
       });
-      $("approvalQueue").innerHTML = queue.length ? queue.map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.channel)}</strong><span class="tag warn">${esc(item.status)}</span></div><p class="hint">Task ID: ${esc(item.id)} | Lead ID: ${esc(item.leadId || "")}</p>${item.channel === "email" ? `<div class="insights">${sendChecklist(item).map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>Recipient Email</label><input data-to="${item.id}" value="${esc(item.to || item.recipient || "")}" placeholder="Auto-filled when a public email is found"></div>` : ""}<div class="script" style="margin-top:8px;">${esc(item.body)}</div><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-approve="${item.id}">Mark Approved</button>${item.channel==="email"?`<button class="btn small" data-sendnow="${item.id}">Send Now</button><button class="btn small" data-schedule="${item.id}" data-when="today 2 pm">Today 2 PM</button><button class="btn small" data-schedule="${item.id}" data-when="tomorrow 9 am">Tomorrow 9 AM</button><button class="btn small" data-schedule="${item.id}" data-when="next monday 8 am">Next Monday 8 AM</button>`:""}<button class="btn small" data-remove="${item.id}">Remove</button></div></div>`).join("") : `<p class="sub">No generated outreach waiting for approval.</p>`;
+      $("approvalQueue").innerHTML = queue.length ? queue.map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag warn">${esc(item.status)}</span></div><p class="hint">Task ID: ${esc(item.id)} | Lead ID: ${esc(item.leadId || "")}</p>${item.channel === "email" ? `<div class="insights">${sendChecklist(item).map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>Recipient Email</label><input data-to="${item.id}" value="${esc(item.to || item.recipient || "")}" placeholder="Auto-filled when a public email is found"></div>` : ""}<div class="script" style="margin-top:8px;">${esc(item.body)}</div><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-approve="${item.id}">Mark Approved</button>${item.channel==="email"?`<button class="btn small" data-sendnow="${item.id}">Send Now</button><button class="btn small" data-schedule="${item.id}" data-when="today 2 pm">Today 2 PM</button><button class="btn small" data-schedule="${item.id}" data-when="tomorrow 9 am">Tomorrow 9 AM</button><button class="btn small" data-schedule="${item.id}" data-when="next monday 8 am">Next Monday 8 AM</button>`:""}<button class="btn small" data-remove="${item.id}">Remove</button></div></div>`).join("") : `<p class="sub">No generated outreach waiting for approval.</p>`;
       document.querySelectorAll("[data-to]").forEach(input=>{ input.oninput=()=>{ const q=queue.find(x=>x.id===input.dataset.to); if(q){ q.to=input.value; q.recipient=input.value; save(); } }; input.onchange=()=>syncCrm(true).then(render); });
       document.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(queue.find(q=>q.id===b.dataset.copy).body));
       document.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>{ const q=queue.find(x=>x.id===b.dataset.approve); q.status="Approved - not sent"; save(); syncCrm(true).then(render); });

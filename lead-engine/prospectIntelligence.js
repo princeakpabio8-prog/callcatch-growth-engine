@@ -111,6 +111,124 @@ function weaknessProfile(lead = {}) {
   };
 }
 
+function pick(options, seed = "") {
+  const text = String(seed || "");
+  const score = text.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0) + Math.floor(Math.random() * options.length);
+  return options[score % options.length];
+}
+
+function businessTeam(lead) {
+  return `${lead.business || "your"} team`;
+}
+
+function cityState(lead) {
+  return [lead.city, lead.state].filter(Boolean).join(", ") || lead.area || "your area";
+}
+
+function subjectLine(lead, profile, variant) {
+  const shortSubjects = [
+    `Quick idea for ${lead.business}`,
+    `Possible missed calls at ${lead.business}`,
+    `Question about ${lead.business}`,
+    `Thought this might help ${lead.business}`
+  ];
+  const longSubjects = [
+    `Helping ${lead.business} capture more ${emergencyTrade(lead.trade) ? "emergency jobs" : "service calls"}`,
+    `One idea for your dispatch team`,
+    `Potential revenue ${lead.business} may be missing`
+  ];
+  return pick(variant === "B" ? longSubjects : shortSubjects, `${lead.id || lead.business}:${variant}:${Date.now()}`);
+}
+
+function greeting(lead) {
+  return pick([
+    `Hi ${businessTeam(lead)},`,
+    `Good morning ${businessTeam(lead)},`
+  ], lead.business);
+}
+
+function researchedOpening(lead, profile) {
+  const city = cityState(lead);
+  const scan = lead.websiteIntelligence || {};
+  const reviews = Number(lead.reviews || 0);
+  if (scan.emergencyService || emergencyTrade(lead.trade)) return `I came across ${lead.business} while researching ${lead.trade || "home service"} companies in ${city} and noticed emergency work appears to be important for your team.`;
+  if (scan.noOnlineBooking) return `While looking through ${lead.business}, I noticed customers may not have a clear online booking path when they need help quickly.`;
+  if (scan.financing) return `I noticed ${lead.business} mentions financing, which usually means a missed call can mean a higher-value job is at risk.`;
+  if (reviews >= 100) return `I saw ${lead.business} has built a strong review base in ${city}, which tells me homeowners already trust the company.`;
+  if (lead.website) return `I came across ${lead.business} while reviewing ${lead.trade || "home service"} companies serving ${city}.`;
+  return `I came across ${lead.business} while researching ${lead.trade || "home service"} companies in ${city}.`;
+}
+
+function valueProposition(lead, profile) {
+  const scan = lead.websiteIntelligence || {};
+  if (scan.emergencyService || emergencyTrade(lead.trade)) return `For emergency calls, speed matters. CallCatch texts missed callers right away so they do not call the next contractor while your team is busy.`;
+  if (scan.financing) return `For financed jobs, one missed call can be expensive. CallCatch helps protect those opportunities by keeping the customer engaged until your team can respond.`;
+  if (/commercial/i.test([lead.googleDescription, lead.description, lead.notes, lead.area].join(" "))) return `For commercial requests, timing can decide whether the job stays with you or moves to another provider. CallCatch keeps the conversation alive after a missed call.`;
+  return `For homeowners, response speed matters. CallCatch gives missed callers an instant reply and a simple next step instead of leaving them waiting.`;
+}
+
+function revenueSentence(lead) {
+  const value = Number(lead.revenueOpportunityEstimate || 0);
+  if (!value) return `Even a few recovered missed callers each month can make a real difference.`;
+  return `Based on businesses similar to yours, even recovering one additional missed ${emergencyTrade(lead.trade) ? "emergency " : ""}call every few days could represent roughly $${value.toLocaleString()}/month in additional booked work.`;
+}
+
+function socialProof() {
+  return pick([
+    `Most homeowners call the next contractor within minutes when they cannot reach someone.`,
+    `Callers rarely leave voicemail anymore, especially when the job feels urgent.`,
+    `A fast first response often decides whether the customer waits or keeps searching.`
+  ], String(Date.now()));
+}
+
+function cta(variant) {
+  const shortCtas = [
+    `Would you be open to a quick 10-minute walkthrough next week?`,
+    `Would Tuesday or Wednesday work for a short walkthrough?`,
+    `Happy to show you how it works in less than 10 minutes.`
+  ];
+  const longCtas = [
+    `No pressure. I thought it might be useful to see how it would work for your team.`,
+    `If it looks useful, we can map it around your current call flow.`,
+    `Worth taking a quick look next week?`
+  ];
+  return pick(variant === "B" ? longCtas : shortCtas, variant);
+}
+
+function signature() {
+  return `Best,\n\nPrince Esien\nFounder, CallCatch\nEmail: hello@callcatch.site\nWeb: https://callcatch.site\n\nHelping home service businesses recover missed revenue.`;
+}
+
+function emailBody(lead, variant) {
+  const profile = weaknessProfile(lead);
+  const opening = researchedOpening(lead, profile);
+  const value = valueProposition(lead, profile);
+  const revenue = revenueSentence(lead);
+  const proof = socialProof();
+  const subject = subjectLine(lead, profile, variant);
+  const parts = variant === "A"
+    ? [
+        `Subject: ${subject}`,
+        greeting(lead),
+        opening,
+        `${value} ${revenue}`,
+        cta(variant),
+        signature()
+      ]
+    : [
+        `Subject: ${subject}`,
+        greeting(lead),
+        opening,
+        `The reason I am reaching out is ${profile.pain}.`,
+        value,
+        revenue,
+        proof,
+        cta(variant),
+        signature()
+      ];
+  return parts.join("\n\n");
+}
+
 function estimateRevenue(lead, scan = {}) {
   const baseCalls = emergencyTrade(lead.trade) ? 70 : 42;
   const digitalPenalty = scan.websiteQualityScore ? Math.max(0, 60 - scan.websiteQualityScore) / 3 : 12;
@@ -160,10 +278,13 @@ function enrichProspect(lead, scan = {}) {
 
 function outreachAssets(lead) {
   const profile = weaknessProfile(lead);
-  const angle = lead.recommendedSalesAngle || `Lead with ${profile.weakness}.`;
-  const value = lead.revenueOpportunityEstimate || 0;
+  const emailA = emailBody(lead, "A");
+  const emailB = emailBody(lead, "B");
   return {
-    email: `Subject: Quick idea for ${lead.business}\n\nHi,\n\nI noticed a possible ${profile.weakness} gap for ${lead.business}: ${profile.pain}.\n\n${profile.hook}. ${profile.proof}. Based on your category, the monthly recoverable opportunity could be around $${value.toLocaleString()} in job value.\n\nWorth a 15-minute walkthrough?`,
+    email: emailA,
+    emailA,
+    emailB,
+    emailVariants: { A: emailA, B: emailB },
     linkedinConnection: `Hi, I work with ${lead.trade || "home-service"} companies on ${profile.weakness}. Thought ${lead.business} might be a fit.`,
     linkedinFirstMessage: `Thanks for connecting. Quick thought for ${lead.business}: ${profile.hook}. CallCatch helps with that through instant missed-call text-back. Open to seeing the 2-minute version?`,
     sms: `Hi, quick idea for ${lead.business}: ${profile.proof}. Useful if ${profile.weakness} is costing jobs. Worth a quick look?`,

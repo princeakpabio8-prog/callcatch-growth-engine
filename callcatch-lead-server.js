@@ -312,7 +312,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readJson(req);
       const result = await mutateStore(state => {
-        const campaign = body.campaign || buildCampaign(body);
+        const campaign = { ...(body.campaign || buildCampaign(body)), variantStats: state.sending?.variantStats || {} };
         const candidates = (Array.isArray(body.leads) ? body.leads : state.leads)
           .filter(lead => Number(lead.callCatchFitScore || 0) >= Number(campaign.minFitScore || 68))
           .filter(lead => !campaign.trade || lead.trade === campaign.trade);
@@ -381,6 +381,33 @@ const server = http.createServer(async (req, res) => {
       });
       await audit("email_test_sent", { to: result.to, messageId: result.messageId });
       return send(res, 200, result);
+    } catch (error) {
+      return send(res, 400, { error: error.message });
+    }
+  }
+
+  if (req.method === "POST" && ["/api/email/opened", "/api/email/clicked"].includes(url.pathname)) {
+    try {
+      const body = await readJson(req);
+      const eventType = url.pathname.endsWith("opened") ? "opened" : "clicked";
+      const result = await mutateStore(state => {
+        state.sending = state.sending || {};
+        state.sending.metrics = state.sending.metrics || {};
+        state.sending.variantStats = state.sending.variantStats || {};
+        const task = (state.approvalQueue || []).find(item => item.id === body.taskId);
+        if (!task) throw new Error("Task not found");
+        const lead = (state.leads || []).find(item => item.id === task.leadId) || {};
+        task[eventType === "opened" ? "openedAt" : "clickedAt"] = new Date().toISOString();
+        state.sending.metrics[eventType] = Number(state.sending.metrics[eventType] || 0) + 1;
+        const trade = lead.trade || "Unknown";
+        const variant = task.emailVariant || "A";
+        state.sending.variantStats[trade] = state.sending.variantStats[trade] || {};
+        state.sending.variantStats[trade][variant] = state.sending.variantStats[trade][variant] || { sent: 0, opened: 0, replies: 0, meetings: 0 };
+        if (eventType === "opened") state.sending.variantStats[trade][variant].opened += 1;
+        state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: `email_${eventType}`, details: { taskId: task.id, leadId: lead.id || "" } });
+        return { task, lead };
+      });
+      return send(res, 200, { ok: true, event: eventType, ...result });
     } catch (error) {
       return send(res, 400, { error: error.message });
     }

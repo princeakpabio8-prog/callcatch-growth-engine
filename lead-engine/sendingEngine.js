@@ -42,6 +42,7 @@ function sendingState(state) {
     meetingsBooked: 0,
     followUpsGenerated: 0
   };
+  state.sending.variantStats = state.sending.variantStats || {};
   state.scheduledJobs = state.scheduledJobs || [];
   return state.sending;
 }
@@ -68,6 +69,32 @@ function recordSendCount(state, date = new Date()) {
   sending.counts.byDay[day] = (sending.counts.byDay[day] || 0) + 1;
   sending.counts.byHour[hour] = (sending.counts.byHour[hour] || 0) + 1;
   sending.metrics.sent += 1;
+}
+
+function variantBucket(state, lead, task) {
+  const sending = sendingState(state);
+  const trade = lead.trade || "Unknown";
+  const variant = task.emailVariant || "A";
+  sending.variantStats[trade] = sending.variantStats[trade] || {};
+  sending.variantStats[trade][variant] = sending.variantStats[trade][variant] || {
+    sent: 0,
+    opened: 0,
+    replies: 0,
+    meetings: 0
+  };
+  return sending.variantStats[trade][variant];
+}
+
+function recordVariantSent(state, lead, task) {
+  if (task.channel !== "email") return;
+  variantBucket(state, lead, task).sent += 1;
+}
+
+function recordVariantReply(state, lead, task, meetingIntent) {
+  if (!task || task.channel !== "email") return;
+  const bucket = variantBucket(state, lead, task);
+  bucket.replies += 1;
+  if (meetingIntent) bucket.meetings += 1;
 }
 
 function randomDelaySeconds(state) {
@@ -162,6 +189,7 @@ async function sendTaskNow(state, taskId) {
     lead.lastContact = result.sentAt.slice(0, 10);
     addTimeline(lead, `Sent email: ${task.title || "Outbound email"}`, result.sentAt);
     recordSendCount(state);
+    recordVariantSent(state, lead, task);
     state.auditLog.unshift({ id: newId("audit"), at: result.sentAt, action: "email_sent", details: { taskId: task.id, leadId: lead.id, to } });
     return { sent: true, task, result };
   } catch (error) {
@@ -318,6 +346,7 @@ function recordReply(state, { leadId, taskId, from, body }) {
   const metrics = sendingState(state).metrics;
   metrics.replies += 1;
   if (meetingIntent) metrics.meetingsBooked += 1;
+  recordVariantReply(state, lead, task, meetingIntent);
   state.auditLog.unshift({ id: newId("audit"), at, action: meetingIntent ? "meeting_intent_detected" : "reply_received", details: { leadId: lead.id, from } });
   return { lead, reply, meetingIntent };
 }
@@ -337,6 +366,7 @@ function metrics(state) {
     followUpsDue: emailTasks.filter(task => task.title && task.title.toLowerCase().includes("follow") && task.status === "Needs Approval").length,
     estimatedRevenuePipeline: leads.reduce((sum, lead) => sum + Number(lead.revenueOpportunityEstimate || 0), 0),
     limits: sending.limits,
+    variantStats: sending.variantStats,
     remaining: canSendMore(state)
   };
 }
