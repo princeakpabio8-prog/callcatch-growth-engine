@@ -3,6 +3,7 @@ const { geocodeArea } = require("./providers/nominatim");
 const { searchOpenStreetMap } = require("./providers/openstreetmap");
 const { enrichProspect } = require("./prospectIntelligence");
 const { fallbackLocation } = require("./usLocations");
+const { readStore } = require("./dataStore");
 
 const cache = new MemoryCache(1000 * 60 * 30);
 
@@ -114,7 +115,20 @@ async function runProviders(params) {
     location = await geocodeArea(params.area);
   } catch (error) {
     const fallback = fallbackLocation({ area: params.area, city: params.city, state: params.state });
-    if (!fallback) throw error;
+    if (!fallback) {
+      errors.push(`Nominatim unavailable and no local fallback matched "${params.area}": ${error.message}`);
+      return {
+        leads: [],
+        errors,
+        cached: false,
+        location: {
+          city: params.city || "",
+          state: params.state || "",
+          displayName: params.area,
+          source: "unresolved"
+        }
+      };
+    }
     location = fallback;
     errors.push(`Nominatim unavailable, used local fallback for ${fallback.city}, ${fallback.state}: ${error.message}`);
   }
@@ -142,10 +156,48 @@ async function runProviders(params) {
   return { leads, errors, cached, location };
 }
 
+function normalizeState(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function cityFromArea(area) {
+  return String(area || "").split(",")[0].trim().toLowerCase();
+}
+
+function buildArea(input) {
+  const city = String(input.city || "").trim();
+  const state = String(input.state || "").trim();
+  const zip = String(input.zip || "").trim();
+  if (zip) return [zip, state].filter(Boolean).join(", ");
+  if (city) return [city, state].filter(Boolean).join(", ");
+  return String(input.area || "").trim() || "United States";
+}
+
+async function savedCrmFallback(input, count, errors = []) {
+  try {
+    const state = await readStore();
+    const trade = normalizeText(input.trade);
+    const wantedState = normalizeState(input.state);
+    const wantedCity = cityFromArea(input.area || input.city);
+    const matches = (state.leads || [])
+      .filter(lead => !trade || normalizeText(lead.trade).includes(trade) || normalizeText(lead.business).includes(trade))
+      .filter(lead => !wantedState || normalizeState(lead.state).includes(wantedState) || normalizeText(lead.area).includes(wantedState))
+      .filter(lead => !wantedCity || normalizeText(lead.city).includes(wantedCity) || normalizeText(lead.area).includes(wantedCity))
+      .sort((a, b) => Number(b.callCatchFitScore || b.aiLeadQualityScore || 0) - Number(a.callCatchFitScore || a.aiLeadQualityScore || 0))
+      .slice(0, count);
+    if (!matches.length) return [];
+    errors.push(`Live public sources were unavailable, so CallCatch returned ${matches.length} matching saved CRM lead${matches.length === 1 ? "" : "s"}.`);
+    return matches;
+  } catch (error) {
+    errors.push(`Saved CRM fallback failed: ${error.message}`);
+    return [];
+  }
+}
+
 async function searchLeads(input = {}) {
   const trade = input.trade || "HVAC";
   const radius = Number(input.radius || 25);
-  const area = [input.zip || input.area, input.state].filter(Boolean).join(", ") || "United States";
+  const area = buildArea(input);
   const count = Math.max(1, Math.min(Number(input.count) || 10, 50));
   const key = JSON.stringify({
     trade,
@@ -160,13 +212,18 @@ async function searchLeads(input = {}) {
   if (cached) return { ...cached, cached: true };
 
   const providerResult = await runProviders({ trade, area, state: input.state, city: input.city, count });
-  const leads = applyFilters(dedupe(providerResult.leads).map(enrichLead), input)
+  let leads = applyFilters(dedupe(providerResult.leads).map(enrichLead), input)
     .sort((a, b) => b.aiLeadQualityScore - a.aiLeadQualityScore)
     .slice(0, count);
+  let source = "OpenStreetMap + Nominatim";
+  if (!leads.length && providerResult.errors.length) {
+    leads = await savedCrmFallback({ ...input, trade, area }, count, providerResult.errors);
+    if (leads.length) source = "Saved CRM fallback";
+  }
 
   const payload = {
     leads,
-    source: "OpenStreetMap + Nominatim",
+    source,
     count: leads.length,
     cached: providerResult.cached,
     errors: providerResult.errors,

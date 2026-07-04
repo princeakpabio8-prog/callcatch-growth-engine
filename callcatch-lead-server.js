@@ -119,7 +119,12 @@ const server = http.createServer(async (req, res) => {
       try {
         const timeout = AbortSignal.timeout(4000);
         if (target.includes("overpass")) {
-          await fetch(target, { method: "GET", signal: timeout });
+          await fetchJson(target, {
+            method: "POST",
+            signal: timeout,
+            headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+            body: "data=%5Bout%3Ajson%5D%5Btimeout%3A5%5D%3Bnode%2850%2E6%2C7%2E0%2C50%2E8%2C7%2E3%29%5B%22amenity%22%3D%22restaurant%22%5D%3Bout%201%3B"
+          }, { retries: 0 });
         } else {
           await fetchJson(target, { signal: timeout }, { retries: 0 });
         }

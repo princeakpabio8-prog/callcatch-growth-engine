@@ -528,8 +528,12 @@
       $("finderStatus").textContent="Searching and scoring prospects...";
       const area = [$("city").value, $("state").value].filter(Boolean).join(", ");
       try {
-        const payload = await api("/api/leads",{method:"POST",body:JSON.stringify({trade:$("trade").value,area,state:$("state").value,zip:$("zip").value,radius:$("radius").value,count:$("count").value})});
-        const added = upsertLeads(payload.leads || []); $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} new CRM records.`; switchView("crm"); toast(`${added} prospects added`);
+        const payload = await api("/api/leads",{method:"POST",body:JSON.stringify({trade:$("trade").value,city:$("city").value,area,state:$("state").value,zip:$("zip").value,radius:$("radius").value,count:$("count").value})});
+        const added = upsertLeads(payload.leads || []);
+        const warning = (payload.errors || []).length ? ` Warning: ${payload.errors[0]}` : "";
+        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} new CRM records from ${payload.source || "public sources"}.${warning}`;
+        if ((payload.leads || []).length) switchView("crm");
+        toast(`${added} prospects added`);
       } catch(e){ $("finderStatus").textContent=e.message + ". Check /api/network-check to verify public data access."; toast("Search failed"); }
     }
     async function scanSelected(lead){

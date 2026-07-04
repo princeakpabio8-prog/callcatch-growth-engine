@@ -7,7 +7,9 @@ const cache = new MemoryCache(1000 * 60 * 60 * 6);
 const limiter = new RateLimiter({ intervalMs: 1200, concurrency: 1 });
 const ENDPOINTS = [
   "https://overpass-api.de/api/interpreter",
-  "https://overpass.private.coffee/api/interpreter"
+  "https://overpass.private.coffee/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.osm.ch/api/interpreter"
 ];
 
 function escRegex(value) {
