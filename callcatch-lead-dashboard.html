@@ -219,7 +219,7 @@
             <div><label for="minFit">Auto-queue Fit Score</label><input id="minFit" type="number" value="68" min="0" max="100"></div>
             <div><label for="source">Source</label><select id="source"><option>Free Public Sources</option><option>Future Provider Adapter</option><option>CSV Import</option></select></div>
           </div>
-          <p class="hint" id="finderStatus">Server: http://127.0.0.1:8787. Search results become CRM records automatically.</p>
+          <p class="hint" id="finderStatus">API connected through this app. Search results become CRM records automatically.</p>
         </div>
         <div class="panel" style="margin-top:14px;"><h2>Import Leads</h2><p class="sub">Paste CSV: business, trade, city/state, phone, website, rating, reviews.</p><textarea id="csvInput" placeholder="Business Name,Trade,City State,Phone,Website,Rating,Reviews"></textarea><div class="actions" style="margin-top:10px;"><button class="btn primary" id="importBtn" type="button">Import CSV</button></div></div>
       </section>
@@ -258,7 +258,7 @@
 
     function save(){ localStorage.setItem("ccProspectsV2", JSON.stringify(leads)); localStorage.setItem("ccApprovalQueueV2", JSON.stringify(queue)); localStorage.setItem("ccSettingsV2", JSON.stringify(settings)); }
     async function api(path, options = {}) {
-      const response = await fetch(`http://127.0.0.1:8787${path}`, {
+      const response = await fetch(path, {
         ...options,
         headers: { "Content-Type": "application/json", ...(options.headers || {}) }
       });
@@ -438,17 +438,15 @@
       $("finderStatus").textContent="Searching and scoring prospects...";
       const area = [$("city").value, $("state").value].filter(Boolean).join(", ");
       try {
-        const res = await fetch("http://127.0.0.1:8787/api/leads",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({trade:$("trade").value,area,state:$("state").value,zip:$("zip").value,radius:$("radius").value,count:$("count").value})});
-        const payload = await res.json(); if(!res.ok) throw new Error(payload.error || "Search failed");
+        const payload = await api("/api/leads",{method:"POST",body:JSON.stringify({trade:$("trade").value,area,state:$("state").value,zip:$("zip").value,radius:$("radius").value,count:$("count").value})});
         const added = upsertLeads(payload.leads || []); $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} new CRM records.`; switchView("crm"); toast(`${added} prospects added`);
-      } catch(e){ $("finderStatus").textContent=e.message + ". Check http://127.0.0.1:8787/api/network-check to verify public data access."; toast("Search failed"); }
+      } catch(e){ $("finderStatus").textContent=e.message + ". Check /api/network-check to verify public data access."; toast("Search failed"); }
     }
     async function scanSelected(lead){
       if(!lead.website){ toast("No website to scan"); return; }
       toast("Scanning website...");
       try {
-        const res = await fetch("http://127.0.0.1:8787/api/scan-website",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({website:lead.website,lead})});
-        const payload = await res.json(); if(!res.ok) throw new Error(payload.error || "Scan failed");
+        const payload = await api("/api/scan-website",{method:"POST",body:JSON.stringify({website:lead.website,lead})});
         Object.assign(lead, normalizeLead(payload.lead || lead)); addTimeline(lead,"Website intelligence scan completed"); save(); render(); toast("Website scanned");
       } catch(e){ toast("Website scan failed"); }
     }
