@@ -33,6 +33,7 @@ function emailConfig() {
     user: setting(fileSettings, "SMTP_USER"),
     pass: setting(fileSettings, "SMTP_PASS"),
     from: setting(fileSettings, "SMTP_FROM", setting(fileSettings, "SMTP_USER")),
+    fromName: setting(fileSettings, "SMTP_FROM_NAME", "CallCatch"),
     replyTo: setting(fileSettings, "SMTP_REPLY_TO", setting(fileSettings, "SMTP_FROM", setting(fileSettings, "SMTP_USER"))),
     source: Object.keys(fileSettings).length ? "email-settings.env" : "environment"
   };
@@ -54,6 +55,13 @@ function parseEmail(value) {
   const text = String(value || "").trim();
   const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   return match ? match[0] : "";
+}
+
+function formatAddress(email, name = "") {
+  const address = parseEmail(email);
+  const displayName = String(name || "").trim().replace(/["\r\n]/g, "");
+  if (!address || !displayName) return address;
+  return `"${displayName}" <${address}>`;
 }
 
 function splitSubjectBody(body) {
@@ -125,9 +133,9 @@ async function sendEmail({ to, subject, body, lead, task }, config = emailConfig
   const finalBody = parsed.body || body || task?.body || "";
   const messageId = `<${Date.now()}.${Math.random().toString(36).slice(2)}@callcatch.local>`;
   const message = [
-    `From: ${config.from}`,
+    `From: ${formatAddress(config.from, config.fromName)}`,
     `To: ${recipient}`,
-    `Reply-To: ${config.replyTo}`,
+    `Reply-To: ${formatAddress(config.replyTo, config.fromName)}`,
     `Subject: ${finalSubject}`,
     `Message-ID: ${messageId}`,
     "MIME-Version: 1.0",
@@ -167,6 +175,7 @@ async function sendEmail({ to, subject, body, lead, task }, config = emailConfig
 module.exports = {
   configured,
   emailConfig,
+  formatAddress,
   parseEmail,
   sendEmail
 };
