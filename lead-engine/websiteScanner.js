@@ -26,6 +26,47 @@ function unique(values) {
   return [...new Set(values.filter(Boolean).map(value => String(value).trim()))];
 }
 
+function mergeSignals(scans) {
+  const merged = {
+    emails: [],
+    phones: [],
+    contactForms: false,
+    bookingSoftware: [],
+    liveChat: false,
+    aiChatbot: false,
+    facebook: "",
+    instagram: "",
+    linkedin: "",
+    businessHours: false,
+    emergencyService: false,
+    financing: false,
+    noOnlineBooking: true,
+    noChatDetected: true
+  };
+
+  for (const scan of scans) {
+    merged.emails.push(...(scan.emails || []));
+    merged.phones.push(...(scan.phones || []));
+    merged.bookingSoftware.push(...(scan.bookingSoftware || []));
+    merged.contactForms = merged.contactForms || scan.contactForms;
+    merged.liveChat = merged.liveChat || scan.liveChat;
+    merged.aiChatbot = merged.aiChatbot || scan.aiChatbot;
+    merged.facebook = merged.facebook || scan.facebook;
+    merged.instagram = merged.instagram || scan.instagram;
+    merged.linkedin = merged.linkedin || scan.linkedin;
+    merged.businessHours = merged.businessHours || scan.businessHours;
+    merged.emergencyService = merged.emergencyService || scan.emergencyService;
+    merged.financing = merged.financing || scan.financing;
+    merged.noOnlineBooking = merged.noOnlineBooking && scan.noOnlineBooking;
+    merged.noChatDetected = merged.noChatDetected && scan.noChatDetected;
+  }
+
+  merged.emails = unique(merged.emails).slice(0, 12);
+  merged.phones = unique(merged.phones).slice(0, 12);
+  merged.bookingSoftware = unique(merged.bookingSoftware);
+  return merged;
+}
+
 function extractLinks(html, baseUrl) {
   const links = [];
   const regex = /href\s*=\s*["']([^"']+)["']/gi;
@@ -99,11 +140,31 @@ async function scanWebsite(rawUrl) {
   try {
     const html = await textFetch(url, { signal: AbortSignal.timeout(10000) });
     const links = extractLinks(html, url);
-    const signals = detect(html, links);
+    const contactLinks = links
+      .filter(link => /contact|quote|estimate|appointment|schedule|booking|get-started|service/i.test(link))
+      .filter(link => {
+        try {
+          const parsed = new URL(link);
+          return /^https?:$/i.test(parsed.protocol) && parsed.hostname === new URL(url).hostname;
+        } catch {
+          return false;
+        }
+      })
+      .slice(0, 5);
+    const pageScans = [detect(html, links)];
+    const contactPages = await Promise.allSettled(contactLinks.map(async link => {
+      const contactHtml = await textFetch(link, { signal: AbortSignal.timeout(8000) });
+      return detect(contactHtml, extractLinks(contactHtml, link));
+    }));
+    contactPages.forEach(result => {
+      if (result.status === "fulfilled") pageScans.push(result.value);
+    });
+    const signals = mergeSignals(pageScans);
     const score = websiteQualityScore({ ok: true, ...signals });
     return {
       ok: true,
       url,
+      scannedPages: pageScans.length,
       ...signals,
       websiteQualityScore: score,
       digitalPresenceScore: Math.min(100, score + (signals.facebook ? 4 : 0) + (signals.instagram ? 4 : 0) + (signals.linkedin ? 4 : 0))

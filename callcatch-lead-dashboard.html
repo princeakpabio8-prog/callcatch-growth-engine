@@ -253,6 +253,8 @@
     let queue = JSON.parse(localStorage.getItem("ccApprovalQueueV2") || "[]");
     let auditLog = [];
     let lastGrowthRun = null;
+    let emailReady = false;
+    let serverSynced = false;
     let selectedId = leads[0]?.id || "";
     const $ = id => document.getElementById(id);
 
@@ -274,11 +276,33 @@
         const crm = await api("/api/crm");
         leads = crm.leads || leads;
         auditLog = crm.auditLog || [];
+        serverSynced = true;
         save();
         if (!silent) toast("CRM synced");
       } catch (error) {
+        serverSynced = false;
         if (!silent) toast("Server sync unavailable");
       }
+    }
+    async function loadServerCrm() {
+      try {
+        const crm = await api("/api/crm");
+        if (Array.isArray(crm.leads)) leads = mergeById(leads, crm.leads);
+        if (Array.isArray(crm.approvalQueue)) queue = mergeById(queue, crm.approvalQueue);
+        auditLog = crm.auditLog || auditLog;
+        serverSynced = true;
+        if (!selectedId && leads[0]) selectedId = leads[0].id;
+        save();
+        await syncCrm(true);
+      } catch {
+        serverSynced = false;
+      }
+    }
+    function mergeById(localItems, serverItems) {
+      const merged = new Map();
+      (localItems || []).forEach(item => merged.set(item.id, item));
+      (serverItems || []).forEach(item => merged.set(item.id, { ...(merged.get(item.id) || {}), ...item }));
+      return [...merged.values()];
     }
     function toast(text){ const t=$("toast"); t.textContent=text; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),1500); }
     function esc(v){ return String(v ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;"); }
@@ -396,13 +420,22 @@
           }
         }
       });
-      $("approvalQueue").innerHTML = queue.length ? queue.map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.channel)}</strong><span class="tag warn">${esc(item.status)}</span></div><p class="hint">Task ID: ${esc(item.id)} | Lead ID: ${esc(item.leadId || "")}</p>${item.channel === "email" ? `<div style="margin-top:8px;"><label>Recipient Email</label><input data-to="${item.id}" value="${esc(item.to || item.recipient || "")}" placeholder="Auto-filled when a public email is found"></div>` : ""}<div class="script" style="margin-top:8px;">${esc(item.body)}</div><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-approve="${item.id}">Mark Approved</button>${item.channel==="email"?`<button class="btn small" data-sendnow="${item.id}">Send Now</button><button class="btn small" data-schedule="${item.id}" data-when="today 2 pm">Today 2 PM</button><button class="btn small" data-schedule="${item.id}" data-when="tomorrow 9 am">Tomorrow 9 AM</button><button class="btn small" data-schedule="${item.id}" data-when="next monday 8 am">Next Monday 8 AM</button>`:""}<button class="btn small" data-remove="${item.id}">Remove</button></div></div>`).join("") : `<p class="sub">No generated outreach waiting for approval.</p>`;
-      document.querySelectorAll("[data-to]").forEach(input=>input.oninput=()=>{ const q=queue.find(x=>x.id===input.dataset.to); if(q){ q.to=input.value; save(); } });
+      $("approvalQueue").innerHTML = queue.length ? queue.map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.channel)}</strong><span class="tag warn">${esc(item.status)}</span></div><p class="hint">Task ID: ${esc(item.id)} | Lead ID: ${esc(item.leadId || "")}</p>${item.channel === "email" ? `<div class="insights">${sendChecklist(item).map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>Recipient Email</label><input data-to="${item.id}" value="${esc(item.to || item.recipient || "")}" placeholder="Auto-filled when a public email is found"></div>` : ""}<div class="script" style="margin-top:8px;">${esc(item.body)}</div><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-approve="${item.id}">Mark Approved</button>${item.channel==="email"?`<button class="btn small" data-sendnow="${item.id}">Send Now</button><button class="btn small" data-schedule="${item.id}" data-when="today 2 pm">Today 2 PM</button><button class="btn small" data-schedule="${item.id}" data-when="tomorrow 9 am">Tomorrow 9 AM</button><button class="btn small" data-schedule="${item.id}" data-when="next monday 8 am">Next Monday 8 AM</button>`:""}<button class="btn small" data-remove="${item.id}">Remove</button></div></div>`).join("") : `<p class="sub">No generated outreach waiting for approval.</p>`;
+      document.querySelectorAll("[data-to]").forEach(input=>{ input.oninput=()=>{ const q=queue.find(x=>x.id===input.dataset.to); if(q){ q.to=input.value; q.recipient=input.value; save(); } }; input.onchange=()=>syncCrm(true).then(render); });
       document.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(queue.find(q=>q.id===b.dataset.copy).body));
-      document.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>{ const q=queue.find(x=>x.id===b.dataset.approve); q.status="Approved - not sent"; save(); render(); });
+      document.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>{ const q=queue.find(x=>x.id===b.dataset.approve); q.status="Approved - not sent"; save(); syncCrm(true).then(render); });
       document.querySelectorAll("[data-sendnow]").forEach(b=>b.onclick=()=>sendNow(b.dataset.sendnow));
       document.querySelectorAll("[data-schedule]").forEach(b=>b.onclick=()=>scheduleSend(b.dataset.schedule, b.dataset.when));
       document.querySelectorAll("[data-remove]").forEach(b=>b.onclick=()=>{ queue=queue.filter(q=>q.id!==b.dataset.remove); save(); render(); });
+    }
+    function sendChecklist(item){
+      const lead = leads.find(candidate => candidate.id === item.leadId) || {};
+      return [
+        { label: (item.to || item.recipient || lead.email) ? "Email found" : "Needs email", ok: !!(item.to || item.recipient || lead.email) },
+        { label: /^approved/i.test(item.status || "") ? "Approved" : "Needs approval", ok: /^approved/i.test(item.status || "") },
+        { label: emailReady ? "SMTP connected" : "SMTP not checked", ok: emailReady },
+        { label: serverSynced ? "Synced" : "Needs sync", ok: serverSynced }
+      ];
     }
     function renderAnalytics(){
       $("analyticsTable").innerHTML = `<tr><th>Metric</th><th>Daily</th><th>Weekly</th><th>Monthly</th></tr>${[["Reply Rate","0%","0%","0%"],["Demo Rate","0%","0%","0%"],["Trial Rate","0%","0%","0%"],["Customer Conversion","0%","0%","0%"],["Revenue Won",money(leads.filter(l=>l.stage==="Customer").reduce((s,l)=>s+Number(l.revenueOpportunityEstimate||0),0)),"-","-"]].map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join("")}`;
@@ -481,15 +514,19 @@
         save(); render(); toast("Queued locally");
       }
     }
-    async function checkEmailStatus(){
+    async function checkEmailStatus(silent = false){
       try {
         const status = await api("/api/email/status");
+        emailReady = !!status.configured;
         $("emailStatus").value = status.configured ? "Configured" : "Not configured";
         $("emailProvider").value = status.host ? `${status.host}:${status.port}` : "-";
-        toast(status.configured ? "Email ready" : "Email not configured");
+        renderQueue();
+        if (!silent) toast(status.configured ? "Email ready" : "Email not configured");
       } catch {
+        emailReady = false;
         $("emailStatus").value = "Server unavailable";
-        toast("Server unavailable");
+        renderQueue();
+        if (!silent) toast("Server unavailable");
       }
     }
     async function sendTestEmail(){
@@ -608,12 +645,12 @@
       TRADES.forEach(t=>{ $("trade").append(new Option(t,t)); $("tradeFilter").append(new Option(t,t)); $("campaignTrade").append(new Option(t,t)); });
       STAGES.forEach(s=>$("stageFilter").append(new Option(s,s)));
       document.querySelectorAll(".nav-btn").forEach(b=>b.onclick=()=>switchView(b.dataset.view));
-      $("searchBtn").onclick=search; $("saveSearchBtn").onclick=saveSearch; $("importBtn").onclick=importCsv; $("generateQueueBtn").onclick=enrollCampaign; $("syncBtn").onclick=()=>syncCrm(false).then(render); $("startGrowthBtn").onclick=startDailyGrowth; $("emailStatusBtn").onclick=checkEmailStatus; $("sendTestBtn").onclick=sendTestEmail; $("sendApprovedBtn").onclick=sendApprovedEmails; $("saveSendingBtn").onclick=saveSendingLimits; $("runDueBtn").onclick=runDueScheduled; $("followupBtn").onclick=generateFollowups; $("recordReplyBtn").onclick=recordReply;
+      $("searchBtn").onclick=search; $("saveSearchBtn").onclick=saveSearch; $("importBtn").onclick=importCsv; $("generateQueueBtn").onclick=enrollCampaign; $("syncBtn").onclick=()=>syncCrm(false).then(render); $("startGrowthBtn").onclick=startDailyGrowth; $("emailStatusBtn").onclick=()=>checkEmailStatus(false); $("sendTestBtn").onclick=sendTestEmail; $("sendApprovedBtn").onclick=sendApprovedEmails; $("saveSendingBtn").onclick=saveSendingLimits; $("runDueBtn").onclick=runDueScheduled; $("followupBtn").onclick=generateFollowups; $("recordReplyBtn").onclick=recordReply;
       $("exportCsvBtn").onclick=()=>download("callcatch-prospects.csv",csv(),"text/csv"); $("exportExcelBtn").onclick=()=>download("callcatch-prospects.xls",`<table>${rows().map(r=>`<tr>${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</table>`,"application/vnd.ms-excel"); $("exportJsonBtn").onclick=()=>download("callcatch-prospects.json",JSON.stringify(leads,null,2),"application/json"); $("copySelectedBtn").onclick=()=>copy(JSON.stringify(selected()||{},null,2)); $("pdfBtn").onclick=pdfReport;
       $("refreshAssistantBtn").onclick=()=>{ renderAssistant(); toast("Assistant refreshed"); }; $("themeBtn").onclick=()=>{ const dark=document.body.dataset.theme==="dark"; document.body.dataset.theme=dark?"":"dark"; $("themeBtn").textContent=dark?"Dark Mode":"Light Mode"; };
       $("saveSettingsBtn").onclick=()=>{ settings={team:$("teamMember").value,sender:$("senderName").value,demo:$("demoLink").value,mode:$("automationMode").value}; save(); toast("Settings saved"); };
       ["search","tradeFilter","stageFilter"].forEach(id=>$(id).oninput=render);
-      syncCrm(true).then(()=>{ render(); refreshSendingMetrics(); }).catch(()=>render());
+      loadServerCrm().then(()=>checkEmailStatus(true)).then(()=>{ render(); refreshSendingMetrics(); }).catch(()=>render());
     }
     init();
   </script>
