@@ -35,6 +35,7 @@ function emailConfig() {
     from: setting(fileSettings, "SMTP_FROM", setting(fileSettings, "SMTP_USER")),
     fromName: setting(fileSettings, "SMTP_FROM_NAME", "CallCatch"),
     replyTo: setting(fileSettings, "SMTP_REPLY_TO", setting(fileSettings, "SMTP_FROM", setting(fileSettings, "SMTP_USER"))),
+    timeoutMs: Number(setting(fileSettings, "SMTP_TIMEOUT_MS", 15000)),
     source: Object.keys(fileSettings).length ? "email-settings.env" : "environment"
   };
 }
@@ -81,28 +82,44 @@ function splitSubjectBody(body) {
 }
 
 function smtpClient(config) {
+  const timeoutMs = Number(config.timeoutMs || 15000);
   const socket = config.secure
     ? tls.connect({ host: config.host, port: config.port, servername: config.host })
     : net.connect({ host: config.host, port: config.port });
 
   let buffer = "";
+  socket.setTimeout(timeoutMs);
 
   function readResponse() {
     return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        socket.off("data", onData);
+        socket.off("error", onError);
+        socket.off("timeout", onTimeout);
+      };
+      const onError = error => {
+        cleanup();
+        reject(error);
+      };
+      const onTimeout = () => {
+        cleanup();
+        socket.destroy();
+        reject(new Error(`SMTP timed out after ${Math.round(timeoutMs / 1000)} seconds`));
+      };
       const onData = chunk => {
         buffer += chunk.toString("utf8");
         const lines = buffer.split(/\r?\n/).filter(Boolean);
         const last = lines[lines.length - 1] || "";
         if (/^\d{3}\s/.test(last)) {
-          socket.off("data", onData);
-          socket.off("error", reject);
+          cleanup();
           const response = buffer;
           buffer = "";
           resolve(response);
         }
       };
       socket.on("data", onData);
-      socket.once("error", reject);
+      socket.once("error", onError);
+      socket.once("timeout", onTimeout);
     });
   }
 

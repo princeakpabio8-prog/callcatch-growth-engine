@@ -635,7 +635,11 @@
     async function sendApprovedEmails(){
       try {
         await syncCrm(true);
-        $("sendProgress").textContent = `Sending... 0 / ${queue.filter(q=>q.channel==="email" && /^approved/i.test(q.status||"")).length} Complete`;
+        const approved = queue.filter(q=>q.channel==="email" && /^approved/i.test(q.status||""));
+        approved.forEach(q=>{ q.status = "Sending"; });
+        save();
+        render();
+        $("sendProgress").textContent = `Sending... 0 / ${approved.length} Complete`;
         const result = await api("/api/sending/send-all-approved", { method:"POST", body: JSON.stringify({}) });
         const crm = await api("/api/crm");
         leads = crm.leads || leads;
@@ -662,7 +666,13 @@
         }
         const blocked = sendBlockReason(taskId);
         if (blocked) { $("sendProgress").textContent = blocked; toast(blocked); return; }
-        $("sendProgress").textContent = "Sending one approved email...";
+        const localTask = queue.find(q=>q.id===taskId);
+        if (localTask) {
+          localTask.status = "Sending";
+          save();
+          render();
+        }
+        $("sendProgress").textContent = "Sending email through Render...";
         const result = await api("/api/sending/send-now", { method:"POST", body: JSON.stringify({ taskId }) });
         const crm = await api("/api/crm");
         leads = crm.leads || leads;
@@ -671,7 +681,17 @@
         save(); render();
         $("sendProgress").textContent = result.sent ? "Email sent successfully." : (result.error || "Email was not sent.");
         toast(result.sent ? "Email sent" : (result.error || "Not sent"));
-      } catch(error) { $("sendProgress").textContent = `Send failed: ${error.message}`; toast(error.message); }
+      } catch(error) {
+        const localTask = queue.find(q=>q.id===taskId);
+        if (localTask) {
+          localTask.status = "Send Failed";
+          localTask.error = error.message;
+          save();
+          render();
+        }
+        $("sendProgress").textContent = `Send failed: ${error.message}`;
+        toast(error.message);
+      }
     }
     async function scheduleSend(taskId, when){
       try {

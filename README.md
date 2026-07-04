@@ -63,7 +63,9 @@ SMTP_SECURE=true
 SMTP_USER=
 SMTP_PASS=
 SMTP_FROM=
+SMTP_FROM_NAME=CallCatch
 SMTP_REPLY_TO=
+SMTP_TIMEOUT_MS=15000
 ```
 
 On Render, add these in the service Environment tab.

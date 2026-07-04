@@ -179,6 +179,8 @@ async function sendTaskNow(state, taskId) {
   }
 
   try {
+    task.status = "Sending";
+    task.startedAt = nowIso();
     const result = await sendEmail({ to, task, lead });
     task.status = "Sent";
     task.sentAt = result.sentAt;
