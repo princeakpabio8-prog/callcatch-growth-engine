@@ -327,11 +327,16 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const saved = await mutateStore(state => {
         const items = Array.isArray(body.items) ? body.items : [];
-        if (items.length === 0) return [];
+        state.approvalQueue = state.approvalQueue || [];
+        if (items.length === 0) return state.approvalQueue;
         const normalized = items.map(item => ({ id: item.id || newId("task"), createdAt: item.createdAt || new Date().toISOString(), status: item.status || "Needs Approval", ...item }));
-        state.approvalQueue = normalized.concat(state.approvalQueue || []);
+        const incomingIds = new Set(normalized.map(item => item.id));
+        const existing = new Map(state.approvalQueue.map(item => [item.id, item]));
+        const mergedIncoming = normalized.map(item => ({ ...(existing.get(item.id) || {}), ...item }));
+        const untouched = state.approvalQueue.filter(item => !incomingIds.has(item.id));
+        state.approvalQueue = mergedIncoming.concat(untouched);
         state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "approval_queue_updated", details: { count: normalized.length } });
-        return normalized;
+        return state.approvalQueue;
       });
       return send(res, 200, { items: saved });
     } catch (error) {

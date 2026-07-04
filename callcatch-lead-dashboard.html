@@ -269,9 +269,12 @@
     async function syncCrm(silent = true) {
       try {
         await api("/api/crm/leads", { method: "POST", body: JSON.stringify({ leads }) });
-        await api("/api/approval-queue", { method: "POST", body: JSON.stringify({ items: [] }) });
-        const audit = await api("/api/audit-log");
-        auditLog = audit.auditLog || [];
+        const savedQueue = await api("/api/approval-queue", { method: "POST", body: JSON.stringify({ items: queue }) });
+        queue = savedQueue.items || queue;
+        const crm = await api("/api/crm");
+        leads = crm.leads || leads;
+        auditLog = crm.auditLog || [];
+        save();
         if (!silent) toast("CRM synced");
       } catch (error) {
         if (!silent) toast("Server sync unavailable");
