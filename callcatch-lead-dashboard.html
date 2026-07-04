@@ -512,6 +512,13 @@
         { label: serverSynced ? "Synced" : "Needs sync", ok: serverSynced }
       ];
     }
+    function sendBlockReason(taskId){
+      const item = queue.find(q=>q.id===taskId);
+      if (!item) return "Task not found. Sync CRM and try again.";
+      const missing = sendChecklist(item).filter(check=>!check.ok).map(check=>check.label.toLowerCase());
+      if (!missing.length) return "";
+      return `Not ready to send: ${missing.join(", ")}. Add a recipient email, mark approved, and check email status.`;
+    }
     function renderInbox(){
       const items = inboxItems();
       $("replyInbox").innerHTML = items.length ? items.map(({lead,reply})=>`<div class="queue-item"><div class="lead-top"><strong>${esc(lead.business)}</strong><span class="tag ${reply.meetingIntent ? "hot" : "warn"}">${reply.meetingIntent ? "Meeting Intent" : "Needs Response"}</span></div><p class="hint">${esc(reply.from || "Unknown sender")} | ${new Date(reply.at).toLocaleString()}</p><div class="script" style="min-height:80px;">${esc(reply.body || "")}</div><label style="margin-top:8px;">Suggested Response</label><div class="script" style="min-height:70px;">${esc(reply.suggestedResponse || "")}</div><div class="actions" style="margin-top:8px;"><button class="btn small" data-reply-copy="${lead.id}|${reply.id}">Copy Response</button><button class="btn small" data-reply-open="${lead.id}">Open Lead</button><button class="btn small" data-reply-done="${lead.id}|${reply.id}">Mark Handled</button></div></div>`).join("") : `<p class="sub">No replies waiting for response.</p>`;
@@ -642,6 +649,8 @@
     }
     async function sendNow(taskId){
       try {
+        const blocked = sendBlockReason(taskId);
+        if (blocked) { $("sendProgress").textContent = blocked; toast(blocked); return; }
         await syncCrm(true);
         const result = await api("/api/sending/send-now", { method:"POST", body: JSON.stringify({ taskId }) });
         const crm = await api("/api/crm");
@@ -654,6 +663,8 @@
     }
     async function scheduleSend(taskId, when){
       try {
+        const blocked = sendBlockReason(taskId);
+        if (blocked) { $("sendProgress").textContent = blocked; toast(blocked); return; }
         await syncCrm(true);
         const result = await api("/api/sending/schedule", { method:"POST", body: JSON.stringify({ taskId, when }) });
         const crm = await api("/api/crm");
