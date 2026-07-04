@@ -50,13 +50,36 @@ http://127.0.0.1:8787/api/network-check
 
 ## Email Sending
 
-Do not commit real SMTP passwords.
+Do not commit real email API keys or SMTP passwords.
 
 For local use, create `email-settings.env` from `.env.example` or set environment variables before starting the server.
 
-Required SMTP variables:
+Recommended Render email setup:
 
 ```env
+EMAIL_PROVIDER=auto
+RESEND_API_KEY=
+SMTP_FROM=hello@callcatch.site
+SMTP_FROM_NAME=CallCatch
+SMTP_REPLY_TO=hello@callcatch.site
+```
+
+With `EMAIL_PROVIDER=auto`, CallCatch uses Resend first when `RESEND_API_KEY` is present, Brevo second when `BREVO_API_KEY` is present, then SMTP as a fallback.
+
+Optional Brevo setup:
+
+```env
+EMAIL_PROVIDER=brevo
+BREVO_API_KEY=
+SMTP_FROM=hello@callcatch.site
+SMTP_FROM_NAME=CallCatch
+SMTP_REPLY_TO=hello@callcatch.site
+```
+
+SMTP fallback variables:
+
+```env
+EMAIL_PROVIDER=smtp
 SMTP_HOST=
 SMTP_PORT=465
 SMTP_SECURE=true

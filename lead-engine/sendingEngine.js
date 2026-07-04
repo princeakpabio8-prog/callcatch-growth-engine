@@ -185,7 +185,7 @@ async function sendTaskNow(state, taskId) {
     task.status = "Sent";
     task.sentAt = result.sentAt;
     task.messageId = result.messageId;
-    task.provider = "SMTP";
+    task.provider = result.provider || "Email";
     task.nextFollowUpAt = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
     lead.stage = lead.stage === "New" ? "Contacted" : lead.stage;
     lead.lastContact = result.sentAt.slice(0, 10);

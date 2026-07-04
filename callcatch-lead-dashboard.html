@@ -614,7 +614,9 @@
         const status = await api("/api/email/status");
         emailReady = !!status.configured;
         $("emailStatus").value = status.configured ? "Configured" : "Not configured";
-        $("emailProvider").value = status.host ? `${status.host}:${status.port}` : "-";
+        $("emailProvider").value = status.provider === "resend" || status.provider === "brevo"
+          ? `${status.provider.toUpperCase()} API`
+          : (status.host ? `${status.host}:${status.port}` : "-");
         renderQueue();
         if (!silent) toast(status.configured ? "Email ready" : "Email not configured");
       } catch {

@@ -9,7 +9,7 @@ const { enrichProspect, outreachAssets } = require("./lead-engine/prospectIntell
 const { audit, mutateStore, newId, readStore } = require("./lead-engine/dataStore");
 const { buildCampaign, buildSequenceTasks } = require("./lead-engine/campaigns");
 const { DEFAULT_DAILY_GROWTH, automationCapabilities, mergeConfig, runDailyGrowth } = require("./lead-engine/dailyGrowth");
-const { configured: emailConfigured, emailConfig, parseEmail, sendEmail } = require("./lead-engine/emailAdapter");
+const { activeProvider, configured: emailConfigured, emailConfig, parseEmail, sendEmail } = require("./lead-engine/emailAdapter");
 const {
   generateFollowUps,
   metrics: sendingMetrics,
@@ -102,7 +102,7 @@ const server = http.createServer(async (req, res) => {
       storage: "json-file",
       email: {
         configured: emailConfigured(),
-        provider: emailConfig().host || "not-configured",
+        provider: activeProvider(emailConfig()),
         source: emailConfig().source
       },
       requiresApiKey: false,
@@ -361,12 +361,16 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && url.pathname === "/api/email/status") {
     const config = emailConfig();
+    const provider = activeProvider(config);
     return send(res, 200, {
       configured: emailConfigured(config),
+      provider,
       host: config.host || "",
       port: config.port,
       secure: config.secure,
       from: config.from || "",
+      fromName: config.fromName || "",
+      apiConfigured: provider === "resend" || provider === "brevo",
       user: config.user ? config.user.replace(/^(.{2}).*(@.*)?$/, "$1***$2") : ""
     });
   }
@@ -377,7 +381,7 @@ const server = http.createServer(async (req, res) => {
       const result = await sendEmail({
         to: body.to,
         subject: body.subject || "CallCatch email test",
-        body: body.body || "This is a CallCatch SMTP test email."
+        body: body.body || "This is a CallCatch email delivery test."
       });
       await audit("email_test_sent", { to: result.to, messageId: result.messageId });
       return send(res, 200, result);

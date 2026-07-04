@@ -26,7 +26,11 @@ function setting(fileSettings, key, fallback = "") {
 
 function emailConfig() {
   const fileSettings = loadEmailSettingsFile();
+  const provider = setting(fileSettings, "EMAIL_PROVIDER", "auto").toLowerCase();
   return {
+    provider,
+    resendApiKey: setting(fileSettings, "RESEND_API_KEY"),
+    brevoApiKey: setting(fileSettings, "BREVO_API_KEY"),
     host: setting(fileSettings, "SMTP_HOST"),
     port: Number(setting(fileSettings, "SMTP_PORT", 465)),
     secure: String(setting(fileSettings, "SMTP_SECURE", "true")).toLowerCase() !== "false",
@@ -41,7 +45,10 @@ function emailConfig() {
 }
 
 function configured(config = emailConfig()) {
-  return Boolean(config.host && config.port && config.user && config.pass && config.from);
+  if (config.provider === "resend") return Boolean(config.resendApiKey && config.from);
+  if (config.provider === "brevo") return Boolean(config.brevoApiKey && config.from);
+  if (config.provider === "smtp") return Boolean(config.host && config.port && config.user && config.pass && config.from);
+  return Boolean((config.resendApiKey || config.brevoApiKey || (config.host && config.port && config.user && config.pass)) && config.from);
 }
 
 function encodeBase64(value) {
@@ -79,6 +86,34 @@ function splitSubjectBody(body) {
     subject: "CallCatch follow-up",
     body: text
   };
+}
+
+function activeProvider(config = emailConfig()) {
+  if (config.provider === "resend" || (config.provider === "auto" && config.resendApiKey)) return "resend";
+  if (config.provider === "brevo" || (config.provider === "auto" && config.brevoApiKey)) return "brevo";
+  if (config.provider === "smtp" || (config.host && config.user && config.pass)) return "smtp";
+  return "not-configured";
+}
+
+async function fetchWithTimeout(url, options, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error(`Email API timed out after ${Math.round(timeoutMs / 1000)} seconds`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function plainTextToHtml(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\r?\n/g, "<br>");
 }
 
 function smtpClient(config) {
@@ -135,30 +170,89 @@ function smtpClient(config) {
   return { socket, readResponse, command };
 }
 
-async function sendEmail({ to, subject, body, lead, task }, config = emailConfig()) {
-  if (!configured(config)) {
+async function sendViaResend({ recipient, subject, body, lead, task, config }) {
+  if (!config.resendApiKey) throw new Error("RESEND_API_KEY is not configured");
+  const response = await fetchWithTimeout("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.resendApiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      from: formatAddress(config.from, config.fromName),
+      to: [recipient],
+      reply_to: config.replyTo ? formatAddress(config.replyTo, config.fromName) : undefined,
+      subject,
+      text: body,
+      tags: [
+        { name: "source", value: "callcatch" },
+        { name: "lead_id", value: String(lead?.id || task?.leadId || "unknown").slice(0, 256) },
+        { name: "task_id", value: String(task?.id || "unknown").slice(0, 256) }
+      ]
+    })
+  }, config.timeoutMs);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.message || payload.error || `Resend API failed with ${response.status}`);
+  }
+  return {
+    ok: true,
+    provider: "Resend",
+    to: recipient,
+    subject,
+    messageId: payload.id || `<resend-${Date.now()}@callcatch>`,
+    sentAt: new Date().toISOString()
+  };
+}
+
+async function sendViaBrevo({ recipient, subject, body, lead, task, config }) {
+  if (!config.brevoApiKey) throw new Error("BREVO_API_KEY is not configured");
+  const response = await fetchWithTimeout("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "api-key": config.brevoApiKey,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      sender: { name: config.fromName || "CallCatch", email: parseEmail(config.from) },
+      to: [{ email: recipient, name: lead?.business || "" }],
+      replyTo: config.replyTo ? { name: config.fromName || "CallCatch", email: parseEmail(config.replyTo) } : undefined,
+      subject,
+      textContent: body,
+      htmlContent: plainTextToHtml(body),
+      tags: ["callcatch", String(lead?.trade || "prospect").toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 50)]
+    })
+  }, config.timeoutMs);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.message || payload.error || `Brevo API failed with ${response.status}`);
+  }
+  return {
+    ok: true,
+    provider: "Brevo",
+    to: recipient,
+    subject,
+    messageId: payload.messageId || `<brevo-${Date.now()}@callcatch>`,
+    sentAt: new Date().toISOString()
+  };
+}
+
+async function sendViaSmtp({ recipient, subject, body, config }) {
+  if (!(config.host && config.port && config.user && config.pass && config.from)) {
     throw new Error("SMTP is not configured");
   }
-
-  const recipient = parseEmail(to || lead?.email || task?.to || task?.recipient);
-  if (!recipient) {
-    throw new Error("No recipient email found");
-  }
-
-  const parsed = splitSubjectBody(body || task?.body || "");
-  const finalSubject = subject || parsed.subject;
-  const finalBody = parsed.body || body || task?.body || "";
   const messageId = `<${Date.now()}.${Math.random().toString(36).slice(2)}@callcatch.local>`;
   const message = [
     `From: ${formatAddress(config.from, config.fromName)}`,
     `To: ${recipient}`,
     `Reply-To: ${formatAddress(config.replyTo, config.fromName)}`,
-    `Subject: ${finalSubject}`,
+    `Subject: ${subject}`,
     `Message-ID: ${messageId}`,
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=utf-8",
     "",
-    finalBody
+    body
   ].join("\r\n");
 
   const client = smtpClient(config);
@@ -179,8 +273,9 @@ async function sendEmail({ to, subject, body, lead, task }, config = emailConfig
     await client.command("QUIT", ["221"]);
     return {
       ok: true,
+      provider: "SMTP",
       to: recipient,
-      subject: finalSubject,
+      subject,
       messageId,
       sentAt: new Date().toISOString()
     };
@@ -189,7 +284,29 @@ async function sendEmail({ to, subject, body, lead, task }, config = emailConfig
   }
 }
 
+async function sendEmail({ to, subject, body, lead, task }, config = emailConfig()) {
+  if (!configured(config)) {
+    throw new Error("Email provider is not configured");
+  }
+
+  const recipient = parseEmail(to || lead?.email || task?.to || task?.recipient);
+  if (!recipient) {
+    throw new Error("No recipient email found");
+  }
+
+  const parsed = splitSubjectBody(body || task?.body || "");
+  const finalSubject = subject || parsed.subject;
+  const finalBody = parsed.body || body || task?.body || "";
+
+  const provider = activeProvider(config);
+  if (provider === "resend") return sendViaResend({ recipient, subject: finalSubject, body: finalBody, lead, task, config });
+  if (provider === "brevo") return sendViaBrevo({ recipient, subject: finalSubject, body: finalBody, lead, task, config });
+  if (provider === "smtp") return sendViaSmtp({ recipient, subject: finalSubject, body: finalBody, config });
+  throw new Error("Email provider is not configured");
+}
+
 module.exports = {
+  activeProvider,
   configured,
   emailConfig,
   formatAddress,
