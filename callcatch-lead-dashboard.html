@@ -267,8 +267,8 @@
     let serverSynced = false;
     let selectedId = leads[0]?.id || "";
     const $ = id => document.getElementById(id);
-    const LOCAL_API_BASE = ["http://", "127.0.0.1", ":8787"].join("");
-    function apiUrl(path){ return window.location.protocol === "file:" ? `${LOCAL_API_BASE}${path}` : path; }
+    const PRODUCTION_API_BASE = "https://callcatch-growth-engine.onrender.com";
+    function apiUrl(path){ return window.location.protocol === "file:" ? `${PRODUCTION_API_BASE}${path}` : path; }
 
     function save(){ localStorage.setItem("ccProspectsV2", JSON.stringify(leads)); localStorage.setItem("ccApprovalQueueV2", JSON.stringify(queue)); localStorage.setItem("ccSettingsV2", JSON.stringify(settings)); }
     async function api(path, options = {}) {
@@ -280,7 +280,7 @@
         });
       } catch (error) {
         const target = apiUrl("/health");
-        throw new Error(`Cannot reach CallCatch server. Open ${target} first, then refresh this dashboard`);
+        throw new Error(`Cannot reach CallCatch backend at ${target}. Open https://callcatch-growth-engine.onrender.com/ directly, or wait for Render to finish waking up, then try again.`);
       }
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Server request failed");
@@ -297,9 +297,11 @@
         serverSynced = true;
         save();
         if (!silent) toast("CRM synced");
+        return true;
       } catch (error) {
         serverSynced = false;
         if (!silent) toast("Server sync unavailable");
+        return false;
       }
     }
     async function loadServerCrm() {
@@ -650,10 +652,17 @@
     }
     async function sendNow(taskId){
       try {
+        $("sendProgress").textContent = "Syncing approval queue with Render...";
+        const synced = await syncCrm(true);
+        if (!synced) {
+          const message = "Cannot send yet because the approval queue did not sync with Render. Refresh the Render app and try again.";
+          $("sendProgress").textContent = message;
+          toast(message);
+          return;
+        }
         const blocked = sendBlockReason(taskId);
         if (blocked) { $("sendProgress").textContent = blocked; toast(blocked); return; }
         $("sendProgress").textContent = "Sending one approved email...";
-        await syncCrm(true);
         const result = await api("/api/sending/send-now", { method:"POST", body: JSON.stringify({ taskId }) });
         const crm = await api("/api/crm");
         leads = crm.leads || leads;
@@ -666,9 +675,15 @@
     }
     async function scheduleSend(taskId, when){
       try {
+        const synced = await syncCrm(true);
+        if (!synced) {
+          const message = "Cannot schedule yet because the approval queue did not sync with Render. Refresh the Render app and try again.";
+          $("sendProgress").textContent = message;
+          toast(message);
+          return;
+        }
         const blocked = sendBlockReason(taskId);
         if (blocked) { $("sendProgress").textContent = blocked; toast(blocked); return; }
-        await syncCrm(true);
         const result = await api("/api/sending/schedule", { method:"POST", body: JSON.stringify({ taskId, when }) });
         const crm = await api("/api/crm");
         queue = crm.approvalQueue || queue; auditLog = crm.auditLog || auditLog; save(); render();
@@ -754,7 +769,7 @@
       TRADES.forEach(t=>{ $("trade").append(new Option(t,t)); $("tradeFilter").append(new Option(t,t)); $("campaignTrade").append(new Option(t,t)); });
       STAGES.forEach(s=>$("stageFilter").append(new Option(s,s)));
       $("finderStatus").textContent = window.location.protocol === "file:"
-        ? `File preview mode: API calls will use ${LOCAL_API_BASE}. Search results become CRM records automatically.`
+        ? `File preview mode: API calls will use ${PRODUCTION_API_BASE}. For best results, open the Render app directly.`
         : "API connected through this app. Search results become CRM records automatically.";
       document.querySelectorAll(".nav-btn").forEach(b=>b.onclick=()=>switchView(b.dataset.view));
       $("searchBtn").onclick=search; $("saveSearchBtn").onclick=saveSearch; $("importBtn").onclick=importCsv; $("generateQueueBtn").onclick=enrollCampaign; $("syncBtn").onclick=()=>syncCrm(false).then(render); $("startGrowthBtn").onclick=startDailyGrowth; $("emailStatusBtn").onclick=()=>checkEmailStatus(false); $("sendTestBtn").onclick=sendTestEmail; $("sendApprovedBtn").onclick=sendApprovedEmails; $("saveSendingBtn").onclick=saveSendingLimits; $("runDueBtn").onclick=runDueScheduled; $("followupBtn").onclick=generateFollowups; $("recordReplyBtn").onclick=recordReply;
