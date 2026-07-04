@@ -268,16 +268,44 @@ function detectMeetingIntent(text) {
   return MEETING_WORDS.some(word => lower.includes(word));
 }
 
+function suggestedReply(lead, body, meetingIntent) {
+  if (meetingIntent) {
+    return `Hi, thanks for getting back to us. Happy to schedule a quick walkthrough. What time works best today or tomorrow?`;
+  }
+  const lower = String(body || "").toLowerCase();
+  if (lower.includes("price") || lower.includes("cost")) {
+    return `Hi, thanks for replying. Pricing depends on call volume, but the goal is simple: recover enough missed callers to pay for itself quickly. Want me to show the numbers for ${lead.business}?`;
+  }
+  if (lower.includes("not interested")) {
+    return `Thanks for letting me know. I will close the loop here. If missed calls become a priority later, happy to help.`;
+  }
+  return `Hi, thanks for the reply. The quick version: CallCatch texts missed callers instantly so they do not move on to the next company. Worth a short walkthrough?`;
+}
+
 function recordReply(state, { leadId, taskId, from, body }) {
-  const lead = (state.leads || []).find(item => item.id === leadId) || findLead(state, { leadId });
+  const taskById = (state.approvalQueue || []).find(item => item.id === taskId);
+  const lead = (state.leads || []).find(item => item.id === leadId)
+    || findLead(state, taskById || { leadId })
+    || (state.leads || []).find(item => item.email && String(from || "").toLowerCase().includes(String(item.email).toLowerCase()));
   if (!lead || !lead.id) throw new Error("Lead not found");
-  const task = (state.approvalQueue || []).find(item => item.id === taskId);
+  const task = taskById;
   const at = nowIso();
   const meetingIntent = detectMeetingIntent(body);
   lead.stage = meetingIntent ? "Demo Scheduled" : "Interested";
   lead.replies = lead.replies || [];
-  lead.replies.unshift({ at, from, body, meetingIntent });
+  const reply = {
+    id: newId("reply"),
+    at,
+    from,
+    body,
+    taskId: task ? task.id : "",
+    meetingIntent,
+    status: "Needs Response",
+    suggestedResponse: suggestedReply(lead, body, meetingIntent)
+  };
+  lead.replies.unshift(reply);
   addTimeline(lead, meetingIntent ? "Reply received with meeting intent" : "Reply received", at);
+  addTimeline(lead, `Inbox reply needs response: ${suggestedReply(lead, body, meetingIntent)}`, at);
   if (task) {
     task.replyAt = at;
     task.replyBody = body;
@@ -291,7 +319,7 @@ function recordReply(state, { leadId, taskId, from, body }) {
   metrics.replies += 1;
   if (meetingIntent) metrics.meetingsBooked += 1;
   state.auditLog.unshift({ id: newId("audit"), at, action: meetingIntent ? "meeting_intent_detected" : "reply_received", details: { leadId: lead.id, from } });
-  return { lead, meetingIntent };
+  return { lead, reply, meetingIntent };
 }
 
 function metrics(state) {

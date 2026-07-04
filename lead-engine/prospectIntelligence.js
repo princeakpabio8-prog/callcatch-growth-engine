@@ -57,6 +57,60 @@ function recommendedAngle(lead, insights) {
   return "Lead with revenue recovery: show how a few recovered missed callers can pay for CallCatch quickly.";
 }
 
+function weaknessProfile(lead = {}) {
+  const insights = lead.aiInsights || [];
+  const scan = lead.websiteIntelligence || {};
+  const hasInsight = text => insights.some(item => String(item).toLowerCase().includes(text));
+  const weakWebsite = hasInsight("weak") || hasInsight("outdated") || Number(lead.websiteQualityScore || scan.websiteQualityScore || 50) < 45;
+
+  if (hasInsight("emergency") || scan.emergencyService || emergencyTrade(lead.trade)) {
+    return {
+      weakness: "missed emergency calls",
+      pain: "urgent customers usually call the next company if nobody responds right away",
+      hook: "missed emergency jobs are often won or lost in the first few minutes",
+      proof: "CallCatch instantly texts missed callers so they stay engaged instead of moving on"
+    };
+  }
+  if (scan.noOnlineBooking || hasInsight("no online booking")) {
+    return {
+      weakness: "no booking button",
+      pain: "website visitors and missed callers have to wait for a callback before taking action",
+      hook: "the fastest conversion upgrade may be instant text-back before a full booking rebuild",
+      proof: "CallCatch gives every missed caller an immediate next step and keeps the conversation open"
+    };
+  }
+  if (weakWebsite) {
+    return {
+      weakness: "slow or outdated website",
+      pain: "prospects may lose confidence before they ever speak with the company",
+      hook: "a modern response layer can recover trust even before a website redesign",
+      proof: "CallCatch creates a fast, polished first response whenever a call is missed"
+    };
+  }
+  if (!scan.businessHours || hasInsight("business hours")) {
+    return {
+      weakness: "after-hours calls",
+      pain: "evening and weekend callers often need help before the next business day",
+      hook: "after-hours callers can become tomorrow's booked jobs instead of lost opportunities",
+      proof: "CallCatch replies instantly after hours and captures the customer's need for follow-up"
+    };
+  }
+  if ((lead.reviews && lead.reviews < 40) || hasInsight("small review count")) {
+    return {
+      weakness: "small team",
+      pain: "small teams are usually in the field and cannot answer every sales call live",
+      hook: "a small team can look instantly responsive without hiring another dispatcher",
+      proof: "CallCatch handles the first missed-call response while the team keeps working"
+    };
+  }
+  return {
+    weakness: "missed calls",
+    pain: "new customers rarely wait long when another provider is one search away",
+    hook: "a few recovered callers can make the system pay for itself",
+    proof: "CallCatch texts missed callers instantly and routes the next step back into the CRM"
+  };
+}
+
 function estimateRevenue(lead, scan = {}) {
   const baseCalls = emergencyTrade(lead.trade) ? 70 : 42;
   const digitalPenalty = scan.websiteQualityScore ? Math.max(0, 60 - scan.websiteQualityScore) / 3 : 12;
@@ -105,16 +159,18 @@ function enrichProspect(lead, scan = {}) {
 }
 
 function outreachAssets(lead) {
-  const angle = lead.recommendedSalesAngle || "Lead with revenue recovery from missed calls.";
+  const profile = weaknessProfile(lead);
+  const angle = lead.recommendedSalesAngle || `Lead with ${profile.weakness}.`;
   const value = lead.revenueOpportunityEstimate || 0;
   return {
-    email: `Subject: Missed calls at ${lead.business}\n\nHi,\n\nQuick idea for ${lead.business}. ${angle}\n\nCallCatch texts missed callers instantly so they do not move on to the next company. Based on your category, the monthly missed-call opportunity could be around $${value.toLocaleString()} in job value.\n\nWorth a 15-minute walkthrough?`,
-    linkedinConnection: `Hi, I work with home-service businesses on missed-call recovery. Thought ${lead.business} might be a fit.`,
-    linkedinFirstMessage: `Thanks for connecting. ${angle} CallCatch helps recover missed callers with instant text-back. Open to seeing the 2-minute version?`,
-    sms: `Hi, quick idea for ${lead.business}: CallCatch texts missed callers instantly so they do not call the next company. Worth a quick look?`,
-    callScript: `Opening: I help ${lead.trade} companies recover jobs from missed calls.\n\nDiscovery: When do you miss the most calls? After hours, while driving, or during jobs?\n\nAngle: ${angle}\n\nClose: Want me to show what the customer sees after a missed call?`,
-    objections: `Already call back: Totally. The problem is timing; many customers call the next company within minutes.\nToo busy: Setup is designed to be simple and approval-first.\nNot sure we miss calls: One urgent job can make the math obvious.`
+    email: `Subject: Quick idea for ${lead.business}\n\nHi,\n\nI noticed a possible ${profile.weakness} gap for ${lead.business}: ${profile.pain}.\n\n${profile.hook}. ${profile.proof}. Based on your category, the monthly recoverable opportunity could be around $${value.toLocaleString()} in job value.\n\nWorth a 15-minute walkthrough?`,
+    linkedinConnection: `Hi, I work with ${lead.trade || "home-service"} companies on ${profile.weakness}. Thought ${lead.business} might be a fit.`,
+    linkedinFirstMessage: `Thanks for connecting. Quick thought for ${lead.business}: ${profile.hook}. CallCatch helps with that through instant missed-call text-back. Open to seeing the 2-minute version?`,
+    sms: `Hi, quick idea for ${lead.business}: ${profile.proof}. Useful if ${profile.weakness} is costing jobs. Worth a quick look?`,
+    callScript: `Opening: I help ${lead.trade} companies fix ${profile.weakness}.\n\nObservation: ${profile.pain}.\n\nDiscovery: When do you miss the most calls: after hours, on jobs, while driving, or during peak demand?\n\nAngle: ${profile.hook}. ${profile.proof}.\n\nClose: Want me to show what the customer sees after a missed call?`,
+    objections: `Already call back: Totally. The problem is timing; many customers move on within minutes.\nToo busy: That is exactly where instant text-back helps a small team look responsive.\nNot sure we miss calls: One recovered urgent job can make the math obvious.`,
+    weakness: profile
   };
 }
 
-module.exports = { enrichProspect, outreachAssets };
+module.exports = { enrichProspect, outreachAssets, weaknessProfile };

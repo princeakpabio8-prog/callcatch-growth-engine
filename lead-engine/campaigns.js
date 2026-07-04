@@ -26,6 +26,10 @@ function buildCampaign({ name = "Default Outbound Sequence", minFitScore = 68, t
 
 function buildSequenceTasks(lead, campaign, outreachAssets) {
   const start = new Date();
+  const bodyFor = step => {
+    if (step.channel === "linkedin") return step.title.toLowerCase().includes("connection") ? outreachAssets.linkedinConnection : outreachAssets.linkedinFirstMessage;
+    return outreachAssets[step.channel] || outreachAssets.email || "";
+  };
   return campaign.sequence.map(step => ({
     leadId: lead.id,
     business: lead.business,
@@ -36,7 +40,7 @@ function buildSequenceTasks(lead, campaign, outreachAssets) {
     title: step.title,
     dueDate: addDays(start, Number(step.day) - 1),
     status: "Needs Approval",
-    body: outreachAssets[step.channel] || outreachAssets.email || "",
+    body: bodyFor(step),
     safety: "Not sent. Human approval required."
   }));
 }

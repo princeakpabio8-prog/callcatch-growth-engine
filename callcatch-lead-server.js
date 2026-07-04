@@ -515,6 +515,42 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (req.method === "POST" && url.pathname === "/api/replies/inbound") {
+    try {
+      const body = await readJson(req);
+      const result = await mutateStore(state => recordReply(state, {
+        leadId: body.leadId,
+        taskId: body.taskId,
+        from: body.from || body.sender || body.replyFrom,
+        body: body.body || body.text || body.message
+      }));
+      return send(res, 200, { accepted: true, ...result });
+    } catch (error) {
+      return send(res, 400, { error: error.message });
+    }
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/replies/resolve") {
+    try {
+      const body = await readJson(req);
+      const result = await mutateStore(state => {
+        const lead = (state.leads || []).find(item => item.id === body.leadId);
+        if (!lead) throw new Error("Lead not found");
+        const reply = (lead.replies || []).find(item => item.id === body.replyId);
+        if (!reply) throw new Error("Reply not found");
+        reply.status = "Handled";
+        reply.handledAt = new Date().toISOString();
+        lead.timeline = lead.timeline || [];
+        lead.timeline.unshift({ at: reply.handledAt, text: "Reply marked handled" });
+        state.auditLog.unshift({ id: newId("audit"), at: reply.handledAt, action: "reply_handled", details: { leadId: lead.id, replyId: reply.id } });
+        return { lead, reply };
+      });
+      return send(res, 200, result);
+    } catch (error) {
+      return send(res, 400, { error: error.message });
+    }
+  }
+
   if (req.method === "GET" && url.pathname === "/api/daily-growth") {
     const state = await readStore();
     const config = mergeConfig(state.dailyGrowth || {});

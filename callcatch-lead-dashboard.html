@@ -108,6 +108,9 @@
     }
     .stat strong { display: block; font-size: 24px; line-height: 1.05; word-break: break-word; }
     .grid { display: grid; grid-template-columns: minmax(340px, .9fr) minmax(0, 1.1fr); gap: 14px; align-items: start; }
+    .work-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .work-list { display: grid; gap: 8px; }
+    .work-item { border: 1px solid var(--line); border-radius: 7px; padding: 10px; background: rgba(127,127,127,.04); min-width: 0; }
     .panel { padding: 15px; min-width: 0; }
     .toolbar { display: grid; grid-template-columns: 1fr 150px 150px; gap: 8px; margin-bottom: 12px; }
     input, select, textarea {
@@ -155,7 +158,7 @@
     @media (max-width: 1150px) {
       .app { grid-template-columns: 1fr; }
       nav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-      .stats, .grid, .map-grid, .form-grid { grid-template-columns: 1fr; }
+      .stats, .grid, .work-grid, .map-grid, .form-grid { grid-template-columns: 1fr; }
     }
     @media (max-width: 680px) {
       main, aside { padding: 15px; }
@@ -201,6 +204,12 @@
           <p class="hint" id="growthStatus">Manual: you control each step. Assisted: AI prepares everything for approval. Auto Pilot: runs the workflow, but sending remains adapter-gated until email/SMS integrations are connected.</p>
         </div>
         <div class="stats" id="stats"></div>
+        <div class="work-grid">
+          <div class="panel"><h2>Send These Emails</h2><div id="workEmails" class="work-list"></div></div>
+          <div class="panel"><h2>Call These Leads</h2><div id="workCalls" class="work-list"></div></div>
+          <div class="panel"><h2>Follow Up Today</h2><div id="workFollowups" class="work-list"></div></div>
+          <div class="panel"><h2>Replies Needing Response</h2><div id="workReplies" class="work-list"></div></div>
+        </div>
         <div class="grid"><div class="panel"><h2>Today’s Best Prospects</h2><div id="bestProspects" class="lead-list"></div></div><div class="panel"><h2>AI Recommendations</h2><div id="assistantNotes" class="script"></div></div></div>
       </section>
 
@@ -236,6 +245,7 @@
         <div class="panel" style="margin-top:12px;"><h2>Email Adapter</h2><div class="form-grid"><div><label for="testEmail">Test Recipient</label><input id="testEmail" placeholder="you@example.com"></div><div><label>Status</label><input id="emailStatus" value="Not checked" disabled></div><div><label>Provider</label><input id="emailProvider" value="-" disabled></div><div><label>Action</label><button class="btn primary" id="sendTestBtn" type="button">Send Test</button></div></div><p class="hint">SMTP credentials stay in PowerShell environment variables. The browser never stores your email password.</p></div>
         <div class="panel" style="margin-top:12px;"><h2>Smart Sending</h2><div class="stats" id="sendingStats"></div><div class="form-grid"><div><label for="maxHour">Max Emails / Hour</label><input id="maxHour" type="number" value="20"></div><div><label for="maxDay">Max Emails / Day</label><input id="maxDay" type="number" value="100"></div><div><label for="minDelay">Min Delay Seconds</label><input id="minDelay" type="number" value="45"></div><div><label for="maxDelay">Max Delay Seconds</label><input id="maxDelay" type="number" value="180"></div></div><div class="actions"><button class="btn" id="saveSendingBtn" type="button">Save Limits</button><button class="btn" id="runDueBtn" type="button">Run Due Scheduled</button><button class="btn" id="followupBtn" type="button">Generate Follow-ups</button></div><p class="hint" id="sendProgress">Bulk sending progress appears here.</p></div>
         <div class="panel" style="margin-top:12px;"><h2>Reply Tracking</h2><div class="form-grid"><div><label for="replyLead">Lead ID</label><input id="replyLead" placeholder="lead id"></div><div><label for="replyTask">Task ID</label><input id="replyTask" placeholder="optional task id"></div><div><label for="replyFrom">From</label><input id="replyFrom" placeholder="reply@example.com"></div><div><label>Action</label><button class="btn primary" id="recordReplyBtn" type="button">Record Reply</button></div></div><textarea id="replyBody" placeholder="Paste reply text here"></textarea></div>
+        <div class="panel" style="margin-top:12px;"><h2>Reply Inbox</h2><div class="queue" id="replyInbox"></div></div>
         <div class="queue" id="approvalQueue" style="margin-top:12px;"></div>
       </section>
       <section class="view" id="analytics"><div class="top"><div><h1>Dashboard Analytics</h1><p class="sub">Outbound performance and pipeline health.</p></div></div><div class="stats" id="analyticsStats"></div><div class="panel"><h2>Weekly Snapshot</h2><div class="table-wrap"><table id="analyticsTable"></table></div></div></section>
@@ -352,13 +362,25 @@
         .filter(l => !$("tradeFilter")?.value || l.trade === $("tradeFilter").value)
         .filter(l => !$("stageFilter")?.value || l.stage === $("stageFilter").value);
     }
+    function weaknessProfile(lead){
+      const insights = lead.aiInsights || [];
+      const scan = lead.websiteIntelligence || {};
+      const has = text => insights.some(item => String(item).toLowerCase().includes(text));
+      const emergencyTrades = ["HVAC","Plumbing","Electrical","Garage Doors","Locksmith","Appliance Repair","Tree Service","Pest Control"];
+      if (has("emergency") || scan.emergencyService || emergencyTrades.includes(lead.trade)) return { weakness:"missed emergency calls", pain:"urgent customers usually call the next company if nobody responds right away", hook:"missed emergency jobs are often won or lost in the first few minutes", proof:"CallCatch instantly texts missed callers so they stay engaged instead of moving on" };
+      if (scan.noOnlineBooking || has("no online booking")) return { weakness:"no booking button", pain:"website visitors and missed callers have to wait for a callback before taking action", hook:"instant text-back is a fast conversion upgrade before a full booking rebuild", proof:"CallCatch gives every missed caller an immediate next step" };
+      if (has("weak") || Number(lead.websiteQualityScore || 50) < 45) return { weakness:"slow or outdated website", pain:"prospects may lose confidence before they ever speak with the company", hook:"a modern response layer can recover trust before a website redesign", proof:"CallCatch creates a fast, polished first response whenever a call is missed" };
+      if (!scan.businessHours || has("business hours")) return { weakness:"after-hours calls", pain:"evening and weekend callers often need help before the next business day", hook:"after-hours callers can become tomorrow's booked jobs", proof:"CallCatch replies instantly after hours and captures the customer's need" };
+      if ((lead.reviews && lead.reviews < 40) || has("small review count")) return { weakness:"small team", pain:"small teams are usually in the field and cannot answer every sales call live", hook:"a small team can look instantly responsive without hiring another dispatcher", proof:"CallCatch handles the first missed-call response while the team keeps working" };
+      return { weakness:"missed calls", pain:"new customers rarely wait long when another provider is one search away", hook:"a few recovered callers can make the system pay for itself", proof:"CallCatch texts missed callers instantly and routes the next step back into the CRM" };
+    }
     function outreach(lead){
-      const angle = lead.recommendedSalesAngle || "CallCatch helps recover missed callers before they call the next company.";
+      const profile = weaknessProfile(lead);
       return {
-        email: `Subject: Missed calls at ${lead.business}\n\nHi,\n\n${angle}\n\nCallCatch texts missed callers instantly, so more prospects stay with your company instead of calling a competitor. Estimated monthly opportunity: ${money(lead.revenueOpportunityEstimate)}.\n\nWorth a quick walkthrough?\n\n${settings.sender}\n${settings.demo}`,
-        sms: `Hi, quick idea for ${lead.business}: CallCatch texts missed callers instantly so they do not call the next company. Worth a quick look?`,
-        linkedin: `Hi, I work with ${lead.trade} businesses on missed-call recovery. Thought ${lead.business} might be a fit.`,
-        call: `Opening: I help ${lead.trade} companies recover jobs from missed calls.\nDiscovery: When are calls missed most: jobsites, driving, after hours, weekends?\nAngle: ${angle}\nClose: Want to see what the missed caller receives in the first 30 seconds?`
+        email: `Subject: Quick idea for ${lead.business}\n\nHi,\n\nI noticed a possible ${profile.weakness} gap for ${lead.business}: ${profile.pain}.\n\n${profile.hook}. ${profile.proof}. Estimated monthly opportunity: ${money(lead.revenueOpportunityEstimate)}.\n\nWorth a quick walkthrough?\n\n${settings.sender}\n${settings.demo}`,
+        sms: `Hi, quick idea for ${lead.business}: ${profile.proof}. Useful if ${profile.weakness} is costing jobs. Worth a quick look?`,
+        linkedin: `Hi, I work with ${lead.trade} businesses on ${profile.weakness}. Thought ${lead.business} might be a fit.`,
+        call: `Opening: I help ${lead.trade} companies fix ${profile.weakness}.\nObservation: ${profile.pain}.\nDiscovery: When do you miss the most calls: after hours, on jobs, while driving, or during peak demand?\nClose: Want to see what the missed caller receives in the first 30 seconds?`
       };
     }
     function queueOutreach(lead, notify=true){
@@ -383,6 +405,31 @@
       $("bestProspects").innerHTML = best.length ? best.map(leadRowHtml).join("") : `<p class="sub">No prospects yet. Run Discovery to build your list.</p>`;
       $("assistantNotes").textContent = lastGrowthRun ? `Today's Opportunities\n\nNew Businesses: ${lastGrowthRun.newBusinesses}\nQualified: ${lastGrowthRun.qualified}\nEmails Ready: ${lastGrowthRun.emailsReady}\nLinkedIn Messages Ready: ${lastGrowthRun.linkedinReady}\nFollow-ups Due: ${lastGrowthRun.followUpsDue}\nReplies Yesterday: ${lastGrowthRun.repliesYesterday}\nDemo Requests: ${lastGrowthRun.demoRequests}\nRevenue Pipeline: ${money(lastGrowthRun.revenuePipeline)}\n\nSending status: ${lastGrowthRun.capabilities?.sendingStatus || "approval-first"}`
         : leads.length ? `Focus today:\n\n1. Work ${best[0]?.business || "your highest-fit prospect"} first.\n2. Review ${queue.length} queued messages before sending anything.\n3. Move contacted leads to Follow-up with a next action date.\n4. Scan websites for high-fit prospects with weak online presence.` : "Click Start Daily Growth or run Discovery. The assistant will find, research, score, and queue outreach.";
+    }
+    function inboxItems(){
+      return leads.flatMap(lead => (lead.replies || []).map(reply => ({ lead, reply })))
+        .filter(item => (item.reply.status || "Needs Response") !== "Handled")
+        .sort((a,b)=>new Date(b.reply.at||0)-new Date(a.reply.at||0));
+    }
+    function dueToday(value){
+      if (!value) return false;
+      return String(value).slice(0,10) <= new Date().toISOString().slice(0,10);
+    }
+    function renderWorkItem(label, detail, action, attrs = ""){
+      return `<div class="work-item"><strong>${esc(label)}</strong><p class="hint">${esc(detail)}</p>${action ? `<button class="btn small" ${attrs}>${esc(action)}</button>` : ""}</div>`;
+    }
+    function renderTodayWork(){
+      const readyEmails = queue.filter(q=>q.channel==="email" && /^approved/i.test(q.status||"")).slice(0,5);
+      const callTasks = queue.filter(q=>q.channel==="call" && q.status !== "Sent").slice(0,5);
+      const followups = leads.filter(l=>dueToday(l.nextFollowUp) || ["Contacted","Follow-up"].includes(l.stage)).slice(0,5);
+      const replies = inboxItems().slice(0,5);
+      $("workEmails").innerHTML = readyEmails.length ? readyEmails.map(item=>renderWorkItem(item.business, item.to || item.recipient || "Needs recipient", "Send Now", `data-work-send="${item.id}"`)).join("") : `<p class="sub">No approved emails ready.</p>`;
+      $("workCalls").innerHTML = callTasks.length ? callTasks.map(item=>renderWorkItem(item.business, item.title || "Call task", "Open Lead", `data-work-lead="${item.leadId}"`)).join("") : `<p class="sub">No call tasks queued.</p>`;
+      $("workFollowups").innerHTML = followups.length ? followups.map(lead=>renderWorkItem(lead.business, `${lead.stage} | ${lead.nextFollowUp || "Follow up due"}`, "Open Lead", `data-work-lead="${lead.id}"`)).join("") : `<p class="sub">No follow-ups due.</p>`;
+      $("workReplies").innerHTML = replies.length ? replies.map(({lead,reply})=>renderWorkItem(lead.business, reply.body || "Reply received", "Review Reply", `data-work-reply="${reply.id}" data-work-lead="${lead.id}"`)).join("") : `<p class="sub">No replies waiting.</p>`;
+      document.querySelectorAll("[data-work-send]").forEach(b=>b.onclick=()=>sendNow(b.dataset.workSend));
+      document.querySelectorAll("[data-work-lead]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.workLead; switchView("crm"); });
+      document.querySelectorAll("[data-work-reply]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.workLead; switchView("automation"); });
     }
     function leadRowHtml(l){
       return `<div class="lead-row ${l.id===selectedId?"active":""}" data-id="${l.id}"><div class="lead-top"><div class="lead-name">${esc(l.business)}</div><span class="tag ${tagClass(l.callCatchFitScore)}">${l.callCatchFitScore}</span></div><div class="meta"><span>${esc(l.trade)}</span><span>${esc([l.city,l.state].filter(Boolean).join(", ") || l.area || "")}</span><span>${esc(l.stage)}</span><span>${esc(l.responsePriority)}</span></div></div>`;
@@ -437,6 +484,13 @@
         { label: serverSynced ? "Synced" : "Needs sync", ok: serverSynced }
       ];
     }
+    function renderInbox(){
+      const items = inboxItems();
+      $("replyInbox").innerHTML = items.length ? items.map(({lead,reply})=>`<div class="queue-item"><div class="lead-top"><strong>${esc(lead.business)}</strong><span class="tag ${reply.meetingIntent ? "hot" : "warn"}">${reply.meetingIntent ? "Meeting Intent" : "Needs Response"}</span></div><p class="hint">${esc(reply.from || "Unknown sender")} | ${new Date(reply.at).toLocaleString()}</p><div class="script" style="min-height:80px;">${esc(reply.body || "")}</div><label style="margin-top:8px;">Suggested Response</label><div class="script" style="min-height:70px;">${esc(reply.suggestedResponse || "")}</div><div class="actions" style="margin-top:8px;"><button class="btn small" data-reply-copy="${lead.id}|${reply.id}">Copy Response</button><button class="btn small" data-reply-open="${lead.id}">Open Lead</button><button class="btn small" data-reply-done="${lead.id}|${reply.id}">Mark Handled</button></div></div>`).join("") : `<p class="sub">No replies waiting for response.</p>`;
+      document.querySelectorAll("[data-reply-copy]").forEach(b=>b.onclick=()=>{ const [leadId, replyId]=b.dataset.replyCopy.split("|"); const lead=leads.find(l=>l.id===leadId); const reply=(lead?.replies||[]).find(r=>r.id===replyId); copy(reply?.suggestedResponse || ""); });
+      document.querySelectorAll("[data-reply-open]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.replyOpen; switchView("crm"); });
+      document.querySelectorAll("[data-reply-done]").forEach(b=>b.onclick=()=>markReplyHandled(...b.dataset.replyDone.split("|")));
+    }
     function renderAnalytics(){
       $("analyticsTable").innerHTML = `<tr><th>Metric</th><th>Daily</th><th>Weekly</th><th>Monthly</th></tr>${[["Reply Rate","0%","0%","0%"],["Demo Rate","0%","0%","0%"],["Trial Rate","0%","0%","0%"],["Customer Conversion","0%","0%","0%"],["Revenue Won",money(leads.filter(l=>l.stage==="Customer").reduce((s,l)=>s+Number(l.revenueOpportunityEstimate||0),0)),"-","-"]].map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join("")}`;
     }
@@ -467,7 +521,7 @@
       $("auditTable").innerHTML = auditLog.length ? `<tr><th>Time</th><th>Action</th><th>Details</th></tr>${auditLog.slice(0,40).map(row=>`<tr><td>${new Date(row.at).toLocaleString()}</td><td>${esc(row.action)}</td><td>${esc(JSON.stringify(row.details || {}))}</td></tr>`).join("")}` : `<tr><td>No server audit entries loaded yet.</td></tr>`;
     }
     function render(){
-      renderStats(); renderAssistant(); renderList(); renderDetail(); renderPipeline(); renderQueue(); renderAnalytics(); renderTerritory(); renderSettings(); renderAudit(); renderSendingStats();
+      renderStats(); renderAssistant(); renderTodayWork(); renderList(); renderDetail(); renderPipeline(); renderQueue(); renderInbox(); renderAnalytics(); renderTerritory(); renderSettings(); renderAudit(); renderSendingStats();
     }
     async function search(){
       if($("source").value!=="Free Public Sources"){ $("finderStatus").textContent="That provider is a future adapter slot."; return; }
@@ -602,7 +656,16 @@
         const result = await api("/api/replies/record", { method:"POST", body: JSON.stringify({ leadId:$("replyLead").value, taskId:$("replyTask").value, from:$("replyFrom").value, body:$("replyBody").value }) });
         const crm = await api("/api/crm");
         leads = crm.leads || leads; queue = crm.approvalQueue || queue; auditLog = crm.auditLog || auditLog; save(); render();
+        $("replyBody").value = "";
         toast(result.meetingIntent ? "Meeting intent detected" : "Reply recorded");
+      } catch(error) { toast(error.message); }
+    }
+    async function markReplyHandled(leadId, replyId){
+      try {
+        await api("/api/replies/resolve", { method:"POST", body: JSON.stringify({ leadId, replyId }) });
+        const crm = await api("/api/crm");
+        leads = crm.leads || leads; queue = crm.approvalQueue || queue; auditLog = crm.auditLog || auditLog; save(); render();
+        toast("Reply handled");
       } catch(error) { toast(error.message); }
     }
     function growthConfig(){
