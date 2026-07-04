@@ -267,13 +267,21 @@
     let serverSynced = false;
     let selectedId = leads[0]?.id || "";
     const $ = id => document.getElementById(id);
+    const LOCAL_API_BASE = ["http://", "127.0.0.1", ":8787"].join("");
+    function apiUrl(path){ return window.location.protocol === "file:" ? `${LOCAL_API_BASE}${path}` : path; }
 
     function save(){ localStorage.setItem("ccProspectsV2", JSON.stringify(leads)); localStorage.setItem("ccApprovalQueueV2", JSON.stringify(queue)); localStorage.setItem("ccSettingsV2", JSON.stringify(settings)); }
     async function api(path, options = {}) {
-      const response = await fetch(path, {
-        ...options,
-        headers: { "Content-Type": "application/json", ...(options.headers || {}) }
-      });
+      let response;
+      try {
+        response = await fetch(apiUrl(path), {
+          ...options,
+          headers: { "Content-Type": "application/json", ...(options.headers || {}) }
+        });
+      } catch (error) {
+        const target = apiUrl("/health");
+        throw new Error(`Cannot reach CallCatch server. Open ${target} first, then refresh this dashboard`);
+      }
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Server request failed");
       return payload;
@@ -534,7 +542,7 @@
         $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} new CRM records from ${payload.source || "public sources"}.${warning}`;
         if ((payload.leads || []).length) switchView("crm");
         toast(`${added} prospects added`);
-      } catch(e){ $("finderStatus").textContent=e.message + ". Check /api/network-check to verify public data access."; toast("Search failed"); }
+      } catch(e){ $("finderStatus").textContent=e.message + `. Check ${apiUrl("/api/network-check")} to verify public data access.`; toast("Search failed"); }
     }
     async function scanSelected(lead){
       if(!lead.website){ toast("No website to scan"); return; }
@@ -711,6 +719,9 @@
     function init(){
       TRADES.forEach(t=>{ $("trade").append(new Option(t,t)); $("tradeFilter").append(new Option(t,t)); $("campaignTrade").append(new Option(t,t)); });
       STAGES.forEach(s=>$("stageFilter").append(new Option(s,s)));
+      $("finderStatus").textContent = window.location.protocol === "file:"
+        ? `File preview mode: API calls will use ${LOCAL_API_BASE}. Search results become CRM records automatically.`
+        : "API connected through this app. Search results become CRM records automatically.";
       document.querySelectorAll(".nav-btn").forEach(b=>b.onclick=()=>switchView(b.dataset.view));
       $("searchBtn").onclick=search; $("saveSearchBtn").onclick=saveSearch; $("importBtn").onclick=importCsv; $("generateQueueBtn").onclick=enrollCampaign; $("syncBtn").onclick=()=>syncCrm(false).then(render); $("startGrowthBtn").onclick=startDailyGrowth; $("emailStatusBtn").onclick=()=>checkEmailStatus(false); $("sendTestBtn").onclick=sendTestEmail; $("sendApprovedBtn").onclick=sendApprovedEmails; $("saveSendingBtn").onclick=saveSendingLimits; $("runDueBtn").onclick=runDueScheduled; $("followupBtn").onclick=generateFollowups; $("recordReplyBtn").onclick=recordReply;
       $("exportCsvBtn").onclick=()=>download("callcatch-prospects.csv",csv(),"text/csv"); $("exportExcelBtn").onclick=()=>download("callcatch-prospects.xls",`<table>${rows().map(r=>`<tr>${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</table>`,"application/vnd.ms-excel"); $("exportJsonBtn").onclick=()=>download("callcatch-prospects.json",JSON.stringify(leads,null,2),"application/json"); $("copySelectedBtn").onclick=()=>copy(JSON.stringify(selected()||{},null,2)); $("pdfBtn").onclick=pdfReport;
