@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: callcatch-growth-engine
+    env: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: node callcatch-lead-server.js
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20

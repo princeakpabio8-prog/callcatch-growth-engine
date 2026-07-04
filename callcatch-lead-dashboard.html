@@ -1,0 +1,620 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CallCatch Prospect Intelligence CRM</title>
+  <style>
+    :root {
+      --bg: #f5f7fa;
+      --panel: #ffffff;
+      --ink: #14212d;
+      --muted: #637282;
+      --line: #dce3ea;
+      --green: #117a4b;
+      --blue: #235f8e;
+      --amber: #9a6500;
+      --red: #aa3d35;
+      --soft-green: #e1f4ea;
+      --soft-blue: #e5f1fa;
+      --soft-amber: #fff1d6;
+      --soft-red: #fde9e7;
+      --shadow: 0 12px 30px rgba(20, 33, 45, .08);
+    }
+
+    [data-theme="dark"] {
+      --bg: #101820;
+      --panel: #17232d;
+      --ink: #edf4f8;
+      --muted: #a9bac8;
+      --line: #2b3a46;
+      --soft-green: #173c2b;
+      --soft-blue: #17334a;
+      --soft-amber: #3d3018;
+      --soft-red: #3e211f;
+      --shadow: none;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.42;
+    }
+    button, input, select, textarea { font: inherit; }
+    .app { min-height: 100vh; display: grid; grid-template-columns: 260px minmax(0, 1fr); }
+    aside {
+      background: #102333;
+      color: #fff;
+      padding: 22px;
+      min-width: 0;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 900; margin-bottom: 22px; }
+    .mark { width: 36px; height: 36px; border-radius: 8px; background: #22b06f; display: grid; place-items: center; }
+    nav { display: grid; gap: 7px; }
+    .nav-btn {
+      border: 0;
+      border-radius: 7px;
+      padding: 10px 11px;
+      background: transparent;
+      color: #c6d4df;
+      text-align: left;
+      cursor: pointer;
+      font-weight: 800;
+    }
+    .nav-btn.active { background: rgba(255,255,255,.12); color: #fff; }
+    .side-note { margin-top: 22px; color: #b6c5d1; font-size: 13px; }
+    main { min-width: 0; padding: 22px; }
+    .top { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 16px; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: 30px; line-height: 1.12; margin-bottom: 6px; letter-spacing: 0; }
+    h2 { font-size: 20px; margin-bottom: 10px; }
+    h3 { font-size: 16px; margin-bottom: 9px; }
+    .sub, .hint { color: var(--muted); }
+    .hint { font-size: 13px; margin-top: 8px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .btn {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      border-radius: 7px;
+      padding: 9px 11px;
+      min-height: 38px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .btn.primary { background: var(--green); border-color: var(--green); color: #fff; }
+    .btn.small { min-height: 32px; padding: 6px 9px; font-size: 13px; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .stat, .panel, .lead-row, .stage, .queue-item {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .stat { padding: 12px; min-height: 84px; }
+    .stat span, .mini span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      margin-bottom: 6px;
+    }
+    .stat strong { display: block; font-size: 24px; line-height: 1.05; word-break: break-word; }
+    .grid { display: grid; grid-template-columns: minmax(340px, .9fr) minmax(0, 1.1fr); gap: 14px; align-items: start; }
+    .panel { padding: 15px; min-width: 0; }
+    .toolbar { display: grid; grid-template-columns: 1fr 150px 150px; gap: 8px; margin-bottom: 12px; }
+    input, select, textarea {
+      width: 100%;
+      min-height: 39px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 9px 10px;
+      color: var(--ink);
+      background: var(--panel);
+    }
+    textarea { min-height: 115px; resize: vertical; }
+    label { display: block; font-size: 13px; font-weight: 900; color: var(--muted); margin-bottom: 5px; }
+    .form-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 11px; }
+    .lead-list { display: grid; gap: 9px; }
+    .lead-row { padding: 12px; border-left: 5px solid transparent; cursor: pointer; }
+    .lead-row.active { border-left-color: var(--green); }
+    .lead-top { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+    .lead-name { font-weight: 900; word-break: break-word; }
+    .meta { display: flex; flex-wrap: wrap; gap: 7px; color: var(--muted); font-size: 13px; margin-top: 6px; }
+    .tag { display: inline-flex; align-items: center; border-radius: 999px; padding: 4px 8px; font-size: 12px; font-weight: 900; white-space: nowrap; background: var(--soft-blue); color: var(--blue); }
+    .tag.hot { background: var(--soft-green); color: var(--green); }
+    .tag.warn { background: var(--soft-amber); color: var(--amber); }
+    .tag.bad { background: var(--soft-red); color: var(--red); }
+    .detail-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin: 12px 0; }
+    .mini { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: rgba(127,127,127,.04); min-height: 78px; }
+    .mini strong { display: block; font-size: 20px; word-break: break-word; }
+    .script { white-space: pre-wrap; border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: rgba(127,127,127,.04); min-height: 150px; }
+    .insights { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0; }
+    .pipeline { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 11px; overflow-x: auto; padding-bottom: 6px; }
+    .stage { padding: 11px; min-height: 260px; }
+    .stage h3 { display: flex; justify-content: space-between; gap: 8px; }
+    .card { border: 1px solid var(--line); border-radius: 7px; padding: 10px; margin-bottom: 8px; background: rgba(127,127,127,.04); cursor: grab; }
+    .queue { display: grid; gap: 10px; }
+    .queue-item { padding: 12px; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    th, td { text-align: left; padding: 10px; border-bottom: 1px solid var(--line); font-size: 14px; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; background: rgba(127,127,127,.06); }
+    .map-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 14px; }
+    .map { min-height: 420px; border: 1px solid var(--line); border-radius: 8px; background: linear-gradient(135deg, var(--soft-blue), var(--soft-green)); position: relative; overflow: hidden; }
+    .pin { position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--red); border: 2px solid #fff; transform: translate(-50%, -50%); }
+    .toast { position: fixed; right: 18px; bottom: 18px; background: #17212b; color: #fff; padding: 11px 13px; border-radius: 7px; opacity: 0; transform: translateY(10px); pointer-events: none; transition: .2s ease; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    @media (max-width: 1150px) {
+      .app { grid-template-columns: 1fr; }
+      nav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .stats, .grid, .map-grid, .form-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 680px) {
+      main, aside { padding: 15px; }
+      .top { display: block; }
+      .actions { margin-top: 10px; }
+      .toolbar, nav, .detail-grid { grid-template-columns: 1fr; }
+      h1 { font-size: 25px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app" id="app">
+    <aside>
+      <div class="brand"><div class="mark">C</div><div>CallCatch<br><span style="font-weight:400;color:#b9c8d5;">AI Growth Engine</span></div></div>
+      <nav>
+        <button class="nav-btn active" data-view="assistant" type="button">Daily Assistant</button>
+        <button class="nav-btn" data-view="finder" type="button">Discovery</button>
+        <button class="nav-btn" data-view="crm" type="button">CRM</button>
+        <button class="nav-btn" data-view="pipeline" type="button">Pipeline</button>
+        <button class="nav-btn" data-view="automation" type="button">Campaigns</button>
+        <button class="nav-btn" data-view="analytics" type="button">Analytics</button>
+        <button class="nav-btn" data-view="territory" type="button">Territory</button>
+        <button class="nav-btn" data-view="settings" type="button">Settings</button>
+      </nav>
+      <p class="side-note">Approval-first outbound: the system researches, scores, drafts, and queues. Humans decide what gets sent.</p>
+    </aside>
+    <main>
+      <section class="view active" id="assistant">
+        <div class="top"><div><h1>Daily AI Sales Assistant</h1><p class="sub">Your best prospects, follow-ups, demos, and pipeline value for today.</p></div><div class="actions"><button class="btn" id="themeBtn" type="button">Dark Mode</button><button class="btn primary" id="startGrowthBtn" type="button">▶ Start Daily Growth</button><button class="btn" id="refreshAssistantBtn" type="button">Refresh</button></div></div>
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="form-grid">
+            <div><label for="growthTime">Morning Run Time</label><input id="growthTime" type="time" value="08:00"></div>
+            <div><label for="growthMode">Automation Level</label><select id="growthMode"><option>Manual</option><option selected>Assisted</option><option>Auto Pilot</option></select></div>
+            <div><label for="growthScore">Minimum Fit Score</label><input id="growthScore" type="number" value="75" min="0" max="100"></div>
+            <div><label for="growthCount">Leads Per Search</label><input id="growthCount" type="number" value="8" min="1" max="50"></div>
+          </div>
+          <div class="form-grid">
+            <div><label for="growthStates">States</label><input id="growthStates" value="TX, FL, AZ, IL"></div>
+            <div><label for="growthTrades">Trades</label><input id="growthTrades" value="HVAC, Plumbing, Electrical, Roofing"></div>
+            <div><label for="growthMax">Max Searches Per Run</label><input id="growthMax" type="number" value="8" min="1" max="50"></div>
+            <div><label for="growthSending">Sending</label><select id="growthSending"><option>Queue for Approval</option><option>Send only when integration is connected</option></select></div>
+          </div>
+          <p class="hint" id="growthStatus">Manual: you control each step. Assisted: AI prepares everything for approval. Auto Pilot: runs the workflow, but sending remains adapter-gated until email/SMS integrations are connected.</p>
+        </div>
+        <div class="stats" id="stats"></div>
+        <div class="grid"><div class="panel"><h2>Today’s Best Prospects</h2><div id="bestProspects" class="lead-list"></div></div><div class="panel"><h2>AI Recommendations</h2><div id="assistantNotes" class="script"></div></div></div>
+      </section>
+
+      <section class="view" id="finder">
+        <div class="top"><div><h1>Prospect Discovery Engine</h1><p class="sub">Search free public sources by service industry, city/state/ZIP, radius, and lead count.</p></div><div class="actions"><button class="btn" id="saveSearchBtn" type="button">Save Search</button><button class="btn primary" id="searchBtn" type="button">Search</button></div></div>
+        <div class="panel">
+          <div class="form-grid">
+            <div><label for="trade">Trade</label><select id="trade"></select></div>
+            <div><label for="city">City</label><input id="city" value="Dallas"></div>
+            <div><label for="state">State</label><input id="state" value="TX"></div>
+            <div><label for="zip">ZIP Code</label><input id="zip" placeholder="optional"></div>
+          </div>
+          <div class="form-grid">
+            <div><label for="radius">Radius</label><input id="radius" type="number" value="25" min="1" max="100"></div>
+            <div><label for="count">Lead Count</label><input id="count" type="number" value="10" min="1" max="50"></div>
+            <div><label for="minFit">Auto-queue Fit Score</label><input id="minFit" type="number" value="68" min="0" max="100"></div>
+            <div><label for="source">Source</label><select id="source"><option>Free Public Sources</option><option>Future Provider Adapter</option><option>CSV Import</option></select></div>
+          </div>
+          <p class="hint" id="finderStatus">Server: http://127.0.0.1:8787. Search results become CRM records automatically.</p>
+        </div>
+        <div class="panel" style="margin-top:14px;"><h2>Import Leads</h2><p class="sub">Paste CSV: business, trade, city/state, phone, website, rating, reviews.</p><textarea id="csvInput" placeholder="Business Name,Trade,City State,Phone,Website,Rating,Reviews"></textarea><div class="actions" style="margin-top:10px;"><button class="btn primary" id="importBtn" type="button">Import CSV</button></div></div>
+      </section>
+
+      <section class="view" id="crm">
+        <div class="top"><div><h1>Prospect CRM</h1><p class="sub">Manage leads, intelligence, notes, tags, follow-ups, and outreach drafts.</p></div><div class="actions"><button class="btn" id="exportCsvBtn" type="button">CSV</button><button class="btn" id="exportExcelBtn" type="button">Excel</button><button class="btn" id="exportJsonBtn" type="button">JSON</button><button class="btn" id="copySelectedBtn" type="button">Copy Selected</button><button class="btn" id="pdfBtn" type="button">PDF Report</button></div></div>
+        <div class="grid"><div class="panel"><div class="toolbar"><input id="search" placeholder="Search prospects"><select id="tradeFilter"><option value="">All trades</option></select><select id="stageFilter"><option value="">All stages</option></select></div><div id="leadList" class="lead-list"></div></div><div class="panel" id="leadDetail"><h2>No prospect selected</h2><p class="sub">Run discovery or import leads to begin.</p></div></div>
+      </section>
+
+      <section class="view" id="pipeline"><div class="top"><div><h1>Pipeline</h1><p class="sub">Drag prospects between stages. Changes are saved locally.</p></div></div><div class="pipeline" id="pipelineBoard"></div></section>
+      <section class="view" id="automation">
+        <div class="top"><div><h1>Campaigns & Approval Queue</h1><p class="sub">Create multi-step campaigns. Emails send only after approval and SMTP setup.</p></div><div class="actions"><button class="btn" id="syncBtn" type="button">Sync CRM</button><button class="btn" id="emailStatusBtn" type="button">Check Email</button><button class="btn" id="sendApprovedBtn" type="button">Send All Approved</button><button class="btn primary" id="generateQueueBtn" type="button">Enroll Qualified Leads</button></div></div>
+        <div class="panel"><div class="form-grid"><div><label for="campaignName">Campaign Name</label><input id="campaignName" value="Default Outbound Sequence"></div><div><label for="campaignFit">Minimum Fit Score</label><input id="campaignFit" type="number" value="68"></div><div><label for="campaignTrade">Trade Filter</label><select id="campaignTrade"><option value="">All trades</option></select></div><div><label>Safety</label><input value="Review before sending" disabled></div></div><p class="hint">Sequence: Day 1 email, Day 3 LinkedIn, Day 5 follow-up email, Day 7 phone reminder, Day 10 final email.</p></div>
+        <div class="panel" style="margin-top:12px;"><h2>Email Adapter</h2><div class="form-grid"><div><label for="testEmail">Test Recipient</label><input id="testEmail" placeholder="you@example.com"></div><div><label>Status</label><input id="emailStatus" value="Not checked" disabled></div><div><label>Provider</label><input id="emailProvider" value="-" disabled></div><div><label>Action</label><button class="btn primary" id="sendTestBtn" type="button">Send Test</button></div></div><p class="hint">SMTP credentials stay in PowerShell environment variables. The browser never stores your email password.</p></div>
+        <div class="panel" style="margin-top:12px;"><h2>Smart Sending</h2><div class="stats" id="sendingStats"></div><div class="form-grid"><div><label for="maxHour">Max Emails / Hour</label><input id="maxHour" type="number" value="20"></div><div><label for="maxDay">Max Emails / Day</label><input id="maxDay" type="number" value="100"></div><div><label for="minDelay">Min Delay Seconds</label><input id="minDelay" type="number" value="45"></div><div><label for="maxDelay">Max Delay Seconds</label><input id="maxDelay" type="number" value="180"></div></div><div class="actions"><button class="btn" id="saveSendingBtn" type="button">Save Limits</button><button class="btn" id="runDueBtn" type="button">Run Due Scheduled</button><button class="btn" id="followupBtn" type="button">Generate Follow-ups</button></div><p class="hint" id="sendProgress">Bulk sending progress appears here.</p></div>
+        <div class="panel" style="margin-top:12px;"><h2>Reply Tracking</h2><div class="form-grid"><div><label for="replyLead">Lead ID</label><input id="replyLead" placeholder="lead id"></div><div><label for="replyTask">Task ID</label><input id="replyTask" placeholder="optional task id"></div><div><label for="replyFrom">From</label><input id="replyFrom" placeholder="reply@example.com"></div><div><label>Action</label><button class="btn primary" id="recordReplyBtn" type="button">Record Reply</button></div></div><textarea id="replyBody" placeholder="Paste reply text here"></textarea></div>
+        <div class="queue" id="approvalQueue" style="margin-top:12px;"></div>
+      </section>
+      <section class="view" id="analytics"><div class="top"><div><h1>Dashboard Analytics</h1><p class="sub">Outbound performance and pipeline health.</p></div></div><div class="stats" id="analyticsStats"></div><div class="panel"><h2>Weekly Snapshot</h2><div class="table-wrap"><table id="analyticsTable"></table></div></div></section>
+      <section class="view" id="territory"><div class="top"><div><h1>Territory Intelligence</h1><p class="sub">A lightweight U.S. opportunity map using available prospect coordinates.</p></div></div><div class="map-grid"><div class="map" id="territoryMap"></div><div class="panel"><h2>Markets</h2><div id="marketTable" class="table-wrap"></div></div></div></section>
+      <section class="view" id="settings"><div class="top"><div><h1>Settings & Safety</h1><p class="sub">Automation is approval-first by default. Full automation is disabled unless explicitly enabled.</p></div></div><div class="panel"><div class="form-grid"><div><label for="teamMember">Assigned Team Member</label><input id="teamMember" value="Sales Team"></div><div><label for="senderName">Sender Name</label><input id="senderName" value="CallCatch"></div><div><label for="demoLink">Demo Link</label><input id="demoLink" value="https://callcatch.site"></div><div><label for="automationMode">Sending Mode</label><select id="automationMode"><option>Review before sending</option><option>Full automation disabled</option></select></div></div><button class="btn primary" id="saveSettingsBtn" type="button">Save Settings</button><p class="hint">Email, SMS, LinkedIn, calendar, Slack, CRM, and payment integrations are adapter-ready but not connected in this local build. No message is sent from this dashboard.</p></div><div class="panel" style="margin-top:14px;"><h2>Audit Log</h2><div class="table-wrap"><table id="auditTable"></table></div></div></section>
+    </main>
+  </div>
+  <div class="toast" id="toast">Saved</div>
+  <script>
+    const STAGES = ["New", "Researching", "Contacted", "Follow-up", "Demo Scheduled", "Trial Started", "Customer", "Lost"];
+    const TRADES = ["HVAC","Plumbing","Electrical","Roofing","Garage Doors","Landscaping","Pest Control","Cleaning","Painting","Locksmith","Appliance Repair","Tree Service","Flooring","Solar","Pool Services","Junk Removal"];
+    const defaults = { sender: "CallCatch", demo: "https://callcatch.site", team: "Sales Team", mode: "Review before sending" };
+    let settings = JSON.parse(localStorage.getItem("ccSettingsV2") || "null") || defaults;
+    let leads = JSON.parse(localStorage.getItem("ccProspectsV2") || "[]");
+    let queue = JSON.parse(localStorage.getItem("ccApprovalQueueV2") || "[]");
+    let auditLog = [];
+    let lastGrowthRun = null;
+    let selectedId = leads[0]?.id || "";
+    const $ = id => document.getElementById(id);
+
+    function save(){ localStorage.setItem("ccProspectsV2", JSON.stringify(leads)); localStorage.setItem("ccApprovalQueueV2", JSON.stringify(queue)); localStorage.setItem("ccSettingsV2", JSON.stringify(settings)); }
+    async function api(path, options = {}) {
+      const response = await fetch(`http://127.0.0.1:8787${path}`, {
+        ...options,
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) }
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Server request failed");
+      return payload;
+    }
+    async function syncCrm(silent = true) {
+      try {
+        await api("/api/crm/leads", { method: "POST", body: JSON.stringify({ leads }) });
+        await api("/api/approval-queue", { method: "POST", body: JSON.stringify({ items: [] }) });
+        const audit = await api("/api/audit-log");
+        auditLog = audit.auditLog || [];
+        if (!silent) toast("CRM synced");
+      } catch (error) {
+        if (!silent) toast("Server sync unavailable");
+      }
+    }
+    function toast(text){ const t=$("toast"); t.textContent=text; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),1500); }
+    function esc(v){ return String(v ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;"); }
+    function money(v){ return Number(v || 0).toLocaleString("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}); }
+    function id(){ return "p_" + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+    function now(){ return new Date().toISOString(); }
+    function switchView(view){ document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active",b.dataset.view===view)); document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===view)); render(); }
+    function selected(){ return leads.find(l=>l.id===selectedId) || leads[0]; }
+    function tagClass(score){ return score >= 78 ? "hot" : score >= 58 ? "warn" : "bad"; }
+    function stageCount(stage){ return leads.filter(l=>l.stage===stage).length; }
+    function addTimeline(lead, text){ lead.timeline = lead.timeline || []; lead.timeline.unshift({ at: now(), text }); }
+    function normalizeLead(raw){
+      const lead = { ...raw };
+      lead.id = lead.id || id();
+      lead.business = lead.business || "Unnamed Business";
+      lead.trade = lead.trade || $("trade")?.value || "Home Services";
+      lead.stage = lead.stage || "New";
+      lead.notes = lead.notes || "";
+      lead.tags = lead.tags || [];
+      lead.timeline = lead.timeline || [{ at: now(), text: "CRM record created" }];
+      lead.assignedTeamMember = lead.assignedTeamMember || settings.team;
+      lead.lastContact = lead.lastContact || "";
+      lead.nextFollowUp = lead.nextFollowUp || "";
+      lead.callCatchFitScore = Number(lead.callCatchFitScore || lead.aiLeadQualityScore || lead.confidenceScore || 50);
+      lead.revenueOpportunityEstimate = Number(lead.revenueOpportunityEstimate || 0);
+      lead.aiOpportunityLevel = lead.aiOpportunityLevel || (lead.callCatchFitScore >= 78 ? "High" : lead.callCatchFitScore >= 58 ? "Medium" : "Nurture");
+      lead.responsePriority = lead.responsePriority || (lead.callCatchFitScore >= 78 ? "Today" : "This Week");
+      lead.aiInsights = lead.aiInsights || [];
+      lead.recommendedSalesAngle = lead.recommendedSalesAngle || "Lead with missed-call revenue recovery.";
+      return lead;
+    }
+    function upsertLeads(batch){
+      let added = 0;
+      const keys = new Set(leads.map(l => `${(l.business||"").toLowerCase()}|${l.phone||""}|${l.website||""}`));
+      batch.map(normalizeLead).forEach(lead => {
+        const key = `${lead.business.toLowerCase()}|${lead.phone||""}|${lead.website||""}`;
+        if (keys.has(key)) return;
+        keys.add(key); leads.unshift(lead); added += 1;
+        if (lead.callCatchFitScore >= Number($("minFit")?.value || 68)) queueOutreach(lead, false);
+      });
+      if (!selectedId && leads[0]) selectedId = leads[0].id;
+      save(); syncCrm(true); render(); return added;
+    }
+    function filtered(){
+      const q = ($("search")?.value || "").toLowerCase();
+      return leads.filter(l => !q || [l.business,l.trade,l.city,l.state,l.phone,l.website,l.email,l.tags?.join(" ")].join(" ").toLowerCase().includes(q))
+        .filter(l => !$("tradeFilter")?.value || l.trade === $("tradeFilter").value)
+        .filter(l => !$("stageFilter")?.value || l.stage === $("stageFilter").value);
+    }
+    function outreach(lead){
+      const angle = lead.recommendedSalesAngle || "CallCatch helps recover missed callers before they call the next company.";
+      return {
+        email: `Subject: Missed calls at ${lead.business}\n\nHi,\n\n${angle}\n\nCallCatch texts missed callers instantly, so more prospects stay with your company instead of calling a competitor. Estimated monthly opportunity: ${money(lead.revenueOpportunityEstimate)}.\n\nWorth a quick walkthrough?\n\n${settings.sender}\n${settings.demo}`,
+        sms: `Hi, quick idea for ${lead.business}: CallCatch texts missed callers instantly so they do not call the next company. Worth a quick look?`,
+        linkedin: `Hi, I work with ${lead.trade} businesses on missed-call recovery. Thought ${lead.business} might be a fit.`,
+        call: `Opening: I help ${lead.trade} companies recover jobs from missed calls.\nDiscovery: When are calls missed most: jobsites, driving, after hours, weekends?\nAngle: ${angle}\nClose: Want to see what the missed caller receives in the first 30 seconds?`
+      };
+    }
+    function queueOutreach(lead, notify=true){
+      const assets = outreach(lead);
+      Object.entries(assets).forEach(([channel, body]) => queue.unshift({ id:id(), leadId:lead.id, business:lead.business, channel, body, to: channel === "email" ? (lead.email || "") : "", recipient: channel === "email" ? (lead.email || "") : "", status:"Needs Approval", createdAt:now() }));
+      addTimeline(lead, "Outreach drafts generated and queued for approval");
+      save(); syncCrm(true); if(notify) toast("Outreach queued for approval");
+    }
+    function statData(){
+      const newCount = leads.filter(l=>l.stage==="New").length;
+      const demos = leads.filter(l=>l.stage==="Demo Scheduled").length;
+      const customers = leads.filter(l=>l.stage==="Customer").length;
+      const pipeline = leads.reduce((s,l)=>s+Number(l.revenueOpportunityEstimate||0),0);
+      return [
+        ["Total Leads", leads.length], ["New Leads", newCount], ["Emails Queued", queue.filter(q=>q.channel==="email").length],
+        ["Follow-ups Due", leads.filter(l=>["Contacted","Follow-up"].includes(l.stage)).length], ["Customers Won", customers], ["Pipeline Value", money(pipeline)]
+      ];
+    }
+    function renderStats(){ $("stats").innerHTML = statData().map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join(""); $("analyticsStats").innerHTML = statData().map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join(""); }
+    function renderAssistant(){
+      const best = [...leads].sort((a,b)=>(b.callCatchFitScore||0)-(a.callCatchFitScore||0)).slice(0,5);
+      $("bestProspects").innerHTML = best.length ? best.map(leadRowHtml).join("") : `<p class="sub">No prospects yet. Run Discovery to build your list.</p>`;
+      $("assistantNotes").textContent = lastGrowthRun ? `Today's Opportunities\n\nNew Businesses: ${lastGrowthRun.newBusinesses}\nQualified: ${lastGrowthRun.qualified}\nEmails Ready: ${lastGrowthRun.emailsReady}\nLinkedIn Messages Ready: ${lastGrowthRun.linkedinReady}\nFollow-ups Due: ${lastGrowthRun.followUpsDue}\nReplies Yesterday: ${lastGrowthRun.repliesYesterday}\nDemo Requests: ${lastGrowthRun.demoRequests}\nRevenue Pipeline: ${money(lastGrowthRun.revenuePipeline)}\n\nSending status: ${lastGrowthRun.capabilities?.sendingStatus || "approval-first"}`
+        : leads.length ? `Focus today:\n\n1. Work ${best[0]?.business || "your highest-fit prospect"} first.\n2. Review ${queue.length} queued messages before sending anything.\n3. Move contacted leads to Follow-up with a next action date.\n4. Scan websites for high-fit prospects with weak online presence.` : "Click Start Daily Growth or run Discovery. The assistant will find, research, score, and queue outreach.";
+    }
+    function leadRowHtml(l){
+      return `<div class="lead-row ${l.id===selectedId?"active":""}" data-id="${l.id}"><div class="lead-top"><div class="lead-name">${esc(l.business)}</div><span class="tag ${tagClass(l.callCatchFitScore)}">${l.callCatchFitScore}</span></div><div class="meta"><span>${esc(l.trade)}</span><span>${esc([l.city,l.state].filter(Boolean).join(", ") || l.area || "")}</span><span>${esc(l.stage)}</span><span>${esc(l.responsePriority)}</span></div></div>`;
+    }
+    function renderList(){ $("leadList").innerHTML = filtered().map(leadRowHtml).join("") || `<p class="sub">No prospects found. Run Discovery or import a CSV.</p>`; document.querySelectorAll(".lead-row").forEach(row=>row.onclick=()=>{selectedId=row.dataset.id; render();}); }
+    function renderDetail(){
+      const l = selected();
+      if(!l){ $("leadDetail").innerHTML = `<h2>No prospects yet</h2><p class="sub">Go to Discovery, search a trade and market, then prospects will appear here.</p>`; return; }
+      $("leadDetail").innerHTML = `<div class="lead-top"><div><h2>${esc(l.business)}</h2><p class="sub">${esc(l.trade)} | ${esc(l.phone || "No phone")} | ${esc(l.email || "No email")} | ${esc(l.website || l.mapsUrl || "")}</p></div><span class="tag ${tagClass(l.callCatchFitScore)}">${esc(l.aiOpportunityLevel)}</span></div>
+      <div class="detail-grid"><div class="mini"><span>Fit Score</span><strong>${l.callCatchFitScore}</strong></div><div class="mini"><span>Revenue Opp.</span><strong>${money(l.revenueOpportunityEstimate)}</strong></div><div class="mini"><span>Website</span><strong>${l.websiteQualityScore||0}</strong></div><div class="mini"><span>Priority</span><strong>${esc(l.responsePriority)}</strong></div></div>
+      <div class="insights">${(l.aiInsights||[]).map(i=>`<span class="tag">${esc(i)}</span>`).join("") || `<span class="tag">No scan insights yet</span>`}</div>
+      <p class="sub">${esc(l.recommendedSalesAngle || "")}</p>
+      <div class="form-grid"><div><label>Stage</label><select id="detailStage">${STAGES.map(s=>`<option ${s===l.stage?"selected":""}>${s}</option>`).join("")}</select></div><div><label>Owner</label><input id="owner" value="${esc(l.owner||"")}"></div><div><label>Next Follow-up</label><input id="nextFollow" type="date" value="${esc(l.nextFollowUp||"")}"></div><div><label>Assigned</label><input id="assigned" value="${esc(l.assignedTeamMember||settings.team)}"></div></div>
+      <label>Notes</label><textarea id="notes">${esc(l.notes||"")}</textarea>
+      <div class="actions" style="margin-top:10px;"><button class="btn primary small" id="saveLeadBtn">Save Lead</button><button class="btn small" id="scanBtn">Scan Website</button><button class="btn small" id="queueBtn">Generate Outreach</button><button class="btn small" id="copyEmailBtn">Copy Email</button></div>
+      <h3 style="margin-top:14px;">Timeline</h3><div class="script">${(l.timeline||[]).map(t=>`${new Date(t.at).toLocaleString()} - ${t.text}`).join("\n")}</div>`;
+      $("detailStage").onchange=e=>{ l.stage=e.target.value; addTimeline(l,`Moved to ${l.stage}`); save(); render(); };
+      $("saveLeadBtn").onclick=()=>{ Object.assign(l,{owner:$("owner").value,nextFollowUp:$("nextFollow").value,assignedTeamMember:$("assigned").value,notes:$("notes").value}); addTimeline(l,"Lead profile updated"); save(); render(); toast("Lead saved"); };
+      $("scanBtn").onclick=()=>scanSelected(l);
+      $("queueBtn").onclick=()=>queueOutreach(l);
+      $("copyEmailBtn").onclick=()=>copy(outreach(l).email);
+    }
+    function renderPipeline(){
+      $("pipelineBoard").innerHTML = STAGES.map(stage=>`<div class="stage" data-stage="${stage}"><h3>${stage}<span>${stageCount(stage)}</span></h3>${leads.filter(l=>l.stage===stage).map(l=>`<div class="card" draggable="true" data-id="${l.id}"><strong>${esc(l.business)}</strong><div class="meta"><span>${l.callCatchFitScore} fit</span><span>${money(l.revenueOpportunityEstimate)}</span></div></div>`).join("")}</div>`).join("");
+      document.querySelectorAll(".card").forEach(c=>c.ondragstart=e=>e.dataTransfer.setData("text/plain",c.dataset.id));
+      document.querySelectorAll(".stage").forEach(s=>{ s.ondragover=e=>e.preventDefault(); s.ondrop=e=>{ const l=leads.find(x=>x.id===e.dataTransfer.getData("text/plain")); if(l){ l.stage=s.dataset.stage; addTimeline(l,`Moved to ${l.stage}`); save(); render(); } }; });
+    }
+    function renderQueue(){
+      queue.forEach(item => {
+        if (item.channel === "email" && !item.to && !item.recipient) {
+          const lead = leads.find(candidate => candidate.id === item.leadId);
+          if (lead && lead.email) {
+            item.to = lead.email;
+            item.recipient = lead.email;
+          }
+        }
+      });
+      $("approvalQueue").innerHTML = queue.length ? queue.map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.channel)}</strong><span class="tag warn">${esc(item.status)}</span></div><p class="hint">Task ID: ${esc(item.id)} | Lead ID: ${esc(item.leadId || "")}</p>${item.channel === "email" ? `<div style="margin-top:8px;"><label>Recipient Email</label><input data-to="${item.id}" value="${esc(item.to || item.recipient || "")}" placeholder="Auto-filled when a public email is found"></div>` : ""}<div class="script" style="margin-top:8px;">${esc(item.body)}</div><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-approve="${item.id}">Mark Approved</button>${item.channel==="email"?`<button class="btn small" data-sendnow="${item.id}">Send Now</button><button class="btn small" data-schedule="${item.id}" data-when="today 2 pm">Today 2 PM</button><button class="btn small" data-schedule="${item.id}" data-when="tomorrow 9 am">Tomorrow 9 AM</button><button class="btn small" data-schedule="${item.id}" data-when="next monday 8 am">Next Monday 8 AM</button>`:""}<button class="btn small" data-remove="${item.id}">Remove</button></div></div>`).join("") : `<p class="sub">No generated outreach waiting for approval.</p>`;
+      document.querySelectorAll("[data-to]").forEach(input=>input.oninput=()=>{ const q=queue.find(x=>x.id===input.dataset.to); if(q){ q.to=input.value; save(); } });
+      document.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(queue.find(q=>q.id===b.dataset.copy).body));
+      document.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>{ const q=queue.find(x=>x.id===b.dataset.approve); q.status="Approved - not sent"; save(); render(); });
+      document.querySelectorAll("[data-sendnow]").forEach(b=>b.onclick=()=>sendNow(b.dataset.sendnow));
+      document.querySelectorAll("[data-schedule]").forEach(b=>b.onclick=()=>scheduleSend(b.dataset.schedule, b.dataset.when));
+      document.querySelectorAll("[data-remove]").forEach(b=>b.onclick=()=>{ queue=queue.filter(q=>q.id!==b.dataset.remove); save(); render(); });
+    }
+    function renderAnalytics(){
+      $("analyticsTable").innerHTML = `<tr><th>Metric</th><th>Daily</th><th>Weekly</th><th>Monthly</th></tr>${[["Reply Rate","0%","0%","0%"],["Demo Rate","0%","0%","0%"],["Trial Rate","0%","0%","0%"],["Customer Conversion","0%","0%","0%"],["Revenue Won",money(leads.filter(l=>l.stage==="Customer").reduce((s,l)=>s+Number(l.revenueOpportunityEstimate||0),0)),"-","-"]].map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join("")}`;
+    }
+    function renderTerritory(){
+      const map=$("territoryMap"); map.innerHTML="";
+      leads.filter(l=>l.latitude&&l.longitude).forEach(l=>{ const pin=document.createElement("div"); pin.className="pin"; pin.title=l.business; pin.style.left=((Number(l.longitude)+125)/58*100)+"%"; pin.style.top=((50-Number(l.latitude))/25*100)+"%"; map.appendChild(pin); });
+      const markets = {};
+      leads.forEach(l=>{ const k=[l.city,l.state].filter(Boolean).join(", ") || "Unknown"; markets[k]=markets[k]||{count:0,value:0}; markets[k].count++; markets[k].value+=Number(l.revenueOpportunityEstimate||0); });
+      $("marketTable").innerHTML = `<table><tr><th>Market</th><th>Prospects</th><th>Opportunity</th></tr>${Object.entries(markets).map(([m,v])=>`<tr><td>${esc(m)}</td><td>${v.count}</td><td>${money(v.value)}</td></tr>`).join("")}</table>`;
+    }
+    function renderSettings(){ $("teamMember").value=settings.team; $("senderName").value=settings.sender; $("demoLink").value=settings.demo; $("automationMode").value=settings.mode; }
+    function renderSendingStats(){
+      const emailsWaiting = queue.filter(q=>q.channel==="email" && /^approved/i.test(q.status||"")).length;
+      const sentToday = queue.filter(q=>q.channel==="email" && q.status==="Sent" && (q.sentAt||"").slice(0,10)===new Date().toISOString().slice(0,10)).length;
+      const replies = leads.reduce((sum,l)=>sum+(l.replies||[]).length,0);
+      const meetings = leads.filter(l=>l.stage==="Demo Scheduled").length;
+      const followUps = queue.filter(q=>(q.title||"").toLowerCase().includes("follow") && q.status==="Needs Approval").length;
+      const pipeline = leads.reduce((sum,l)=>sum+Number(l.revenueOpportunityEstimate||0),0);
+      $("sendingStats").innerHTML = [["Emails Waiting",emailsWaiting],["Emails Sent Today",sentToday],["Open Rate","0%"],["Reply Rate",sentToday?Math.round(replies/sentToday*100)+"%":"0%"],["Meetings Booked",meetings],["Follow-ups Due",followUps],["Pipeline",money(pipeline)]].map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join("");
+    }
+    async function refreshSendingMetrics(){
+      try {
+        const m = await api("/api/sending/metrics");
+        $("sendingStats").innerHTML = [["Emails Waiting",m.emailsWaiting],["Emails Sent Today",m.emailsSentToday],["Open Rate",m.openRate+"%"],["Reply Rate",m.replyRate+"%"],["Meetings Booked",m.meetingsBooked],["Follow-ups Due",m.followUpsDue],["Pipeline",money(m.estimatedRevenuePipeline)]].map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join("");
+      } catch {}
+    }
+    function renderAudit(){
+      $("auditTable").innerHTML = auditLog.length ? `<tr><th>Time</th><th>Action</th><th>Details</th></tr>${auditLog.slice(0,40).map(row=>`<tr><td>${new Date(row.at).toLocaleString()}</td><td>${esc(row.action)}</td><td>${esc(JSON.stringify(row.details || {}))}</td></tr>`).join("")}` : `<tr><td>No server audit entries loaded yet.</td></tr>`;
+    }
+    function render(){
+      renderStats(); renderAssistant(); renderList(); renderDetail(); renderPipeline(); renderQueue(); renderAnalytics(); renderTerritory(); renderSettings(); renderAudit(); renderSendingStats();
+    }
+    async function search(){
+      if($("source").value!=="Free Public Sources"){ $("finderStatus").textContent="That provider is a future adapter slot."; return; }
+      $("finderStatus").textContent="Searching and scoring prospects...";
+      const area = [$("city").value, $("state").value].filter(Boolean).join(", ");
+      try {
+        const res = await fetch("http://127.0.0.1:8787/api/leads",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({trade:$("trade").value,area,state:$("state").value,zip:$("zip").value,radius:$("radius").value,count:$("count").value})});
+        const payload = await res.json(); if(!res.ok) throw new Error(payload.error || "Search failed");
+        const added = upsertLeads(payload.leads || []); $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} new CRM records.`; switchView("crm"); toast(`${added} prospects added`);
+      } catch(e){ $("finderStatus").textContent=e.message + ". Check http://127.0.0.1:8787/api/network-check to verify public data access."; toast("Search failed"); }
+    }
+    async function scanSelected(lead){
+      if(!lead.website){ toast("No website to scan"); return; }
+      toast("Scanning website...");
+      try {
+        const res = await fetch("http://127.0.0.1:8787/api/scan-website",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({website:lead.website,lead})});
+        const payload = await res.json(); if(!res.ok) throw new Error(payload.error || "Scan failed");
+        Object.assign(lead, normalizeLead(payload.lead || lead)); addTimeline(lead,"Website intelligence scan completed"); save(); render(); toast("Website scanned");
+      } catch(e){ toast("Website scan failed"); }
+    }
+    function importCsv(){
+      const lines=$("csvInput").value.split(/\n+/).map(l=>l.trim()).filter(Boolean);
+      const batch=lines.map(line=>{ const [business,trade,area,phone,website,rating,reviews]=line.split(",").map(x=>x?.trim()); return normalizeLead({business,trade,area,phone,website,rating:Number(rating)||0,reviews:Number(reviews)||0,source:"CSV Import"}); });
+      const added=upsertLeads(batch); $("csvInput").value=""; switchView("crm"); toast(`${added} imported`);
+    }
+    async function saveSearch(){
+      try {
+        const payload = { trade:$("trade").value, city:$("city").value, state:$("state").value, zip:$("zip").value, radius:$("radius").value, count:$("count").value };
+        await api("/api/saved-searches", { method:"POST", body: JSON.stringify(payload) });
+        const audit = await api("/api/audit-log"); auditLog = audit.auditLog || [];
+        renderAudit(); toast("Search saved");
+      } catch(error) {
+        toast("Start server to save searches");
+      }
+    }
+    async function enrollCampaign(){
+      const campaign = { name:$("campaignName").value, minFitScore:$("campaignFit").value, trade:$("campaignTrade").value };
+      try {
+        const result = await api("/api/campaigns/enroll", { method:"POST", body: JSON.stringify({ campaign, leads }) });
+        queue.unshift(...result.tasks);
+        save();
+        const audit = await api("/api/audit-log"); auditLog = audit.auditLog || [];
+        render(); toast(`${result.tasks.length} tasks queued`);
+      } catch(error) {
+        leads.filter(l=>l.callCatchFitScore>=Number(campaign.minFitScore||68)).filter(l=>!campaign.trade||l.trade===campaign.trade).forEach(l=>queueOutreach(l,false));
+        save(); render(); toast("Queued locally");
+      }
+    }
+    async function checkEmailStatus(){
+      try {
+        const status = await api("/api/email/status");
+        $("emailStatus").value = status.configured ? "Configured" : "Not configured";
+        $("emailProvider").value = status.host ? `${status.host}:${status.port}` : "-";
+        toast(status.configured ? "Email ready" : "Email not configured");
+      } catch {
+        $("emailStatus").value = "Server unavailable";
+        toast("Server unavailable");
+      }
+    }
+    async function sendTestEmail(){
+      try {
+        const result = await api("/api/email/send-test", { method:"POST", body: JSON.stringify({ to:$("testEmail").value }) });
+        toast(`Test sent to ${result.to}`);
+      } catch(error) {
+        toast(error.message);
+      }
+    }
+    async function sendApprovedEmails(){
+      try {
+        await syncCrm(true);
+        $("sendProgress").textContent = `Sending... 0 / ${queue.filter(q=>q.channel==="email" && /^approved/i.test(q.status||"")).length} Complete`;
+        const result = await api("/api/sending/send-all-approved", { method:"POST", body: JSON.stringify({}) });
+        const crm = await api("/api/crm");
+        leads = crm.leads || leads;
+        queue = crm.approvalQueue || queue;
+        auditLog = crm.auditLog || auditLog;
+        save();
+        render();
+        $("sendProgress").textContent = `Complete: ${result.complete} / ${result.total}. Sent: ${result.sent}. Failed: ${result.failed}. Emails remaining: ${result.remaining}.`;
+        toast(`${result.sent} sent, ${result.failed} failed`);
+      } catch(error) {
+        toast(error.message);
+      }
+    }
+    async function sendNow(taskId){
+      try {
+        await syncCrm(true);
+        const result = await api("/api/sending/send-now", { method:"POST", body: JSON.stringify({ taskId }) });
+        const crm = await api("/api/crm");
+        leads = crm.leads || leads;
+        queue = crm.approvalQueue || queue;
+        auditLog = crm.auditLog || auditLog;
+        save(); render();
+        toast(result.sent ? "Email sent" : (result.error || "Not sent"));
+      } catch(error) { toast(error.message); }
+    }
+    async function scheduleSend(taskId, when){
+      try {
+        await syncCrm(true);
+        const result = await api("/api/sending/schedule", { method:"POST", body: JSON.stringify({ taskId, when }) });
+        const crm = await api("/api/crm");
+        queue = crm.approvalQueue || queue; auditLog = crm.auditLog || auditLog; save(); render();
+        toast(`Scheduled ${new Date(result.job.runAt).toLocaleString()}`);
+      } catch(error) { toast(error.message); }
+    }
+    async function saveSendingLimits(){
+      try {
+        await api("/api/sending/settings", { method:"POST", body: JSON.stringify({ maxPerHour:$("maxHour").value, maxPerDay:$("maxDay").value, minDelaySeconds:$("minDelay").value, maxDelaySeconds:$("maxDelay").value }) });
+        toast("Sending limits saved");
+      } catch(error) { toast(error.message); }
+    }
+    async function runDueScheduled(){
+      try {
+        const result = await api("/api/sending/run-due", { method:"POST", body: JSON.stringify({}) });
+        const crm = await api("/api/crm");
+        leads = crm.leads || leads; queue = crm.approvalQueue || queue; auditLog = crm.auditLog || auditLog; save(); render();
+        toast(`${result.results.length} due jobs processed`);
+      } catch(error) { toast(error.message); }
+    }
+    async function generateFollowups(){
+      try {
+        const result = await api("/api/sending/generate-followups", { method:"POST", body: JSON.stringify({ days:3, autoPilot:$("growthMode").value==="Auto Pilot" }) });
+        const crm = await api("/api/crm");
+        queue = crm.approvalQueue || queue; leads = crm.leads || leads; auditLog = crm.auditLog || auditLog; save(); render();
+        toast(`${result.generated.length} follow-ups generated`);
+      } catch(error) { toast(error.message); }
+    }
+    async function recordReply(){
+      try {
+        const result = await api("/api/replies/record", { method:"POST", body: JSON.stringify({ leadId:$("replyLead").value, taskId:$("replyTask").value, from:$("replyFrom").value, body:$("replyBody").value }) });
+        const crm = await api("/api/crm");
+        leads = crm.leads || leads; queue = crm.approvalQueue || queue; auditLog = crm.auditLog || auditLog; save(); render();
+        toast(result.meetingIntent ? "Meeting intent detected" : "Reply recorded");
+      } catch(error) { toast(error.message); }
+    }
+    function growthConfig(){
+      return {
+        enabled: true,
+        runTime: $("growthTime").value || "08:00",
+        automationLevel: $("growthMode").value,
+        states: $("growthStates").value.split(",").map(x=>x.trim()).filter(Boolean),
+        trades: $("growthTrades").value.split(",").map(x=>x.trim()).filter(Boolean),
+        scoreThreshold: Number($("growthScore").value) || 75,
+        countPerSearch: Number($("growthCount").value) || 8,
+        maxSearchesPerRun: Number($("growthMax").value) || 8,
+        sendEnabled: $("growthMode").value === "Auto Pilot" && $("growthSending").value.includes("integration")
+      };
+    }
+    async function startDailyGrowth(){
+      $("growthStatus").textContent = "Daily Growth is running: finding, researching, scoring, and queuing outreach...";
+      try {
+        const result = await api("/api/daily-growth/start", { method:"POST", body: JSON.stringify(growthConfig()) });
+        lastGrowthRun = result;
+        const crm = await api("/api/crm");
+        leads = crm.leads || leads;
+        queue = crm.approvalQueue || queue;
+        auditLog = crm.auditLog || auditLog;
+        save();
+        $("growthStatus").textContent = `Daily Growth complete. ${result.newBusinesses} new businesses, ${result.qualified} qualified, ${result.emailsReady} emails ready.`;
+        render();
+        toast("Daily Growth complete");
+      } catch(error) {
+        $("growthStatus").textContent = `${error.message}. Make sure the local server is running and internet access is available.`;
+        toast("Daily Growth failed");
+      }
+    }
+    function rows(){ return [["business","trade","owner","phone","website","email","address","city","state","source","stage","fit_score","revenue_opportunity","website_quality","digital_presence","priority","assigned","last_contact","next_followup","tags","notes"]].concat(leads.map(l=>[l.business,l.trade,l.owner,l.phone,l.website,l.email,l.address,l.city,l.state,l.source,l.stage,l.callCatchFitScore,l.revenueOpportunityEstimate,l.websiteQualityScore,l.digitalPresenceScore,l.responsePriority,l.assignedTeamMember,l.lastContact,l.nextFollowUp,(l.tags||[]).join("|"),l.notes])); }
+    function csv(){ return rows().map(r=>r.map(c=>`"${String(c??"").replaceAll('"','""')}"`).join(",")).join("\n"); }
+    function download(name, content, type){ const blob=new Blob([content],{type}); const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download=name; a.click(); URL.revokeObjectURL(url); }
+    function copy(text){ navigator.clipboard.writeText(text).then(()=>toast("Copied")).catch(()=>toast("Copy failed")); }
+    function pdfReport(){ const w=window.open("","_blank"); w.document.write(`<h1>CallCatch Prospect Report</h1><pre>${esc(csv())}</pre>`); w.document.close(); w.print(); }
+    function init(){
+      TRADES.forEach(t=>{ $("trade").append(new Option(t,t)); $("tradeFilter").append(new Option(t,t)); $("campaignTrade").append(new Option(t,t)); });
+      STAGES.forEach(s=>$("stageFilter").append(new Option(s,s)));
+      document.querySelectorAll(".nav-btn").forEach(b=>b.onclick=()=>switchView(b.dataset.view));
+      $("searchBtn").onclick=search; $("saveSearchBtn").onclick=saveSearch; $("importBtn").onclick=importCsv; $("generateQueueBtn").onclick=enrollCampaign; $("syncBtn").onclick=()=>syncCrm(false).then(render); $("startGrowthBtn").onclick=startDailyGrowth; $("emailStatusBtn").onclick=checkEmailStatus; $("sendTestBtn").onclick=sendTestEmail; $("sendApprovedBtn").onclick=sendApprovedEmails; $("saveSendingBtn").onclick=saveSendingLimits; $("runDueBtn").onclick=runDueScheduled; $("followupBtn").onclick=generateFollowups; $("recordReplyBtn").onclick=recordReply;
+      $("exportCsvBtn").onclick=()=>download("callcatch-prospects.csv",csv(),"text/csv"); $("exportExcelBtn").onclick=()=>download("callcatch-prospects.xls",`<table>${rows().map(r=>`<tr>${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</table>`,"application/vnd.ms-excel"); $("exportJsonBtn").onclick=()=>download("callcatch-prospects.json",JSON.stringify(leads,null,2),"application/json"); $("copySelectedBtn").onclick=()=>copy(JSON.stringify(selected()||{},null,2)); $("pdfBtn").onclick=pdfReport;
+      $("refreshAssistantBtn").onclick=()=>{ renderAssistant(); toast("Assistant refreshed"); }; $("themeBtn").onclick=()=>{ const dark=document.body.dataset.theme==="dark"; document.body.dataset.theme=dark?"":"dark"; $("themeBtn").textContent=dark?"Dark Mode":"Light Mode"; };
+      $("saveSettingsBtn").onclick=()=>{ settings={team:$("teamMember").value,sender:$("senderName").value,demo:$("demoLink").value,mode:$("automationMode").value}; save(); toast("Settings saved"); };
+      ["search","tradeFilter","stageFilter"].forEach(id=>$(id).oninput=render);
+      syncCrm(true).then(()=>{ render(); refreshSendingMetrics(); }).catch(()=>render());
+    }
+    init();
+  </script>
+</body>
+</html>
