@@ -644,6 +644,7 @@
         $("sendProgress").textContent = `Complete: ${result.complete} / ${result.total}. Sent: ${result.sent}. Failed: ${result.failed}. Emails remaining: ${result.remaining}.`;
         toast(`${result.sent} sent, ${result.failed} failed`);
       } catch(error) {
+        $("sendProgress").textContent = `Bulk send failed: ${error.message}`;
         toast(error.message);
       }
     }
@@ -651,6 +652,7 @@
       try {
         const blocked = sendBlockReason(taskId);
         if (blocked) { $("sendProgress").textContent = blocked; toast(blocked); return; }
+        $("sendProgress").textContent = "Sending one approved email...";
         await syncCrm(true);
         const result = await api("/api/sending/send-now", { method:"POST", body: JSON.stringify({ taskId }) });
         const crm = await api("/api/crm");
@@ -658,8 +660,9 @@
         queue = crm.approvalQueue || queue;
         auditLog = crm.auditLog || auditLog;
         save(); render();
+        $("sendProgress").textContent = result.sent ? "Email sent successfully." : (result.error || "Email was not sent.");
         toast(result.sent ? "Email sent" : (result.error || "Not sent"));
-      } catch(error) { toast(error.message); }
+      } catch(error) { $("sendProgress").textContent = `Send failed: ${error.message}`; toast(error.message); }
     }
     async function scheduleSend(taskId, when){
       try {
