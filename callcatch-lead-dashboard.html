@@ -426,7 +426,7 @@
       </section>
 
       <section class="view" id="sendcenter">
-        <div class="top"><div><h1>Unified Send Center</h1><p class="sub">Everything ready, missing, failed, and sent in one place.</p></div><div class="actions"><button class="btn" id="refreshSetupBtn" type="button">Refresh Checks</button><button class="btn" id="sendCenterSyncBtn" type="button">Sync CRM</button><button class="btn primary" id="sendCenterSendAllBtn" type="button">Send All Ready</button></div></div>
+        <div class="top"><div><h1>Unified Send Center</h1><p class="sub">Everything ready, missing, failed, and sent in one place.</p></div><div class="actions"><button class="btn" id="refreshSetupBtn" type="button">Refresh Checks</button><button class="btn" id="sendCenterSyncBtn" type="button">Sync All</button><button class="btn primary" id="sendCenterSendAllBtn" type="button">Send All Ready</button></div></div>
         <div class="stats" id="sendCenterStats"></div>
         <div class="send-center-grid">
           <div class="panel">
@@ -476,7 +476,7 @@
 
       <section class="view" id="pipeline"><div class="top"><div><h1>Pipeline</h1><p class="sub">Drag prospects between stages. Changes are saved locally.</p></div></div><div class="pipeline" id="pipelineBoard"></div></section>
       <section class="view" id="automation">
-        <div class="top"><div><h1>Campaigns & Approval Queue</h1><p class="sub">Create multi-step campaigns. Emails send only after approval and SMTP setup.</p></div><div class="actions"><button class="btn" id="syncBtn" type="button">Sync CRM</button><button class="btn" id="emailStatusBtn" type="button">Check Email</button><button class="btn" id="sendApprovedBtn" type="button">Send All Approved</button><button class="btn primary" id="generateQueueBtn" type="button">Enroll Qualified Leads</button></div></div>
+        <div class="top"><div><h1>Campaigns & Approval Queue</h1><p class="sub">Create multi-step campaigns. Emails send only after approval and SMTP setup.</p></div><div class="actions"><button class="btn" id="syncBtn" type="button">Sync All</button><button class="btn" id="emailStatusBtn" type="button">Check Email</button><button class="btn" id="sendApprovedBtn" type="button">Send All Approved</button><button class="btn primary" id="generateQueueBtn" type="button">Enroll Qualified Leads</button></div></div>
         <div class="panel"><div class="form-grid"><div><label for="campaignName">Campaign Name</label><input id="campaignName" value="Default Outbound Sequence"></div><div><label for="campaignFit">Minimum Fit Score</label><input id="campaignFit" type="number" value="68"></div><div><label for="campaignTrade">Trade Filter</label><select id="campaignTrade"><option value="">All trades</option></select></div><div><label>Safety</label><input value="Review before sending" disabled></div></div><p class="hint">Sequence: Day 1 email, Day 3 LinkedIn, Day 5 follow-up email, Day 7 phone reminder, Day 10 final email.</p></div>
         <div class="panel" style="margin-top:12px;"><h2>Email Adapter</h2><div class="form-grid"><div><label for="testEmail">Test Recipient</label><input id="testEmail" placeholder="you@example.com"></div><div><label>Status</label><input id="emailStatus" value="Not checked" disabled></div><div><label>Provider</label><input id="emailProvider" value="-" disabled></div><div><label>Action</label><button class="btn primary" id="sendTestBtn" type="button">Send Email Test</button></div></div><p class="hint">Email API keys and SMTP credentials stay in Render environment variables. The browser never stores your sending secrets.</p></div>
         <div class="panel mobile-non-email" style="margin-top:12px;"><h2>SMS Adapter</h2><div class="form-grid"><div><label for="testSms">Test Phone</label><input id="testSms" placeholder="+15551234567"></div><div><label>Status</label><input id="smsStatus" value="Not checked" disabled></div><div><label>Provider</label><input id="smsProvider" value="-" disabled></div><div><label>Action</label><button class="btn primary" id="sendSmsTestBtn" type="button">Send SMS Test</button></div></div><p class="hint">Twilio credentials stay in Render. Use E.164 phone format, for example +12145550123.</p></div>
@@ -565,10 +565,7 @@
         const savedQueue = await api("/api/approval-queue", { method: "POST", body: JSON.stringify({ items: queue }) });
         queue = compactEmailDuplicates(savedQueue.items || queue);
         const crm = await api("/api/crm");
-        leads = (crm.leads || leads).filter(isEmailReachableLead);
-        auditLog = crm.auditLog || [];
-        serverSynced = true;
-        save();
+        applyServerState(crm);
         if (!silent) toast("CRM synced");
         return true;
       } catch (error) {
@@ -580,16 +577,26 @@
     async function loadServerCrm() {
       try {
         const crm = await api("/api/crm");
-        if (Array.isArray(crm.leads)) leads = mergeById(leads, crm.leads).filter(isEmailReachableLead);
-        if (Array.isArray(crm.approvalQueue)) queue = compactEmailDuplicates(mergeById(queue, crm.approvalQueue));
-        auditLog = crm.auditLog || auditLog;
-        serverSynced = true;
-        if (!selectedId && leads[0]) selectedId = leads[0].id;
-        save();
+        applyServerState(crm, true);
         await syncCrm(true);
       } catch {
         serverSynced = false;
       }
+    }
+    function applyServerState(crm = {}, mergeLocal = false){
+      if (Array.isArray(crm.leads)) leads = (mergeLocal ? mergeById(leads, crm.leads) : crm.leads).filter(isEmailReachableLead);
+      if (Array.isArray(crm.approvalQueue)) queue = compactEmailDuplicates(mergeLocal ? mergeById(queue, crm.approvalQueue) : crm.approvalQueue);
+      auditLog = crm.auditLog || auditLog;
+      serverSynced = true;
+      if (!selectedId && leads[0]) selectedId = leads[0].id;
+      save();
+    }
+    async function syncEverywhere(silent = false){
+      const ok = await syncCrm(true);
+      await Promise.allSettled([checkEmailStatus(true), checkSmsStatus(true), refreshSendingMetrics()]);
+      render();
+      if (!silent) toast(ok ? "Synced everywhere" : "Sync unavailable");
+      return ok;
     }
     function mergeById(localItems, serverItems) {
       const merged = new Map();
@@ -602,7 +609,14 @@
     function money(v){ return Number(v || 0).toLocaleString("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}); }
     function id(){ return "p_" + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
     function now(){ return new Date().toISOString(); }
-    function switchView(view){ document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active",b.dataset.view===view)); document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===view)); render(); }
+    let lastAutoSyncAt = 0;
+    function maybeAutoSync(){
+      const elapsed = Date.now() - lastAutoSyncAt;
+      if (elapsed < 45000) return;
+      lastAutoSyncAt = Date.now();
+      syncEverywhere(true);
+    }
+    function switchView(view){ document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active",b.dataset.view===view)); document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===view)); render(); maybeAutoSync(); }
     function selected(){ return leads.find(l=>l.id===selectedId) || leads[0]; }
     function tagClass(score){ return score >= 78 ? "hot" : score >= 58 ? "warn" : "bad"; }
     function stageCount(stage){ return leads.filter(l=>l.stage===stage).length; }
@@ -1117,8 +1131,8 @@
       <div class="actions" style="margin-top:10px;"><button class="btn primary small" id="saveLeadBtn">Save Lead</button><button class="btn small" id="scanBtn">Scan Website</button><button class="btn small" id="queueBtn">Generate Outreach</button><button class="btn small" id="copyEmailBtn">Copy Email</button></div>
       <h3 style="margin-top:14px;">Sent Emails</h3><div class="queue">${sentEmails.length ? sentEmails.slice(0,5).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.subject || item.title || "Sent email")}</strong><span class="tag hot">Sent</span></div><p class="hint">${esc(item.to || "")} | ${item.sentAt ? new Date(item.sentAt).toLocaleString() : ""}</p><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy-sent="${esc(item.taskId || item.id || "")}">Copy Email</button></div></div>`).join("") : `<p class="sub">No sent emails yet.</p>`}</div>
       <h3 style="margin-top:14px;">Timeline</h3><div class="script">${(l.timeline||[]).map(t=>`${new Date(t.at).toLocaleString()} - ${t.text}`).join("\n")}</div>`;
-      $("detailStage").onchange=e=>{ l.stage=e.target.value; addTimeline(l,`Moved to ${l.stage}`); save(); render(); };
-      $("saveLeadBtn").onclick=()=>{ Object.assign(l,{owner:$("owner").value,nextFollowUp:$("nextFollow").value,assignedTeamMember:$("assigned").value,notes:$("notes").value}); addTimeline(l,"Lead profile updated"); save(); render(); toast("Lead saved"); };
+      $("detailStage").onchange=e=>{ l.stage=e.target.value; addTimeline(l,`Moved to ${l.stage}`); save(); render(); syncCrm(true).then(render); };
+      $("saveLeadBtn").onclick=()=>{ Object.assign(l,{owner:$("owner").value,nextFollowUp:$("nextFollow").value,assignedTeamMember:$("assigned").value,notes:$("notes").value}); addTimeline(l,"Lead profile updated"); save(); render(); syncEverywhere(true); toast("Lead saved and synced"); };
       $("scanBtn").onclick=()=>scanSelected(l);
       $("queueBtn").onclick=()=>queueOutreach(l);
       $("copyEmailBtn").onclick=()=>copy(outreach(l).emailA);
@@ -1127,7 +1141,7 @@
     function renderPipeline(){
       $("pipelineBoard").innerHTML = STAGES.map(stage=>`<div class="stage" data-stage="${stage}"><h3>${stage}<span>${stageCount(stage)}</span></h3>${leads.filter(l=>l.stage===stage).map(l=>{ const emailStatus=leadEmailStatus(l); return `<div class="card" draggable="true" data-id="${l.id}"><strong>${esc(l.business)}</strong><div class="meta"><span>${l.callCatchFitScore} fit</span><span>${money(l.revenueOpportunityEstimate)}</span><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}</span></div></div>`; }).join("")}</div>`).join("");
       document.querySelectorAll(".card").forEach(c=>c.ondragstart=e=>e.dataTransfer.setData("text/plain",c.dataset.id));
-      document.querySelectorAll(".stage").forEach(s=>{ s.ondragover=e=>e.preventDefault(); s.ondrop=e=>{ const l=leads.find(x=>x.id===e.dataTransfer.getData("text/plain")); if(l){ l.stage=s.dataset.stage; addTimeline(l,`Moved to ${l.stage}`); save(); render(); } }; });
+      document.querySelectorAll(".stage").forEach(s=>{ s.ondragover=e=>e.preventDefault(); s.ondrop=e=>{ const l=leads.find(x=>x.id===e.dataTransfer.getData("text/plain")); if(l){ l.stage=s.dataset.stage; addTimeline(l,`Moved to ${l.stage}`); save(); render(); syncCrm(true).then(render); } }; });
     }
     function renderQueue(){
       queue.forEach(item => {
@@ -1154,7 +1168,7 @@
       document.querySelectorAll("[data-sendnow]").forEach(b=>b.onclick=()=>sendNow(b.dataset.sendnow));
       document.querySelectorAll("[data-schedule]").forEach(b=>b.onclick=()=>scheduleSend(b.dataset.schedule, b.dataset.when));
       document.querySelectorAll("[data-open-lead]").forEach(b=>b.onclick=()=>{ if(b.dataset.openLead){ selectedId=b.dataset.openLead; switchView("crm"); } });
-      document.querySelectorAll("[data-remove]").forEach(b=>b.onclick=()=>{ queue=queue.filter(q=>q.id!==b.dataset.remove); save(); render(); });
+      document.querySelectorAll("[data-remove]").forEach(b=>b.onclick=()=>{ queue=queue.filter(q=>q.id!==b.dataset.remove); save(); render(); syncCrm(true).then(render); });
     }
     async function approveAndSend(taskId){
       const task = queue.find(q=>q.id===taskId);
@@ -1324,10 +1338,9 @@
             if (index >= 0) leads[index] = { ...leads[index], ...enriched };
           });
         }
-        queue.unshift(...result.tasks);
-        save();
-        const audit = await api("/api/audit-log"); auditLog = audit.auditLog || [];
-        render(); toast(`${result.tasks.length} tasks queued`);
+        const crm = await api("/api/crm");
+        applyServerState(crm);
+        render(); toast(`${result.tasks.length} tasks queued and synced`);
       } catch(error) {
         leads.filter(l=>l.callCatchFitScore>=Number(campaign.minFitScore||68)).filter(l=>!campaign.trade||l.trade===campaign.trade).forEach(l=>queueOutreach(l,false));
         save(); render(); toast("Queued locally");
@@ -1396,10 +1409,7 @@
         $("sendProgress").textContent = `Sending... 0 / ${approved.length} Complete`;
         const result = await api("/api/sending/send-all-approved", { method:"POST", body: JSON.stringify({ taskIds: approved.map(item=>item.id) }) });
         const crm = await api("/api/crm");
-        leads = (crm.leads || leads).filter(isEmailReachableLead);
-        queue = compactEmailDuplicates(crm.approvalQueue || queue);
-        auditLog = crm.auditLog || auditLog;
-        save();
+        applyServerState(crm);
         render();
         $("sendProgress").textContent = `Complete: ${result.complete} / ${result.total}. Sent: ${result.sent}. Failed: ${result.failed}. Messages remaining: ${result.remaining}.`;
         toast(`${result.sent} sent, ${result.failed} failed`);
@@ -1430,10 +1440,7 @@
         $("sendProgress").textContent = `Sending ${localTask?.channel === "sms" ? "SMS" : "email"} through Render...`;
         const result = await api("/api/sending/send-now", { method:"POST", body: JSON.stringify({ taskId }) });
         const crm = await api("/api/crm");
-        leads = (crm.leads || leads).filter(isEmailReachableLead);
-        queue = compactEmailDuplicates(crm.approvalQueue || queue);
-        auditLog = crm.auditLog || auditLog;
-        save(); render();
+        applyServerState(crm); render();
         $("sendProgress").textContent = result.sent ? `${result.task?.channel === "sms" ? "SMS" : "Email"} sent successfully.` : (result.error || "Message was not sent.");
         toast(result.sent ? "Message sent" : (result.error || "Not sent"));
         return !!result.sent;
@@ -1463,7 +1470,7 @@
         if (blocked) { $("sendProgress").textContent = blocked; toast(blocked); return; }
         const result = await api("/api/sending/schedule", { method:"POST", body: JSON.stringify({ taskId, when }) });
         const crm = await api("/api/crm");
-        queue = compactEmailDuplicates(crm.approvalQueue || queue); auditLog = crm.auditLog || auditLog; save(); render();
+        applyServerState(crm); render();
         toast(`Scheduled ${new Date(result.job.runAt).toLocaleString()}`);
       } catch(error) { toast(error.message); }
     }
@@ -1477,7 +1484,7 @@
       try {
         const result = await api("/api/sending/run-due", { method:"POST", body: JSON.stringify({}) });
         const crm = await api("/api/crm");
-        leads = (crm.leads || leads).filter(isEmailReachableLead); queue = compactEmailDuplicates(crm.approvalQueue || queue); auditLog = crm.auditLog || auditLog; save(); render();
+        applyServerState(crm); render();
         toast(`${result.results.length} due jobs processed`);
       } catch(error) { toast(error.message); }
     }
@@ -1485,7 +1492,7 @@
       try {
         const result = await api("/api/sending/run-sequence", { method:"POST", body: JSON.stringify({ autoPilot:$("growthMode").value==="Auto Pilot" }) });
         const crm = await api("/api/crm");
-        queue = compactEmailDuplicates(crm.approvalQueue || queue); leads = (crm.leads || leads).filter(isEmailReachableLead); auditLog = crm.auditLog || auditLog; save(); render();
+        applyServerState(crm); render();
         const sent = (result.sent || []).filter(item=>item.sent).length;
         toast(`${result.generated.length} follow-ups generated, ${sent} sent`);
       } catch(error) { toast(error.message); }
@@ -1494,7 +1501,7 @@
       try {
         const result = await api("/api/replies/record", { method:"POST", body: JSON.stringify({ leadId:$("replyLead").value, taskId:$("replyTask").value, from:$("replyFrom").value, body:$("replyBody").value }) });
         const crm = await api("/api/crm");
-        leads = (crm.leads || leads).filter(isEmailReachableLead); queue = compactEmailDuplicates(crm.approvalQueue || queue); auditLog = crm.auditLog || auditLog; save(); render();
+        applyServerState(crm); render();
         $("replyBody").value = "";
         toast(result.meetingIntent ? "Meeting intent detected" : "Reply recorded");
       } catch(error) { toast(error.message); }
@@ -1503,7 +1510,7 @@
       try {
         await api("/api/replies/resolve", { method:"POST", body: JSON.stringify({ leadId, replyId }) });
         const crm = await api("/api/crm");
-        leads = (crm.leads || leads).filter(isEmailReachableLead); queue = compactEmailDuplicates(crm.approvalQueue || queue); auditLog = crm.auditLog || auditLog; save(); render();
+        applyServerState(crm); render();
         toast("Reply handled");
       } catch(error) { toast(error.message); }
     }
@@ -1526,10 +1533,7 @@
         const result = await api("/api/daily-growth/start", { method:"POST", body: JSON.stringify(growthConfig()) });
         lastGrowthRun = result;
         const crm = await api("/api/crm");
-        leads = (crm.leads || leads).filter(isEmailReachableLead);
-        queue = compactEmailDuplicates(crm.approvalQueue || queue);
-        auditLog = crm.auditLog || auditLog;
-        save();
+        applyServerState(crm);
         $("growthStatus").textContent = `Daily Growth complete. ${result.newBusinesses} new businesses, ${result.qualified} qualified, ${result.emailsReady} emails ready.`;
         render();
         toast("Daily Growth complete");
@@ -1550,9 +1554,9 @@
         ? `File preview mode: API calls will use ${PRODUCTION_API_BASE}. For best results, open the Render app directly.`
         : "API connected through this app. Search results become CRM records automatically.";
       document.querySelectorAll(".nav-btn").forEach(b=>b.onclick=()=>switchView(b.dataset.view));
-      $("searchBtn").onclick=search; $("saveSearchBtn").onclick=saveSearch; $("importBtn").onclick=importCsv; $("generateQueueBtn").onclick=enrollCampaign; $("syncBtn").onclick=()=>syncCrm(false).then(render); $("startGrowthBtn").onclick=startDailyGrowth; $("emailStatusBtn").onclick=()=>checkEmailStatus(false); $("sendTestBtn").onclick=sendTestEmail; $("sendSmsTestBtn").onclick=sendTestSms; $("sendApprovedBtn").onclick=sendApprovedEmails; $("saveSendingBtn").onclick=saveSendingLimits; $("runDueBtn").onclick=runDueScheduled; $("followupBtn").onclick=generateFollowups; $("recordReplyBtn").onclick=recordReply;
+      $("searchBtn").onclick=search; $("saveSearchBtn").onclick=saveSearch; $("importBtn").onclick=importCsv; $("generateQueueBtn").onclick=enrollCampaign; $("syncBtn").onclick=()=>syncEverywhere(false); $("startGrowthBtn").onclick=startDailyGrowth; $("emailStatusBtn").onclick=()=>checkEmailStatus(false); $("sendTestBtn").onclick=sendTestEmail; $("sendSmsTestBtn").onclick=sendTestSms; $("sendApprovedBtn").onclick=sendApprovedEmails; $("saveSendingBtn").onclick=saveSendingLimits; $("runDueBtn").onclick=runDueScheduled; $("followupBtn").onclick=generateFollowups; $("recordReplyBtn").onclick=recordReply;
       $("refreshSetupBtn").onclick=()=>runSetupChecks(false);
-      $("sendCenterSyncBtn").onclick=()=>syncCrm(false).then(()=>runSetupChecks(true)).then(render);
+      $("sendCenterSyncBtn").onclick=()=>syncEverywhere(false);
       $("sendCenterSendAllBtn").onclick=sendApprovedEmails;
       document.querySelectorAll("[data-send-filter]").forEach(button=>button.onclick=()=>{ sendCenterFilter=button.dataset.sendFilter; renderSendCenter(); });
       $("composerClose").onclick=closeComposer;
@@ -1561,9 +1565,11 @@
       $("composerSend").onclick=sendComposer;
       $("composerCopy").onclick=copyComposer;
       $("exportCsvBtn").onclick=()=>download("callcatch-prospects.csv",csv(),"text/csv"); $("exportExcelBtn").onclick=()=>download("callcatch-prospects.xls",`<table>${rows().map(r=>`<tr>${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</table>`,"application/vnd.ms-excel"); $("exportJsonBtn").onclick=()=>download("callcatch-prospects.json",JSON.stringify(leads,null,2),"application/json"); $("copySelectedBtn").onclick=()=>copy(JSON.stringify(selected()||{},null,2)); $("pdfBtn").onclick=pdfReport;
-      $("refreshAssistantBtn").onclick=()=>{ renderAssistant(); toast("Assistant refreshed"); }; $("themeBtn").onclick=()=>{ const dark=document.body.dataset.theme==="dark"; document.body.dataset.theme=dark?"":"dark"; $("themeBtn").textContent=dark?"Dark Mode":"Light Mode"; };
+      $("refreshAssistantBtn").onclick=()=>syncEverywhere(false); $("themeBtn").onclick=()=>{ const dark=document.body.dataset.theme==="dark"; document.body.dataset.theme=dark?"":"dark"; $("themeBtn").textContent=dark?"Dark Mode":"Light Mode"; };
       $("saveSettingsBtn").onclick=()=>{ settings={team:$("teamMember").value,sender:$("senderName").value,demo:$("demoLink").value,mode:$("automationMode").value}; save(); toast("Settings saved"); };
       ["search","tradeFilter","stageFilter"].forEach(id=>$(id).oninput=render);
+      document.addEventListener("visibilitychange", ()=>{ if (!document.hidden) syncEverywhere(true); });
+      window.addEventListener("focus", ()=>syncEverywhere(true));
       loadServerCrm().then(()=>Promise.all([checkEmailStatus(true), checkSmsStatus(true)])).then(()=>runSetupChecks(true)).then(()=>{ render(); refreshSendingMetrics(); }).catch(()=>render());
     }
     init();
