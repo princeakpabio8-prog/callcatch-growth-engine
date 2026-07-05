@@ -513,6 +513,22 @@
       <button class="btn" id="composerCopy" type="button">Copy</button>
     </div>
   </div>
+  <div class="composer" id="pipelineDetail" aria-hidden="true">
+    <div class="composer-head">
+      <div>
+        <h2 id="pipelineDetailTitle">Pipeline Detail</h2>
+        <p class="hint" id="pipelineDetailMeta">Contacted prospect summary</p>
+      </div>
+      <button class="btn small" id="pipelineDetailClose" type="button">Close</button>
+    </div>
+    <div class="composer-body" id="pipelineDetailBody"></div>
+    <div class="composer-foot">
+      <button class="btn" id="pipelineDetailCrm" type="button">Open Full CRM</button>
+      <button class="btn" id="pipelineDetailFollowup" type="button">Follow Up</button>
+      <button class="btn primary" id="pipelineDetailDemo" type="button">Demo</button>
+      <button class="btn" id="pipelineDetailLost" type="button">Lost</button>
+    </div>
+  </div>
   <div class="toast" id="toast">Saved</div>
   <script>
     const STAGES = ["New", "Researching", "Contacted", "Follow-up", "Demo Scheduled", "Trial Started", "Customer", "Lost"];
@@ -528,6 +544,7 @@
     let serverSynced = false;
     let sendCenterFilter = "ready";
     let composerTaskId = "";
+    let pipelineDetailId = "";
     let pipelineMemory = null;
     let lastImportStats = { added: 0, skippedNoEmail: 0, duplicates: 0 };
     let setupState = {
@@ -1237,6 +1254,80 @@
       $("composer").classList.remove("open");
       $("composer").setAttribute("aria-hidden", "true");
     }
+    function openPipelineDetail(leadId){
+      const lead = leads.find(item => item.id === leadId);
+      if (!lead) { toast("Prospect not found"); return; }
+      pipelineDetailId = leadId;
+      renderPipelineDetail();
+      $("pipelineDetail").classList.add("open");
+      $("pipelineDetail").setAttribute("aria-hidden", "false");
+    }
+    function closePipelineDetail(){
+      pipelineDetailId = "";
+      $("pipelineDetail").classList.remove("open");
+      $("pipelineDetail").setAttribute("aria-hidden", "true");
+    }
+    function updatePipelineStage(leadId, action){
+      const lead = leads.find(item=>item.id===leadId);
+      if (!lead) return false;
+      if (action === "Follow-up") {
+        lead.stage = "Follow-up";
+        lead.nextFollowUp = new Date(Date.now() + 24*60*60*1000).toISOString().slice(0,10);
+        lead.followUpStatus = "Follow-up due tomorrow";
+      } else {
+        lead.stage = action;
+        if (action === "Demo Scheduled") lead.followUpStatus = "Demo needs confirmation";
+      }
+      addTimeline(lead, action === "Follow-up" ? "Pipeline follow-up scheduled" : `Pipeline marked ${lead.stage}`);
+      save();
+      render();
+      if (pipelineDetailId === leadId) renderPipelineDetail();
+      syncEverywhere(true);
+      toast(`${lead.business} updated`);
+      return true;
+    }
+    function renderPipelineDetail(){
+      const lead = leads.find(item=>item.id===pipelineDetailId);
+      if (!lead) return;
+      const emailStatus = leadEmailStatus(lead);
+      const sent = leadSentEmails(lead);
+      const latestSent = sent[0];
+      const latestReply = (lead.replies || []).slice().sort((a,b)=>new Date(b.at || 0)-new Date(a.at || 0))[0];
+      const timing = pipelineTiming(lead);
+      const activity = leadConversation(lead)[0];
+      $("pipelineDetailTitle").textContent = lead.business || "Pipeline Prospect";
+      $("pipelineDetailMeta").textContent = `${lead.trade || "Home Services"} | ${[lead.city, lead.state].filter(Boolean).join(", ") || lead.area || "Market unknown"} | ${pipelineStage(lead)}`;
+      $("pipelineDetailBody").innerHTML = `
+        <div class="detail-grid">
+          <div class="mini"><span>Stage</span><strong>${esc(pipelineStage(lead))}</strong></div>
+          <div class="mini"><span>Fit Score</span><strong>${esc(lead.callCatchFitScore || 0)}</strong></div>
+          <div class="mini"><span>Revenue</span><strong>${money(lead.revenueOpportunityEstimate)}</strong></div>
+          <div class="mini"><span>Email</span><strong>${esc(emailStatus.label)}</strong></div>
+        </div>
+        <div class="panel">
+          <h3>Contact</h3>
+          <p class="hint">${esc(lead.email || "No email saved")} | ${esc(lead.phone || "No phone saved")}</p>
+          <p class="hint">${esc(lead.website || lead.mapsUrl || "No website saved")}</p>
+          <p class="hint">${esc(lead.address || [lead.city, lead.state].filter(Boolean).join(", ") || "No address saved")}</p>
+        </div>
+        <div class="panel">
+          <h3>Pipeline Timing</h3>
+          <div class="insights">${timing.length ? timing.map(item=>`<span class="tag">${esc(item)}</span>`).join("") : `<span class="tag">No dates saved yet</span>`}</div>
+          <p class="hint">${esc(lead.followUpStatus || lead.responsePriority || "No follow-up status yet.")}</p>
+        </div>
+        <div class="panel">
+          <h3>Latest Email</h3>
+          ${latestSent ? `<p class="hint">${esc(latestSent.subject || latestSent.title || "Sent email")} | ${formatDateTime(latestSent.sentAt)} | ${esc(latestSent.to || lead.email || "")}</p><div class="script" style="min-height:88px;">${esc(messagePreview(latestSent.body) || latestSent.body || "")}</div>` : `<p class="sub">No sent email saved for this prospect yet.</p>`}
+        </div>
+        <div class="panel">
+          <h3>Recent Activity</h3>
+          ${latestReply ? `<p class="hint">Reply received ${formatDateTime(latestReply.at)}</p><div class="script" style="min-height:76px;">${esc(latestReply.body || latestReply.subject || "")}</div>` : activity ? `<p class="hint">${esc(activity.type)} | ${formatDateTime(activity.at)}</p><div class="script" style="min-height:76px;">${esc(activity.body || activity.title || "")}</div>` : `<p class="sub">No conversation activity yet.</p>`}
+        </div>
+        <div class="panel">
+          <h3>Why This Prospect</h3>
+          <div class="insights">${[...(lead.aiInsights || []), ...(lead.websiteIntelligence?.leadQualitySignals || []), lead.recommendedSalesAngle || ""].filter(Boolean).slice(0,10).map(item=>`<span class="tag">${esc(item)}</span>`).join("") || `<span class="tag">No intelligence saved yet</span>`}</div>
+        </div>`;
+    }
     function saveComposer(){
       const task = queue.find(item => item.id === composerTaskId);
       if (!task) { toast("Task not found"); return null; }
@@ -1370,31 +1461,27 @@
           const emailStatus = leadEmailStatus(lead);
           const latest = leadSentEmails(lead)[0];
           const timing = pipelineTiming(lead);
-          return `<div class="queue-item"><div class="lead-top"><strong>${esc(lead.business)}</strong><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}</span></div><p class="hint">${esc(lead.trade || "Home Services")} | ${esc([lead.city, lead.state].filter(Boolean).join(", ") || lead.area || "")} | Stage: ${esc(pipelineStage(lead))}${latest?.sentAt ? ` | Last email: ${formatDateTime(latest.sentAt)}` : lead.lastContact ? ` | Last contact: ${formatDateOnly(lead.lastContact)}` : ""}</p>${timing.length ? `<div class="insights">${timing.map(item=>`<span class="tag">${esc(item)}</span>`).join("")}</div>` : ""}<div class="actions" style="margin-top:8px;"><button class="btn small" data-open-contacted="${lead.id}">Open CRM</button><button class="btn small" data-pipe-action="Follow-up|${lead.id}">Follow Up</button><button class="btn small" data-pipe-action="Demo Scheduled|${lead.id}">Demo</button></div></div>`;
+          return `<div class="queue-item" data-pipeline-detail="${lead.id}"><div class="lead-top"><strong>${esc(lead.business)}</strong><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}</span></div><p class="hint">${esc(lead.trade || "Home Services")} | ${esc([lead.city, lead.state].filter(Boolean).join(", ") || lead.area || "")} | Stage: ${esc(pipelineStage(lead))}${latest?.sentAt ? ` | Last email: ${formatDateTime(latest.sentAt)}` : lead.lastContact ? ` | Last contact: ${formatDateOnly(lead.lastContact)}` : ""}</p>${timing.length ? `<div class="insights">${timing.map(item=>`<span class="tag">${esc(item)}</span>`).join("")}</div>` : ""}<div class="actions" style="margin-top:8px;"><button class="btn small" data-pipeline-detail="${lead.id}">Details</button><button class="btn small" data-open-contacted="${lead.id}">Open CRM</button><button class="btn small" data-pipe-action="Follow-up|${lead.id}">Follow Up</button><button class="btn small" data-pipe-action="Demo Scheduled|${lead.id}">Demo</button></div></div>`;
         }).join("") : `<p class="sub">No contacted prospects yet. Sent emails will appear here automatically.</p>`;
       }
       $("pipelineBoard").innerHTML = STAGES.map(stage=>`<div class="stage" data-stage="${stage}"><h3>${stage}<span>${stageCount(stage)}</span></h3>${leads.filter(l=>pipelineStage(l)===stage).map(l=>{ const emailStatus=leadEmailStatus(l); const timing=pipelineTiming(l); return `<div class="card" draggable="true" data-id="${l.id}"><strong>${esc(l.business)}</strong><div class="meta"><span>${l.callCatchFitScore} fit</span><span>${money(l.revenueOpportunityEstimate)}</span><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}</span></div>${timing.length ? `<div class="meta">${timing.slice(0,3).map(item=>`<span>${esc(item)}</span>`).join("")}</div>` : ""}<div class="actions" style="margin-top:8px;"><button class="btn small" data-pipe-action="Follow-up|${l.id}">Follow Up</button><button class="btn small" data-pipe-action="Interested|${l.id}">Interested</button><button class="btn small" data-pipe-action="Demo Scheduled|${l.id}">Demo</button><button class="btn small" data-pipe-action="Lost|${l.id}">Lost</button></div></div>`; }).join("")}</div>`).join("");
-      document.querySelectorAll(".card").forEach(c=>c.ondragstart=e=>e.dataTransfer.setData("text/plain",c.dataset.id));
+      document.querySelectorAll(".card").forEach(c=>{
+        c.ondragstart=e=>e.dataTransfer.setData("text/plain",c.dataset.id);
+        c.onclick=event=>{ if (!event.target.closest("button")) openPipelineDetail(c.dataset.id); };
+      });
       document.querySelectorAll(".stage").forEach(s=>{ s.ondragover=e=>e.preventDefault(); s.ondrop=e=>{ const l=leads.find(x=>x.id===e.dataTransfer.getData("text/plain")); if(l){ l.stage=s.dataset.stage; addTimeline(l,`Moved to ${l.stage}`); save(); render(); syncCrm(true).then(render); } }; });
       document.querySelectorAll("[data-pipe-action]").forEach(button=>button.onclick=event=>{
         event.stopPropagation();
         const [action, leadId] = button.dataset.pipeAction.split("|");
-        const lead = leads.find(item=>item.id===leadId);
-        if (!lead) return;
-        if (action === "Follow-up") {
-          lead.stage = "Follow-up";
-          lead.nextFollowUp = new Date(Date.now() + 24*60*60*1000).toISOString().slice(0,10);
-          lead.followUpStatus = "Follow-up due tomorrow";
-        } else {
-          lead.stage = action;
-          if (action === "Demo Scheduled") lead.followUpStatus = "Demo needs confirmation";
-        }
-        addTimeline(lead, action === "Follow-up" ? "Pipeline follow-up scheduled" : `Pipeline marked ${lead.stage}`);
-        save(); render(); syncEverywhere(true); toast(`${lead.business} updated`);
+        updatePipelineStage(leadId, action);
       });
       document.querySelectorAll("[data-open-contacted]").forEach(button=>button.onclick=()=>{
         selectedId = button.dataset.openContacted;
         switchView("crm");
+      });
+      document.querySelectorAll("[data-pipeline-detail]").forEach(item=>item.onclick=event=>{
+        event.stopPropagation();
+        openPipelineDetail(item.dataset.pipelineDetail);
       });
     }
     function renderQueue(){
@@ -1820,6 +1907,11 @@
       $("composerApprove").onclick=approveComposer;
       $("composerSend").onclick=sendComposer;
       $("composerCopy").onclick=copyComposer;
+      $("pipelineDetailClose").onclick=closePipelineDetail;
+      $("pipelineDetailCrm").onclick=()=>{ if (pipelineDetailId) { selectedId = pipelineDetailId; closePipelineDetail(); switchView("crm"); } };
+      $("pipelineDetailFollowup").onclick=()=>{ if (pipelineDetailId) updatePipelineStage(pipelineDetailId, "Follow-up"); };
+      $("pipelineDetailDemo").onclick=()=>{ if (pipelineDetailId) updatePipelineStage(pipelineDetailId, "Demo Scheduled"); };
+      $("pipelineDetailLost").onclick=()=>{ if (pipelineDetailId) updatePipelineStage(pipelineDetailId, "Lost"); };
       $("exportCsvBtn").onclick=()=>download("callcatch-prospects.csv",csv(),"text/csv"); $("exportExcelBtn").onclick=()=>download("callcatch-prospects.xls",`<table>${rows().map(r=>`<tr>${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</table>`,"application/vnd.ms-excel"); $("exportJsonBtn").onclick=()=>download("callcatch-prospects.json",JSON.stringify(leads,null,2),"application/json"); $("copySelectedBtn").onclick=()=>copy(JSON.stringify(selected()||{},null,2)); $("pdfBtn").onclick=pdfReport;
       $("refreshAssistantBtn").onclick=()=>syncEverywhere(false); $("themeBtn").onclick=()=>{ const dark=document.body.dataset.theme==="dark"; document.body.dataset.theme=dark?"":"dark"; $("themeBtn").textContent=dark?"Dark Mode":"Light Mode"; };
       $("saveSettingsBtn").onclick=()=>{ settings={team:$("teamMember").value,sender:$("senderName").value,demo:$("demoLink").value,mode:$("automationMode").value}; save(); toast("Settings saved"); };
