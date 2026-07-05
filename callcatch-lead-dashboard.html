@@ -566,6 +566,38 @@
     function tagClass(score){ return score >= 78 ? "hot" : score >= 58 ? "warn" : "bad"; }
     function stageCount(stage){ return leads.filter(l=>l.stage===stage).length; }
     function addTimeline(lead, text){ lead.timeline = lead.timeline || []; lead.timeline.unshift({ at: now(), text }); }
+    function contactScore(lead = {}){
+      let score = 0;
+      if (lead.email) score += 60;
+      if (lead.phone) score += 25;
+      if (lead.website) score += 8;
+      if (lead.callCatchFitScore) score += Math.min(20, Number(lead.callCatchFitScore) / 5);
+      return score;
+    }
+    function sortLeadsForAction(list){
+      return [...list].sort((a,b)=>
+        (contactScore(b) - contactScore(a))
+        || ((b.callCatchFitScore || 0) - (a.callCatchFitScore || 0))
+        || String(a.business || "").localeCompare(String(b.business || ""))
+      );
+    }
+    function taskContactScore(item = {}){
+      const lead = leads.find(candidate => candidate.id === item.leadId) || {};
+      let score = contactScore(lead);
+      if (item.channel === "email" && (item.to || item.recipient || lead.email)) score += 90;
+      if (item.channel === "sms" && (item.to || item.recipient || lead.phone)) score += 60;
+      if (/^approved/i.test(item.status || "")) score += 35;
+      if (sendReady(item)) score += 45;
+      if (sendMissingInfo(item)) score -= 80;
+      if (duplicateSent(item)) score -= 120;
+      return score;
+    }
+    function sortTasksForAction(list){
+      return [...list].sort((a,b)=>
+        (taskContactScore(b) - taskContactScore(a))
+        || String(a.business || "").localeCompare(String(b.business || ""))
+      );
+    }
     function normalizeLead(raw){
       const lead = { ...raw };
       lead.id = lead.id || id();
@@ -600,9 +632,9 @@
     }
     function filtered(){
       const q = ($("search")?.value || "").toLowerCase();
-      return leads.filter(l => !q || [l.business,l.trade,l.city,l.state,l.phone,l.website,l.email,l.tags?.join(" ")].join(" ").toLowerCase().includes(q))
+      return sortLeadsForAction(leads.filter(l => !q || [l.business,l.trade,l.city,l.state,l.phone,l.website,l.email,l.tags?.join(" ")].join(" ").toLowerCase().includes(q))
         .filter(l => !$("tradeFilter")?.value || l.trade === $("tradeFilter").value)
-        .filter(l => !$("stageFilter")?.value || l.stage === $("stageFilter").value);
+        .filter(l => !$("stageFilter")?.value || l.stage === $("stageFilter").value));
     }
     function weaknessProfile(lead){
       const insights = lead.aiInsights || [];
@@ -682,7 +714,7 @@
     }
     function renderStats(){ $("stats").innerHTML = statData().map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join(""); $("analyticsStats").innerHTML = statData().map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join(""); }
     function renderAssistant(){
-      const best = [...leads].sort((a,b)=>(b.callCatchFitScore||0)-(a.callCatchFitScore||0)).slice(0,5);
+      const best = sortLeadsForAction(leads).slice(0,5);
       $("bestProspects").innerHTML = best.length ? best.map(leadRowHtml).join("") : `<p class="sub">No prospects yet. Run Discovery to build your list.</p>`;
       $("assistantNotes").textContent = lastGrowthRun ? `Today's Opportunities\n\nNew Businesses: ${lastGrowthRun.newBusinesses}\nQualified: ${lastGrowthRun.qualified}\nEmails Ready: ${lastGrowthRun.emailsReady}\nLinkedIn Messages Ready: ${lastGrowthRun.linkedinReady}\nFollow-ups Due: ${lastGrowthRun.followUpsDue}\nReplies Yesterday: ${lastGrowthRun.repliesYesterday}\nDemo Requests: ${lastGrowthRun.demoRequests}\nRevenue Pipeline: ${money(lastGrowthRun.revenuePipeline)}\n\nSending status: ${lastGrowthRun.capabilities?.sendingStatus || "approval-first"}`
         : leads.length ? `Focus today:\n\n1. Work ${best[0]?.business || "your highest-fit prospect"} first.\n2. Review ${queue.length} queued messages before sending anything.\n3. Move contacted leads to Follow-up with a next action date.\n4. Scan websites for high-fit prospects with weak online presence.` : "Click Start Daily Growth or run Discovery. The assistant will find, research, score, and queue outreach.";
@@ -700,9 +732,9 @@
       return `<div class="work-item"><strong>${esc(label)}</strong><p class="hint">${esc(detail)}</p>${action ? `<button class="btn small" ${attrs}>${esc(action)}</button>` : ""}</div>`;
     }
     function renderTodayWork(){
-      const readyEmails = queue.filter(q=>q.channel==="email" && /^approved/i.test(q.status||"")).slice(0,5);
+      const readyEmails = sortTasksForAction(queue.filter(q=>q.channel==="email" && /^approved/i.test(q.status||""))).slice(0,5);
       const callTasks = queue.filter(q=>q.channel==="call" && q.status !== "Sent").slice(0,5);
-      const followups = leads.filter(l=>dueToday(l.nextFollowUp) || ["Contacted","Follow-up"].includes(l.stage)).slice(0,5);
+      const followups = sortLeadsForAction(leads.filter(l=>dueToday(l.nextFollowUp) || ["Contacted","Follow-up"].includes(l.stage))).slice(0,5);
       const replies = inboxItems().slice(0,5);
       $("workEmails").innerHTML = readyEmails.length ? readyEmails.map(item=>renderWorkItem(item.business, item.to || item.recipient || "Needs recipient", "Review", `data-work-compose="${item.id}"`)).join("") : `<p class="sub">No approved emails ready.</p>`;
       $("workCalls").innerHTML = callTasks.length ? callTasks.map(item=>renderWorkItem(item.business, item.title || "Call task", "Open Lead", `data-work-lead="${item.leadId}"`)).join("") : `<p class="sub">No call tasks queued.</p>`;
@@ -713,7 +745,7 @@
       document.querySelectorAll("[data-work-reply]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.workLead; switchView("automation"); });
     }
     function sendableTasks(){
-      return queue.filter(item => ["email","sms"].includes(item.channel));
+      return sortTasksForAction(queue.filter(item => ["email","sms"].includes(item.channel)));
     }
     function sendMissingInfo(item){
       const lead = leads.find(candidate => candidate.id === item.leadId) || {};
@@ -907,7 +939,7 @@
       renderSendCenter();
     }
     function leadRowHtml(l){
-      return `<div class="lead-row ${l.id===selectedId?"active":""}" data-id="${l.id}"><div class="lead-top"><div class="lead-name">${esc(l.business)}</div><span class="tag ${tagClass(l.callCatchFitScore)}">${l.callCatchFitScore}</span></div><div class="meta"><span>${esc(l.trade)}</span><span>${esc([l.city,l.state].filter(Boolean).join(", ") || l.area || "")}</span><span>${esc(l.stage)}</span><span>${esc(l.responsePriority)}</span></div></div>`;
+      return `<div class="lead-row ${l.id===selectedId?"active":""}" data-id="${l.id}"><div class="lead-top"><div class="lead-name">${esc(l.business)}</div><span class="tag ${tagClass(l.callCatchFitScore)}">${l.callCatchFitScore}</span></div><div class="meta"><span>${esc(l.trade)}</span><span>${esc([l.city,l.state].filter(Boolean).join(", ") || l.area || "")}</span><span>${esc(l.stage)}</span><span>${esc(l.responsePriority)}</span>${l.email ? `<span class="tag hot">Email Ready</span>` : `<span class="tag bad">Needs Email</span>`}${l.phone ? `<span class="tag">Phone</span>` : ""}</div></div>`;
     }
     function renderList(){ $("leadList").innerHTML = filtered().map(leadRowHtml).join("") || `<p class="sub">No prospects found. Run Discovery or import a CSV.</p>`; document.querySelectorAll(".lead-row").forEach(row=>row.onclick=()=>{selectedId=row.dataset.id; render();}); }
     function renderDetail(){
