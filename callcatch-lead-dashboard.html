@@ -760,6 +760,17 @@
     function belongsInPipeline(lead = {}){
       return contactedProspects().some(item => item.id === lead.id);
     }
+    function campaignEligibleLeads(campaign = {}){
+      const minFit = Number(campaign.minFitScore || 68);
+      return leads.filter(lead =>
+        Number(lead.callCatchFitScore || 0) >= minFit
+        && (!campaign.trade || lead.trade === campaign.trade)
+        && !belongsInPipeline(lead)
+        && !leadHasSentEmail(lead)
+        && !lead.lastContact
+        && !(lead.replies || []).length
+      );
+    }
     function sentTaskToLead(task = {}){
       const sentAt = task.sentAt || now();
       return normalizeLead({
@@ -1672,9 +1683,19 @@
     }
     async function enrollCampaign(){
       const campaign = { name:$("campaignName").value, minFitScore:$("campaignFit").value, trade:$("campaignTrade").value };
+      const eligibleLeads = campaignEligibleLeads(campaign);
+      const skipped = leads.filter(lead =>
+        Number(lead.callCatchFitScore || 0) >= Number(campaign.minFitScore || 68)
+        && (!campaign.trade || lead.trade === campaign.trade)
+        && !eligibleLeads.some(item => item.id === lead.id)
+      ).length;
+      if (!eligibleLeads.length) {
+        toast(skipped ? "No fresh campaign prospects. Contacted leads are in Pipeline." : "No qualified prospects to enroll");
+        return;
+      }
       try {
         toast("Scanning qualified websites and building outreach...");
-        const result = await api("/api/campaigns/enroll", { method:"POST", body: JSON.stringify({ campaign, leads, mobileEmailOnly: mobileEmailFocus() }) });
+        const result = await api("/api/campaigns/enroll", { method:"POST", body: JSON.stringify({ campaign, leads: eligibleLeads, mobileEmailOnly: mobileEmailFocus() }) });
         if (Array.isArray(result.enrichedLeads)) {
           result.enrichedLeads.map(normalizeLead).forEach(enriched => {
             const index = leads.findIndex(lead => lead.id === enriched.id);
@@ -1683,10 +1704,10 @@
         }
         const crm = await api("/api/crm");
         applyServerState(crm);
-        render(); toast(`${result.tasks.length} tasks queued and synced`);
+        render(); toast(`${result.tasks.length} tasks queued${skipped ? `, ${skipped} contacted skipped` : ""}`);
       } catch(error) {
-        leads.filter(l=>l.callCatchFitScore>=Number(campaign.minFitScore||68)).filter(l=>!campaign.trade||l.trade===campaign.trade).forEach(l=>queueOutreach(l,false));
-        save(); render(); toast("Queued locally");
+        eligibleLeads.forEach(l=>queueOutreach(l,false));
+        save(); render(); toast(`Queued locally${skipped ? `, ${skipped} contacted skipped` : ""}`);
       }
     }
     async function checkEmailStatus(silent = false){
