@@ -36,12 +36,14 @@
     }
 
     * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
     body {
       margin: 0;
       font-family: Arial, Helvetica, sans-serif;
       color: var(--ink);
       background: var(--bg);
       line-height: 1.42;
+      overflow-x: hidden;
     }
     button, input, select, textarea { font: inherit; }
     .app { min-height: 100vh; display: grid; grid-template-columns: 260px minmax(0, 1fr); }
@@ -84,6 +86,7 @@
       min-height: 38px;
       font-weight: 800;
       cursor: pointer;
+      touch-action: manipulation;
     }
     .btn.primary { background: var(--green); border-color: var(--green); color: #fff; }
     .btn.small { min-height: 32px; padding: 6px 9px; font-size: 13px; }
@@ -157,15 +160,99 @@
     .toast.show { opacity: 1; transform: translateY(0); }
     @media (max-width: 1150px) {
       .app { grid-template-columns: 1fr; }
-      nav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-      .stats, .grid, .work-grid, .map-grid, .form-grid { grid-template-columns: 1fr; }
+      aside {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        padding: 14px 16px;
+      }
+      .brand { margin-bottom: 12px; }
+      .side-note { display: none; }
+      nav {
+        display: flex;
+        gap: 8px;
+        overflow-x: auto;
+        padding-bottom: 3px;
+        scrollbar-width: thin;
+      }
+      .nav-btn {
+        flex: 0 0 auto;
+        min-width: 132px;
+        text-align: center;
+      }
+      .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .grid, .map-grid { grid-template-columns: 1fr; }
+      .work-grid, .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
-    @media (max-width: 680px) {
-      main, aside { padding: 15px; }
-      .top { display: block; }
-      .actions { margin-top: 10px; }
-      .toolbar, nav, .detail-grid { grid-template-columns: 1fr; }
-      h1 { font-size: 25px; }
+    @media (max-width: 760px) {
+      main { padding: 14px; }
+      aside { padding: 12px; }
+      .brand { font-size: 15px; }
+      .mark { width: 32px; height: 32px; }
+      .top {
+        display: grid;
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+      .top .actions { margin-top: 0; }
+      .actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .btn {
+        width: 100%;
+        min-height: 42px;
+        padding: 9px 10px;
+        white-space: normal;
+      }
+      .btn.small { min-height: 38px; }
+      .stats, #sendingStats, #analyticsStats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .work-grid, .form-grid, .toolbar, .detail-grid { grid-template-columns: 1fr; }
+      .panel { padding: 12px; }
+      h1 { font-size: 24px; }
+      h2 { font-size: 18px; }
+      .sub { font-size: 14px; }
+      .lead-top {
+        display: grid;
+        gap: 8px;
+      }
+      .lead-top .tag { justify-self: start; }
+      .tag { white-space: normal; line-height: 1.25; }
+      .meta { gap: 6px; }
+      .stat { min-height: 76px; padding: 10px; }
+      .stat strong { font-size: 20px; }
+      .script {
+        min-height: 110px;
+        max-height: 360px;
+        overflow: auto;
+        font-size: 14px;
+      }
+      .queue-item .actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .pipeline {
+        grid-template-columns: repeat(8, minmax(240px, 82vw));
+        gap: 10px;
+        scroll-snap-type: x proximity;
+      }
+      .stage { scroll-snap-align: start; }
+      .map { min-height: 300px; }
+      .table-wrap { margin: 0 -12px; padding: 0 12px; }
+      table { min-width: 620px; }
+      .toast {
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        text-align: center;
+      }
+    }
+    @media (max-width: 430px) {
+      main { padding: 10px; }
+      aside { padding: 10px; }
+      .actions, .queue-item .actions { grid-template-columns: 1fr; }
+      .stats, #sendingStats, #analyticsStats { grid-template-columns: 1fr; }
+      .nav-btn { min-width: 118px; padding: 9px 10px; }
+      .panel, .queue-item, .lead-row { border-radius: 7px; }
+      .lead-row, .queue-item { padding: 10px; }
     }
   </style>
 </head>
