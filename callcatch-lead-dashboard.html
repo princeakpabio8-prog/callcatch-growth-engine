@@ -474,7 +474,7 @@
         <div class="grid"><div class="panel"><div class="toolbar"><input id="search" placeholder="Search prospects"><select id="tradeFilter"><option value="">All trades</option></select><select id="stageFilter"><option value="">All stages</option></select></div><div id="leadList" class="lead-list"></div></div><div class="panel" id="leadDetail"><h2>No prospect selected</h2><p class="sub">Run discovery or import leads to begin.</p></div></div>
       </section>
 
-      <section class="view" id="pipeline"><div class="top"><div><h1>Pipeline</h1><p class="sub">Drag prospects between stages. Changes are saved locally.</p></div></div><div class="pipeline" id="pipelineBoard"></div></section>
+      <section class="view" id="pipeline"><div class="top"><div><h1>Pipeline</h1><p class="sub">Every emailed or contacted prospect appears here on mobile and desktop.</p></div><div class="actions"><button class="btn" id="recoverPipelineBtn" type="button">Refresh Contacted</button></div></div><div class="panel" style="margin-bottom:14px;"><div class="lead-top"><div><h2>Already Contacted</h2><p class="sub">Prospects with sent emails, replies, or last contact history.</p></div><span class="tag hot" id="contactedCount">0</span></div><div class="queue" id="contactedPipelineList"></div></div><div class="pipeline" id="pipelineBoard"></div></section>
       <section class="view" id="automation">
         <div class="top"><div><h1>Campaigns & Approval Queue</h1><p class="sub">Create multi-step campaigns. Emails send only after approval and SMTP setup.</p></div><div class="actions"><button class="btn" id="syncBtn" type="button">Sync All</button><button class="btn" id="emailStatusBtn" type="button">Check Email</button><button class="btn" id="sendApprovedBtn" type="button">Send All Approved</button><button class="btn primary" id="generateQueueBtn" type="button">Enroll Qualified Leads</button></div></div>
         <div class="panel"><div class="form-grid"><div><label for="campaignName">Campaign Name</label><input id="campaignName" value="Default Outbound Sequence"></div><div><label for="campaignFit">Minimum Fit Score</label><input id="campaignFit" type="number" value="68"></div><div><label for="campaignTrade">Trade Filter</label><select id="campaignTrade"><option value="">All trades</option></select></div><div><label>Safety</label><input value="Review before sending" disabled></div></div><p class="hint">Sequence: Day 1 email, Day 3 LinkedIn, Day 5 follow-up email, Day 7 phone reminder, Day 10 final email.</p></div>
@@ -661,6 +661,14 @@
       if (STAGES.includes(lead.stage)) return lead.stage;
       if (leadHasSentEmail(lead) || lead.lastContact) return "Contacted";
       return "New";
+    }
+    function contactedProspects(){
+      return sortLeadsForAction(leads.filter(lead =>
+        leadHasSentEmail(lead)
+        || !!lead.lastContact
+        || (lead.replies || []).length > 0
+        || ["Contacted","Follow-up","Demo Scheduled","Trial Started","Customer"].includes(pipelineStage(lead))
+      ));
     }
     function sentTaskToLead(task = {}){
       const sentAt = task.sentAt || now();
@@ -1227,7 +1235,18 @@
     }
     function renderPipeline(){
       const recovered = recoverPipelineFromSentHistory();
-      if (recovered) save();
+      if (recovered) { save(); syncCrm(true); }
+      const contacted = contactedProspects();
+      const contactedCount = $("contactedCount");
+      const contactedList = $("contactedPipelineList");
+      if (contactedCount) contactedCount.textContent = contacted.length;
+      if (contactedList) {
+        contactedList.innerHTML = contacted.length ? contacted.slice(0,30).map(lead=>{
+          const emailStatus = leadEmailStatus(lead);
+          const latest = leadSentEmails(lead)[0];
+          return `<div class="queue-item"><div class="lead-top"><strong>${esc(lead.business)}</strong><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}</span></div><p class="hint">${esc(lead.trade || "Home Services")} | ${esc([lead.city, lead.state].filter(Boolean).join(", ") || lead.area || "")} | Stage: ${esc(pipelineStage(lead))}${latest?.sentAt ? ` | Last email: ${new Date(latest.sentAt).toLocaleDateString()}` : lead.lastContact ? ` | Last contact: ${esc(lead.lastContact)}` : ""}</p><div class="actions" style="margin-top:8px;"><button class="btn small" data-open-contacted="${lead.id}">Open CRM</button><button class="btn small" data-pipe-action="Follow-up|${lead.id}">Follow Up</button><button class="btn small" data-pipe-action="Demo Scheduled|${lead.id}">Demo</button></div></div>`;
+        }).join("") : `<p class="sub">No contacted prospects yet. Sent emails will appear here automatically.</p>`;
+      }
       $("pipelineBoard").innerHTML = STAGES.map(stage=>`<div class="stage" data-stage="${stage}"><h3>${stage}<span>${stageCount(stage)}</span></h3>${leads.filter(l=>pipelineStage(l)===stage).map(l=>{ const emailStatus=leadEmailStatus(l); return `<div class="card" draggable="true" data-id="${l.id}"><strong>${esc(l.business)}</strong><div class="meta"><span>${l.callCatchFitScore} fit</span><span>${money(l.revenueOpportunityEstimate)}</span><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}</span></div><div class="actions" style="margin-top:8px;"><button class="btn small" data-pipe-action="Follow-up|${l.id}">Follow Up</button><button class="btn small" data-pipe-action="Interested|${l.id}">Interested</button><button class="btn small" data-pipe-action="Demo Scheduled|${l.id}">Demo</button><button class="btn small" data-pipe-action="Lost|${l.id}">Lost</button></div></div>`; }).join("")}</div>`).join("");
       document.querySelectorAll(".card").forEach(c=>c.ondragstart=e=>e.dataTransfer.setData("text/plain",c.dataset.id));
       document.querySelectorAll(".stage").forEach(s=>{ s.ondragover=e=>e.preventDefault(); s.ondrop=e=>{ const l=leads.find(x=>x.id===e.dataTransfer.getData("text/plain")); if(l){ l.stage=s.dataset.stage; addTimeline(l,`Moved to ${l.stage}`); save(); render(); syncCrm(true).then(render); } }; });
@@ -1246,6 +1265,10 @@
         }
         addTimeline(lead, action === "Follow-up" ? "Pipeline follow-up scheduled" : `Pipeline marked ${lead.stage}`);
         save(); render(); syncEverywhere(true); toast(`${lead.business} updated`);
+      });
+      document.querySelectorAll("[data-open-contacted]").forEach(button=>button.onclick=()=>{
+        selectedId = button.dataset.openContacted;
+        switchView("crm");
       });
     }
     function renderQueue(){
@@ -1659,7 +1682,7 @@
         ? `File preview mode: API calls will use ${PRODUCTION_API_BASE}. For best results, open the Render app directly.`
         : "API connected through this app. Search results become CRM records automatically.";
       document.querySelectorAll(".nav-btn").forEach(b=>b.onclick=()=>switchView(b.dataset.view));
-      $("searchBtn").onclick=search; $("saveSearchBtn").onclick=saveSearch; $("importBtn").onclick=importCsv; $("generateQueueBtn").onclick=enrollCampaign; $("syncBtn").onclick=()=>syncEverywhere(false); $("startGrowthBtn").onclick=startDailyGrowth; $("emailStatusBtn").onclick=()=>checkEmailStatus(false); $("sendTestBtn").onclick=sendTestEmail; $("sendSmsTestBtn").onclick=sendTestSms; $("sendApprovedBtn").onclick=sendApprovedEmails; $("saveSendingBtn").onclick=saveSendingLimits; $("runDueBtn").onclick=runDueScheduled; $("followupBtn").onclick=generateFollowups; $("recordReplyBtn").onclick=recordReply;
+      $("searchBtn").onclick=search; $("saveSearchBtn").onclick=saveSearch; $("importBtn").onclick=importCsv; $("generateQueueBtn").onclick=enrollCampaign; $("syncBtn").onclick=()=>syncEverywhere(false); $("startGrowthBtn").onclick=startDailyGrowth; $("emailStatusBtn").onclick=()=>checkEmailStatus(false); $("sendTestBtn").onclick=sendTestEmail; $("sendSmsTestBtn").onclick=sendTestSms; $("sendApprovedBtn").onclick=sendApprovedEmails; $("saveSendingBtn").onclick=saveSendingLimits; $("runDueBtn").onclick=runDueScheduled; $("followupBtn").onclick=generateFollowups; $("recordReplyBtn").onclick=recordReply; $("recoverPipelineBtn").onclick=()=>syncEverywhere(false);
       $("refreshSetupBtn").onclick=()=>runSetupChecks(false);
       $("sendCenterSyncBtn").onclick=()=>syncEverywhere(false);
       $("sendCenterSendAllBtn").onclick=sendApprovedEmails;
