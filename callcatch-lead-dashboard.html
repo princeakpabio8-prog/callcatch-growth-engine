@@ -611,6 +611,21 @@
     function toast(text){ const t=$("toast"); t.textContent=text; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),1500); }
     function esc(v){ return String(v ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;"); }
     function money(v){ return Number(v || 0).toLocaleString("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}); }
+    function formatDateTime(value){
+      if (!value) return "";
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return String(value);
+      return parsed.toLocaleString([], { month:"short", day:"numeric", hour:"numeric", minute:"2-digit" });
+    }
+    function formatDateOnly(value){
+      if (!value) return "";
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return String(value);
+      return parsed.toLocaleDateString([], { month:"short", day:"numeric", year:"numeric" });
+    }
+    function latestTimelineAt(lead = {}){
+      return (lead.timeline || []).map(item=>item.at).filter(Boolean).sort((a,b)=>new Date(b)-new Date(a))[0] || "";
+    }
     function id(){ return "p_" + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
     function now(){ return new Date().toISOString(); }
     let lastAutoSyncAt = 0;
@@ -804,6 +819,16 @@
       if (draft) return { label: "Drafted", className: "", detail: "" };
       return { label: "No Email Sent", className: "bad", detail: "" };
     }
+    function pipelineTiming(lead = {}){
+      const latestSent = leadSentEmails(lead)[0];
+      const lastActivity = latestSent?.sentAt || lead.lastContact || latestTimelineAt(lead);
+      return [
+        lead.createdAt ? `Created ${formatDateTime(lead.createdAt)}` : "",
+        latestSent?.sentAt ? `Last email ${formatDateTime(latestSent.sentAt)}` : lead.lastContact ? `Last contact ${formatDateOnly(lead.lastContact)}` : "",
+        lead.nextFollowUp ? `Next ${formatDateOnly(lead.nextFollowUp)}` : "",
+        lastActivity ? `Activity ${formatDateTime(lastActivity)}` : ""
+      ].filter(Boolean);
+    }
     function compactEmailDuplicates(items = queue){
       const sentFingerprints = new Set((items || [])
         .filter(item => item.channel === "email" && /^sent$/i.test(item.status || ""))
@@ -865,6 +890,7 @@
       lead.id = lead.id || id();
       lead.business = lead.business || "Unnamed Business";
       lead.trade = lead.trade || $("trade")?.value || "Home Services";
+      lead.createdAt = lead.createdAt || lead.discoveredAt || now();
       lead.stage = lead.stage || "New";
       lead.notes = lead.notes || "";
       lead.tags = lead.tags || [];
@@ -1326,10 +1352,11 @@
         contactedList.innerHTML = contacted.length ? contacted.slice(0,30).map(lead=>{
           const emailStatus = leadEmailStatus(lead);
           const latest = leadSentEmails(lead)[0];
-          return `<div class="queue-item"><div class="lead-top"><strong>${esc(lead.business)}</strong><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}</span></div><p class="hint">${esc(lead.trade || "Home Services")} | ${esc([lead.city, lead.state].filter(Boolean).join(", ") || lead.area || "")} | Stage: ${esc(pipelineStage(lead))}${latest?.sentAt ? ` | Last email: ${new Date(latest.sentAt).toLocaleDateString()}` : lead.lastContact ? ` | Last contact: ${esc(lead.lastContact)}` : ""}</p><div class="actions" style="margin-top:8px;"><button class="btn small" data-open-contacted="${lead.id}">Open CRM</button><button class="btn small" data-pipe-action="Follow-up|${lead.id}">Follow Up</button><button class="btn small" data-pipe-action="Demo Scheduled|${lead.id}">Demo</button></div></div>`;
+          const timing = pipelineTiming(lead);
+          return `<div class="queue-item"><div class="lead-top"><strong>${esc(lead.business)}</strong><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}</span></div><p class="hint">${esc(lead.trade || "Home Services")} | ${esc([lead.city, lead.state].filter(Boolean).join(", ") || lead.area || "")} | Stage: ${esc(pipelineStage(lead))}${latest?.sentAt ? ` | Last email: ${formatDateTime(latest.sentAt)}` : lead.lastContact ? ` | Last contact: ${formatDateOnly(lead.lastContact)}` : ""}</p>${timing.length ? `<div class="insights">${timing.map(item=>`<span class="tag">${esc(item)}</span>`).join("")}</div>` : ""}<div class="actions" style="margin-top:8px;"><button class="btn small" data-open-contacted="${lead.id}">Open CRM</button><button class="btn small" data-pipe-action="Follow-up|${lead.id}">Follow Up</button><button class="btn small" data-pipe-action="Demo Scheduled|${lead.id}">Demo</button></div></div>`;
         }).join("") : `<p class="sub">No contacted prospects yet. Sent emails will appear here automatically.</p>`;
       }
-      $("pipelineBoard").innerHTML = STAGES.map(stage=>`<div class="stage" data-stage="${stage}"><h3>${stage}<span>${stageCount(stage)}</span></h3>${leads.filter(l=>pipelineStage(l)===stage).map(l=>{ const emailStatus=leadEmailStatus(l); return `<div class="card" draggable="true" data-id="${l.id}"><strong>${esc(l.business)}</strong><div class="meta"><span>${l.callCatchFitScore} fit</span><span>${money(l.revenueOpportunityEstimate)}</span><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}</span></div><div class="actions" style="margin-top:8px;"><button class="btn small" data-pipe-action="Follow-up|${l.id}">Follow Up</button><button class="btn small" data-pipe-action="Interested|${l.id}">Interested</button><button class="btn small" data-pipe-action="Demo Scheduled|${l.id}">Demo</button><button class="btn small" data-pipe-action="Lost|${l.id}">Lost</button></div></div>`; }).join("")}</div>`).join("");
+      $("pipelineBoard").innerHTML = STAGES.map(stage=>`<div class="stage" data-stage="${stage}"><h3>${stage}<span>${stageCount(stage)}</span></h3>${leads.filter(l=>pipelineStage(l)===stage).map(l=>{ const emailStatus=leadEmailStatus(l); const timing=pipelineTiming(l); return `<div class="card" draggable="true" data-id="${l.id}"><strong>${esc(l.business)}</strong><div class="meta"><span>${l.callCatchFitScore} fit</span><span>${money(l.revenueOpportunityEstimate)}</span><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}</span></div>${timing.length ? `<div class="meta">${timing.slice(0,3).map(item=>`<span>${esc(item)}</span>`).join("")}</div>` : ""}<div class="actions" style="margin-top:8px;"><button class="btn small" data-pipe-action="Follow-up|${l.id}">Follow Up</button><button class="btn small" data-pipe-action="Interested|${l.id}">Interested</button><button class="btn small" data-pipe-action="Demo Scheduled|${l.id}">Demo</button><button class="btn small" data-pipe-action="Lost|${l.id}">Lost</button></div></div>`; }).join("")}</div>`).join("");
       document.querySelectorAll(".card").forEach(c=>c.ondragstart=e=>e.dataTransfer.setData("text/plain",c.dataset.id));
       document.querySelectorAll(".stage").forEach(s=>{ s.ondragover=e=>e.preventDefault(); s.ondrop=e=>{ const l=leads.find(x=>x.id===e.dataTransfer.getData("text/plain")); if(l){ l.stage=s.dataset.stage; addTimeline(l,`Moved to ${l.stage}`); save(); render(); syncCrm(true).then(render); } }; });
       document.querySelectorAll("[data-pipe-action]").forEach(button=>button.onclick=event=>{
