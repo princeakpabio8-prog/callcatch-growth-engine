@@ -170,6 +170,31 @@ function addDaysIso(dateValue, days) {
   return new Date(new Date(dateValue).getTime() + Number(days) * 24 * 60 * 60 * 1000).toISOString();
 }
 
+function normalizeKey(value) {
+  return String(value || "").toLowerCase().replace(/https?:\/\//, "").replace(/www\./, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+function taskStepKey(task = {}) {
+  if (task.sequenceStep) return task.sequenceStep;
+  if (task.emailVariant) return `initial-${task.emailVariant}`;
+  const title = String(task.title || task.channel || "message").toLowerCase();
+  if (title.includes("final")) return "final-followup";
+  if (title.includes("follow")) return "followup-1";
+  if (title.includes("sms")) return "sms-initial";
+  return normalizeKey(title) || "initial";
+}
+
+function sendFingerprint(lead = {}, task = {}) {
+  const company = normalizeKey(lead.website || lead.business || lead.id || task.business || task.leadId);
+  return [company, task.channel || "message", taskStepKey(task)].join("|");
+}
+
+function duplicateSentTask(state, lead, task) {
+  const fingerprint = sendFingerprint(lead, task);
+  const duplicate = (state.approvalQueue || []).find(item => item.id !== task.id && item.status === "Sent" && item.sendFingerprint === fingerprint);
+  return { fingerprint, duplicate };
+}
+
 async function sendTaskNow(state, taskId) {
   const task = (state.approvalQueue || []).find(item => item.id === taskId);
   if (!task) throw new Error("Task not found");
@@ -184,6 +209,16 @@ async function sendTaskNow(state, taskId) {
   }
 
   const lead = findLead(state, task);
+  const duplicate = duplicateSentTask(state, lead, task);
+  task.sendFingerprint = duplicate.fingerprint;
+  if (duplicate.duplicate) {
+    task.status = "Duplicate Blocked";
+    task.error = "This message was already sent to this company.";
+    task.duplicateOfTaskId = duplicate.duplicate.id;
+    addTimeline(lead, `Duplicate send blocked for ${task.title || task.channel}`);
+    state.auditLog.unshift({ id: newId("audit"), at: nowIso(), action: "duplicate_send_blocked", details: { taskId: task.id, duplicateTaskId: duplicate.duplicate.id, leadId: lead.id, fingerprint: duplicate.fingerprint } });
+    return { sent: false, duplicate: true, error: task.error, task };
+  }
   let to = task.channel === "sms"
     ? normalizePhone(task.to || task.recipient || lead.phone)
     : parseEmail(task.to || task.recipient || lead.email);
@@ -221,6 +256,7 @@ async function sendTaskNow(state, taskId) {
     task.sentAt = result.sentAt;
     task.messageId = result.messageId;
     task.provider = result.provider || "Email";
+    task.sendFingerprint = duplicate.fingerprint;
     task.nextFollowUpAt = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
     lead.stage = lead.stage === "New" ? "Contacted" : lead.stage;
     lead.lastContact = result.sentAt.slice(0, 10);

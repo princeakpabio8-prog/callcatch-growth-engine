@@ -662,7 +662,10 @@
         { channel:"call", title:"Cold Call Script", body:assets.call }
       ].forEach(item => {
         const recipient = item.channel === "email" ? (lead.email || "") : item.channel === "sms" ? (lead.phone || "") : "";
-        queue.unshift({ id:id(), leadId:lead.id, business:lead.business, ...item, to: recipient, recipient, status:"Needs Approval", createdAt:now() });
+        const draft = { id:id(), leadId:lead.id, business:lead.business, ...item, to: recipient, recipient, status:"Needs Approval", createdAt:now() };
+        const fp = sendFingerprint(draft);
+        const exists = queue.some(existing => existing.leadId === lead.id && existing.channel === draft.channel && (existing.sendFingerprint || sendFingerprint(existing)) === fp && existing.status !== "Sent");
+        if (!exists) queue.unshift({ ...draft, sendFingerprint: fp });
       });
       addTimeline(lead, "Outreach drafts generated and queued for approval");
       save(); syncCrm(true); if(notify){ sendCenterFilter="approval"; switchView("sendcenter"); toast("Personalized outreach queued"); }
@@ -717,8 +720,30 @@
       if (item.channel === "sms") return !(item.to || item.recipient || lead.phone);
       return !(item.to || item.recipient || lead.email);
     }
+    function normalizeKey(value){
+      return String(value || "").toLowerCase().replace(/https?:\/\//, "").replace(/www\./, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    }
+    function taskStepKey(item = {}){
+      if (item.sequenceStep) return item.sequenceStep;
+      if (item.emailVariant) return `initial-${item.emailVariant}`;
+      const title = String(item.title || item.channel || "message").toLowerCase();
+      if (title.includes("final")) return "final-followup";
+      if (title.includes("follow")) return "followup-1";
+      if (title.includes("sms")) return "sms-initial";
+      return normalizeKey(title) || "initial";
+    }
+    function sendFingerprint(item){
+      const lead = leads.find(candidate => candidate.id === item.leadId) || {};
+      const company = normalizeKey(lead.website || lead.business || lead.id || item.business || item.leadId);
+      return [company, item.channel || "message", taskStepKey(item)].join("|");
+    }
+    function duplicateSent(item){
+      const fp = item.sendFingerprint || sendFingerprint(item);
+      return queue.find(other => other.id !== item.id && other.status === "Sent" && (other.sendFingerprint || sendFingerprint(other)) === fp);
+    }
     function sendReady(item){
       if (!/^approved/i.test(item.status || "")) return false;
+      if (duplicateSent(item)) return false;
       if (sendMissingInfo(item)) return false;
       if (item.channel === "email" && !emailReady) return false;
       if (item.channel === "sms" && !smsReady) return false;
@@ -728,6 +753,7 @@
       const status = String(item.status || "");
       if (/^sent$/i.test(status)) return "sent";
       if (/failed|rate limited/i.test(status)) return "failed";
+      if (status.includes("duplicate") || duplicateSent(item)) return "failed";
       if (sendMissingInfo(item)) return "missing";
       if (!/^approved/i.test(status)) return "approval";
       return sendReady(item) ? "ready" : "missing";
@@ -769,10 +795,11 @@
       const lead = leads.find(candidate => candidate.id === item.leadId) || {};
       const checks = sendChecklist(item);
       const category = sendCategory(item);
+      const duplicate = duplicateSent(item);
       const recipientLabel = item.channel === "sms" ? "Phone" : "Email";
       const recipient = item.to || item.recipient || (item.channel === "sms" ? lead.phone : lead.email) || "";
       const quickAction = category === "approval" ? "Approve & Send" : "Send Now";
-      return `<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag ${category === "ready" || category === "sent" ? "hot" : category === "failed" || category === "missing" ? "bad" : "warn"}">${esc(category.replace("-", " "))}</span></div><p class="hint">${esc(item.channel.toUpperCase())} | ${esc(item.status || "Needs Approval")} | Lead ID: ${esc(item.leadId || "")}</p><div class="insights">${checks.map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${recipientLabel}</label><input data-to="${item.id}" value="${esc(recipient)}" placeholder="${item.channel === "sms" ? "+15551234567" : "prospect@example.com"}"></div><button class="message-preview" data-compose="${item.id}" type="button" style="width:100%;text-align:left;cursor:pointer;"><strong>${esc(messageSubject(item.body))}</strong><p class="hint">${esc(messagePreview(item.body) || "No message generated yet.")}</p></button><div class="actions" style="margin-top:8px;"><button class="btn primary small" data-compose="${item.id}">Review</button><button class="btn small" data-approve-send="${item.id}">${esc(quickAction)}</button><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-open-lead="${item.leadId || ""}">Open Lead</button><button class="btn small" data-remove="${item.id}">Remove</button></div></div>`;
+      return `<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag ${category === "ready" || category === "sent" ? "hot" : category === "failed" || category === "missing" ? "bad" : "warn"}">${esc(duplicate ? "duplicate" : category.replace("-", " "))}</span></div><p class="hint">${esc(item.channel.toUpperCase())} | ${esc(item.status || "Needs Approval")} | Lead ID: ${esc(item.leadId || "")}${duplicate ? ` | Already sent as ${esc(duplicate.title || duplicate.id)}` : ""}</p><div class="insights">${checks.map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${recipientLabel}</label><input data-to="${item.id}" value="${esc(recipient)}" placeholder="${item.channel === "sms" ? "+15551234567" : "prospect@example.com"}"></div><button class="message-preview" data-compose="${item.id}" type="button" style="width:100%;text-align:left;cursor:pointer;"><strong>${esc(messageSubject(item.body))}</strong><p class="hint">${esc(messagePreview(item.body) || "No message generated yet.")}</p></button><div class="actions" style="margin-top:8px;"><button class="btn primary small" data-compose="${item.id}">Review</button><button class="btn small" data-approve-send="${item.id}">${esc(quickAction)}</button><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-open-lead="${item.leadId || ""}">Open Lead</button><button class="btn small" data-remove="${item.id}">Remove</button></div></div>`;
     }
     function renderSetupChecklist(){
       const items = [
@@ -945,6 +972,7 @@
         return [
           { label: (item.to || item.recipient || lead.phone) ? "Phone found" : "Needs phone", ok: !!(item.to || item.recipient || lead.phone) },
           { label: /^approved/i.test(item.status || "") ? "Approved" : "Needs approval", ok: /^approved/i.test(item.status || "") },
+          { label: duplicateSent(item) ? "Already sent" : "Not duplicate", ok: !duplicateSent(item) },
           { label: smsReady ? "Twilio connected" : "Twilio not checked", ok: smsReady },
           { label: serverSynced ? "Synced" : "Needs sync", ok: serverSynced }
         ];
@@ -952,6 +980,7 @@
       return [
         { label: (item.to || item.recipient || lead.email) ? "Email found" : "Needs email", ok: !!(item.to || item.recipient || lead.email) },
         { label: /^approved/i.test(item.status || "") ? "Approved" : "Needs approval", ok: /^approved/i.test(item.status || "") },
+        { label: duplicateSent(item) ? "Already sent" : "Not duplicate", ok: !duplicateSent(item) },
         { label: emailReady ? "Email connected" : "Email not checked", ok: emailReady },
         { label: serverSynced ? "Synced" : "Needs sync", ok: serverSynced }
       ];
@@ -959,6 +988,8 @@
     function sendBlockReason(taskId){
       const item = queue.find(q=>q.id===taskId);
       if (!item) return "Task not found. Sync CRM and try again.";
+      const duplicate = duplicateSent(item);
+      if (duplicate) return `Duplicate blocked: this ${item.channel || "message"} was already sent to this company as ${duplicate.title || duplicate.id}.`;
       const missing = sendChecklist(item).filter(check=>!check.ok).map(check=>check.label.toLowerCase());
       if (!missing.length) return "";
       return `Not ready to send: ${missing.join(", ")}. Add the recipient, mark approved, and check provider status.`;
