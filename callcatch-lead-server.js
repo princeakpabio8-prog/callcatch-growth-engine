@@ -100,7 +100,7 @@ function urlSafeHeader(headers, name) {
 }
 
 function emailReadyLead(lead = {}) {
-  return !!String(lead.email || "").trim();
+  return !!String(lead.email || "").trim() || (lead.sentEmails || []).some(item => String(item.to || item.recipient || "").trim());
 }
 
 function queueStepKey(task = {}) {
@@ -165,6 +165,45 @@ function ensureSentRecord(lead, record) {
   return true;
 }
 
+function recoverLeadFromSentTask(task = {}) {
+  const at = task.sentAt || new Date().toISOString();
+  const email = parseEmail(task.to || task.recipient || "");
+  const lead = {
+    id: task.leadId || newId("lead"),
+    business: task.business || "Emailed Prospect",
+    trade: task.trade || "Home Services",
+    city: task.city || "",
+    state: task.state || "",
+    email,
+    phone: task.phone || "",
+    website: task.website || "",
+    stage: "Contacted",
+    source: "Recovered from sent email history",
+    callCatchFitScore: Number(task.callCatchFitScore || 60),
+    revenueOpportunityEstimate: Number(task.revenueOpportunityEstimate || 0),
+    aiOpportunityLevel: "Contacted",
+    responsePriority: "Follow up",
+    lastContact: at.slice(0, 10),
+    nextFollowUp: addDays(at, 3).slice(0, 10),
+    followUpStatus: "Follow-up #1 scheduled",
+    timeline: [{ at, text: `Recovered pipeline record from sent email: ${task.title || "Outbound email"}` }],
+    sentEmails: []
+  };
+  ensureSentRecord(lead, {
+    id: newId("sent"),
+    taskId: task.id,
+    title: task.title || "Sent email",
+    to: email,
+    subject: emailSubject(task.body, task.title || "Sent email"),
+    body: task.body || "",
+    sentAt: at,
+    provider: task.provider || "",
+    messageId: task.messageId || "",
+    recoveredFrom: "sent_task"
+  });
+  return lead;
+}
+
 function hydrateSentEmailHistory(state) {
   state.leads = state.leads || [];
   state.approvalQueue = state.approvalQueue || [];
@@ -174,8 +213,15 @@ function hydrateSentEmailHistory(state) {
 
   for (const task of state.approvalQueue) {
     if (task.channel !== "email" || !/^sent$/i.test(task.status || "") || !task.sentAt) continue;
-    const lead = leadById.get(task.leadId);
-    if (!lead) continue;
+    let lead = leadById.get(task.leadId);
+    if (!lead) {
+      lead = recoverLeadFromSentTask(task);
+      state.leads.unshift(lead);
+      leadById.set(lead.id, lead);
+      recovered += 1;
+      continue;
+    }
+    if (!lead.email) lead.email = parseEmail(task.to || task.recipient || "");
     const added = ensureSentRecord(lead, {
       id: newId("sent"),
       taskId: task.id,
@@ -559,7 +605,8 @@ const server = http.createServer(async (req, res) => {
           keyToId.set(key, id);
           existing.set(id, alreadySaved ? mergeLeadRecord(existing.get(id), lead) : { ...lead, id, updatedAt: new Date().toISOString() });
         });
-        state.leads = [...existing.values()].filter(emailReadyLead);
+        hydrateSentEmailHistory(state);
+        state.leads = [...existing.values(), ...state.leads.filter(lead => !existing.has(lead.id))].filter(emailReadyLead);
         hydrateSentEmailHistory(state);
         const leadById = new Map(state.leads.map(lead => [lead.id, lead]));
         for (const task of state.approvalQueue || []) {
