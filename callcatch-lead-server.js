@@ -27,6 +27,46 @@ const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
 const PUBLIC_DIR = __dirname;
 let automationRunning = false;
 
+async function enrichLeadForOutreach(lead = {}) {
+  if (!lead.website || (lead.websiteIntelligence && lead.websiteIntelligence.ok !== false)) {
+    return lead;
+  }
+
+  try {
+    const scan = await scanWebsite(lead.website);
+    const discoveredEmail = scan.emails && scan.emails[0] ? scan.emails[0] : "";
+    const discoveredPhone = scan.phones && scan.phones[0] ? scan.phones[0] : "";
+    const enriched = enrichProspect({
+      ...lead,
+      email: lead.email || discoveredEmail,
+      phone: lead.phone || discoveredPhone
+    }, scan);
+    await audit("website_scan_for_outreach", {
+      leadId: lead.id,
+      business: lead.business,
+      website: lead.website,
+      ok: scan.ok,
+      emailFound: !!discoveredEmail
+    });
+    return enriched;
+  } catch (error) {
+    log("warn", "outreach_website_scan_failed", {
+      leadId: lead.id,
+      business: lead.business,
+      website: lead.website,
+      error: error.message
+    });
+    return enrichProspect(lead, {
+      ok: false,
+      error: error.message,
+      url: lead.website,
+      emails: [],
+      phones: [],
+      websiteQualityScore: lead.websiteQualityScore || 15
+    });
+  }
+}
+
 function send(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -219,9 +259,11 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/outreach") {
     try {
       const body = await readJson(req);
+      const lead = body.scan === false ? (body.lead || {}) : await enrichLeadForOutreach(body.lead || {});
       return send(res, 200, {
         approvalRequired: true,
-        assets: outreachAssets(body.lead || {})
+        lead,
+        assets: outreachAssets(lead)
       });
     } catch (error) {
       return send(res, 400, { error: error.message });
@@ -336,15 +378,22 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/campaigns/enroll") {
     try {
       const body = await readJson(req);
+      const campaign = { ...(body.campaign || buildCampaign(body)) };
+      const sourceLeads = Array.isArray(body.leads) ? body.leads : (await readStore()).leads;
+      const candidates = sourceLeads
+        .filter(lead => Number(lead.callCatchFitScore || 0) >= Number(campaign.minFitScore || 68))
+        .filter(lead => !campaign.trade || lead.trade === campaign.trade);
+      const enrichedCandidates = [];
+      for (const lead of candidates) {
+        enrichedCandidates.push(await enrichLeadForOutreach(lead));
+      }
       const result = await mutateStore(state => {
         const campaign = { ...(body.campaign || buildCampaign(body)), variantStats: state.sending?.variantStats || {} };
-        const candidates = (Array.isArray(body.leads) ? body.leads : state.leads)
-          .filter(lead => Number(lead.callCatchFitScore || 0) >= Number(campaign.minFitScore || 68))
-          .filter(lead => !campaign.trade || lead.trade === campaign.trade);
-        const tasks = candidates.flatMap(lead => buildSequenceTasks(lead, campaign, outreachAssets(lead)).map(task => ({ ...task, id: newId("task"), createdAt: new Date().toISOString() })));
+        const tasks = enrichedCandidates.flatMap(lead => buildSequenceTasks(lead, campaign, outreachAssets(lead)).map(task => ({ ...task, id: newId("task"), createdAt: new Date().toISOString() })));
+        state.leads = (state.leads || []).map(existing => enrichedCandidates.find(lead => lead.id && lead.id === existing.id) || existing);
         state.approvalQueue.unshift(...tasks);
-        state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "campaign_enrolled", details: { campaign: campaign.name, leads: candidates.length, tasks: tasks.length } });
-        return { leads: candidates.length, tasks };
+        state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "campaign_enrolled", details: { campaign: campaign.name, leads: enrichedCandidates.length, tasks: tasks.length, enriched: true } });
+        return { leads: enrichedCandidates.length, enrichedLeads: enrichedCandidates, tasks };
       });
       return send(res, 200, result);
     } catch (error) {
@@ -377,8 +426,8 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/outreach/generate") {
     try {
       const body = await readJson(req);
-      const lead = body.lead || {};
-      return send(res, 200, { assets: outreachAssets(lead) });
+      const lead = body.scan === false ? (body.lead || {}) : await enrichLeadForOutreach(body.lead || {});
+      return send(res, 200, { lead, assets: outreachAssets(lead) });
     } catch (error) {
       return send(res, 400, { error: error.message });
     }
