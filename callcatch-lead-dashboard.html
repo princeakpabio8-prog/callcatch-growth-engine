@@ -159,6 +159,46 @@
     }
     .message-review summary { cursor: pointer; font-weight: 900; }
     .message-review textarea { margin-top: 8px; min-height: 220px; }
+    .composer {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: none;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    .composer.open { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+    .composer-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .composer-body {
+      overflow: auto;
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+      align-content: start;
+    }
+    .composer textarea {
+      min-height: 46vh;
+      line-height: 1.45;
+    }
+    .composer-foot {
+      position: sticky;
+      bottom: 0;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      padding: 10px;
+      border-top: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: 0 -10px 24px rgba(20, 33, 45, .08);
+    }
     .insights { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0; }
     .pipeline { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 11px; overflow-x: auto; padding-bottom: 6px; }
     .stage { padding: 11px; min-height: 260px; }
@@ -269,6 +309,10 @@
         font-size: 14px;
       }
       .message-review textarea { min-height: 260px; }
+      .composer-head { padding: 12px; }
+      .composer-body { padding: 12px; padding-bottom: 18px; }
+      .composer textarea { min-height: 50vh; }
+      .composer-foot { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .queue-item .actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .pipeline {
         grid-template-columns: repeat(8, minmax(240px, 82vw));
@@ -291,6 +335,7 @@
       aside { padding: 10px; }
       .actions, .queue-item .actions { grid-template-columns: 1fr; }
       .send-filters { display: grid; grid-template-columns: 1fr; }
+      .composer-foot { grid-template-columns: 1fr; }
       .stats, #sendingStats, #analyticsStats { grid-template-columns: 1fr; }
       .nav-btn { min-width: 118px; padding: 9px 10px; }
       .panel, .queue-item, .lead-row { border-radius: 7px; }
@@ -408,6 +453,27 @@
       <section class="view" id="settings"><div class="top"><div><h1>Settings & Safety</h1><p class="sub">Automation is approval-first by default. Full automation is disabled unless explicitly enabled.</p></div></div><div class="panel"><div class="form-grid"><div><label for="teamMember">Assigned Team Member</label><input id="teamMember" value="Sales Team"></div><div><label for="senderName">Sender Name</label><input id="senderName" value="CallCatch"></div><div><label for="demoLink">Demo Link</label><input id="demoLink" value="https://callcatch.site"></div><div><label for="automationMode">Sending Mode</label><select id="automationMode"><option>Review before sending</option><option>Full automation disabled</option></select></div></div><button class="btn primary" id="saveSettingsBtn" type="button">Save Settings</button><p class="hint">Email, SMS, LinkedIn, calendar, Slack, CRM, and payment integrations are adapter-ready but not connected in this local build. No message is sent from this dashboard.</p></div><div class="panel" style="margin-top:14px;"><h2>Audit Log</h2><div class="table-wrap"><table id="auditTable"></table></div></div></section>
     </main>
   </div>
+  <div class="composer" id="composer" aria-hidden="true">
+    <div class="composer-head">
+      <div>
+        <h2 id="composerTitle">Review Message</h2>
+        <p class="hint" id="composerMeta">Personalized outreach</p>
+      </div>
+      <button class="btn small" id="composerClose" type="button">Close</button>
+    </div>
+    <div class="composer-body">
+      <div><label for="composerRecipient">Recipient</label><input id="composerRecipient" placeholder="recipient"></div>
+      <div id="composerSubjectWrap"><label for="composerSubject">Subject</label><input id="composerSubject" placeholder="Subject"></div>
+      <div><label for="composerBody">Message</label><textarea id="composerBody" placeholder="Personalized message"></textarea></div>
+      <p class="hint" id="composerStatus">Edit, save, approve, or send from the bottom bar.</p>
+    </div>
+    <div class="composer-foot">
+      <button class="btn" id="composerSave" type="button">Save Draft</button>
+      <button class="btn" id="composerApprove" type="button">Approve</button>
+      <button class="btn primary" id="composerSend" type="button">Send Now</button>
+      <button class="btn" id="composerCopy" type="button">Copy</button>
+    </div>
+  </div>
   <div class="toast" id="toast">Saved</div>
   <script>
     const STAGES = ["New", "Researching", "Contacted", "Follow-up", "Demo Scheduled", "Trial Started", "Customer", "Lost"];
@@ -422,6 +488,7 @@
     let smsReady = false;
     let serverSynced = false;
     let sendCenterFilter = "ready";
+    let composerTaskId = "";
     let setupState = {
       backend: false,
       leadSources: false,
@@ -634,11 +701,11 @@
       const callTasks = queue.filter(q=>q.channel==="call" && q.status !== "Sent").slice(0,5);
       const followups = leads.filter(l=>dueToday(l.nextFollowUp) || ["Contacted","Follow-up"].includes(l.stage)).slice(0,5);
       const replies = inboxItems().slice(0,5);
-      $("workEmails").innerHTML = readyEmails.length ? readyEmails.map(item=>renderWorkItem(item.business, item.to || item.recipient || "Needs recipient", "Send Now", `data-work-send="${item.id}"`)).join("") : `<p class="sub">No approved emails ready.</p>`;
+      $("workEmails").innerHTML = readyEmails.length ? readyEmails.map(item=>renderWorkItem(item.business, item.to || item.recipient || "Needs recipient", "Review", `data-work-compose="${item.id}"`)).join("") : `<p class="sub">No approved emails ready.</p>`;
       $("workCalls").innerHTML = callTasks.length ? callTasks.map(item=>renderWorkItem(item.business, item.title || "Call task", "Open Lead", `data-work-lead="${item.leadId}"`)).join("") : `<p class="sub">No call tasks queued.</p>`;
       $("workFollowups").innerHTML = followups.length ? followups.map(lead=>renderWorkItem(lead.business, `${lead.stage} | ${lead.nextFollowUp || "Follow up due"}`, "Open Lead", `data-work-lead="${lead.id}"`)).join("") : `<p class="sub">No follow-ups due.</p>`;
       $("workReplies").innerHTML = replies.length ? replies.map(({lead,reply})=>renderWorkItem(lead.business, reply.body || "Reply received", "Review Reply", `data-work-reply="${reply.id}" data-work-lead="${lead.id}"`)).join("") : `<p class="sub">No replies waiting.</p>`;
-      document.querySelectorAll("[data-work-send]").forEach(b=>b.onclick=()=>sendNow(b.dataset.workSend));
+      document.querySelectorAll("[data-work-compose]").forEach(b=>b.onclick=()=>openComposer(b.dataset.workCompose));
       document.querySelectorAll("[data-work-lead]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.workLead; switchView("crm"); });
       document.querySelectorAll("[data-work-reply]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.workLead; switchView("automation"); });
     }
@@ -681,6 +748,15 @@
       const first = String(body || "").split(/\r?\n/).find(Boolean) || "";
       return /^subject:/i.test(first) ? first.replace(/^subject:\s*/i, "").trim() : "Personalized outreach";
     }
+    function messageBodyWithoutSubject(body){
+      const lines = String(body || "").split(/\r?\n/);
+      return /^subject:/i.test(lines[0] || "") ? lines.slice(1).join("\n").replace(/^\s+/, "") : String(body || "");
+    }
+    function composeMessage(subject, body, channel){
+      if (channel === "sms") return String(body || "").trim();
+      const cleanSubject = String(subject || "").trim() || "Quick idea for your team";
+      return `Subject: ${cleanSubject}\n\n${String(body || "").trim()}`;
+    }
     function messagePreview(body){
       return String(body || "")
         .split(/\r?\n/)
@@ -696,7 +772,7 @@
       const recipientLabel = item.channel === "sms" ? "Phone" : "Email";
       const recipient = item.to || item.recipient || (item.channel === "sms" ? lead.phone : lead.email) || "";
       const quickAction = category === "approval" ? "Approve & Send" : "Send Now";
-      return `<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag ${category === "ready" || category === "sent" ? "hot" : category === "failed" || category === "missing" ? "bad" : "warn"}">${esc(category.replace("-", " "))}</span></div><p class="hint">${esc(item.channel.toUpperCase())} | ${esc(item.status || "Needs Approval")} | Lead ID: ${esc(item.leadId || "")}</p><div class="insights">${checks.map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${recipientLabel}</label><input data-to="${item.id}" value="${esc(recipient)}" placeholder="${item.channel === "sms" ? "+15551234567" : "prospect@example.com"}"></div><div class="message-preview"><strong>${esc(messageSubject(item.body))}</strong><p class="hint">${esc(messagePreview(item.body) || "No message generated yet.")}</p></div><details class="message-review"><summary>Review and edit personalized message</summary><textarea data-body="${item.id}">${esc(item.body || "")}</textarea></details><div class="actions" style="margin-top:8px;"><button class="btn primary small" data-approve-send="${item.id}">${esc(quickAction)}</button><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-approve="${item.id}">Mark Approved</button><button class="btn small" data-open-lead="${item.leadId || ""}">Open Lead</button><button class="btn small" data-remove="${item.id}">Remove</button></div></div>`;
+      return `<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag ${category === "ready" || category === "sent" ? "hot" : category === "failed" || category === "missing" ? "bad" : "warn"}">${esc(category.replace("-", " "))}</span></div><p class="hint">${esc(item.channel.toUpperCase())} | ${esc(item.status || "Needs Approval")} | Lead ID: ${esc(item.leadId || "")}</p><div class="insights">${checks.map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${recipientLabel}</label><input data-to="${item.id}" value="${esc(recipient)}" placeholder="${item.channel === "sms" ? "+15551234567" : "prospect@example.com"}"></div><button class="message-preview" data-compose="${item.id}" type="button" style="width:100%;text-align:left;cursor:pointer;"><strong>${esc(messageSubject(item.body))}</strong><p class="hint">${esc(messagePreview(item.body) || "No message generated yet.")}</p></button><div class="actions" style="margin-top:8px;"><button class="btn primary small" data-compose="${item.id}">Review</button><button class="btn small" data-approve-send="${item.id}">${esc(quickAction)}</button><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-open-lead="${item.leadId || ""}">Open Lead</button><button class="btn small" data-remove="${item.id}">Remove</button></div></div>`;
     }
     function renderSetupChecklist(){
       const items = [
@@ -717,6 +793,64 @@
       $("sendCenterList").innerHTML = visible.length ? visible.map(sendCenterItemHtml).join("") : `<p class="sub">No ${sendCenterFilter === "all" ? "" : sendCenterFilter} messages right now.</p>`;
       renderSetupChecklist();
       bindQueueActions();
+    }
+    function openComposer(taskId){
+      const task = queue.find(item => item.id === taskId);
+      if (!task) { toast("Task not found"); return; }
+      const lead = leads.find(item => item.id === task.leadId) || {};
+      const recipient = task.to || task.recipient || (task.channel === "sms" ? lead.phone : lead.email) || "";
+      composerTaskId = taskId;
+      $("composerTitle").textContent = `${task.channel === "sms" ? "Review SMS" : "Review Email"} - ${task.business || "Prospect"}`;
+      $("composerMeta").textContent = `${task.status || "Needs Approval"} | ${task.title || task.channel}`;
+      $("composerRecipient").value = recipient;
+      $("composerSubjectWrap").style.display = task.channel === "sms" ? "none" : "block";
+      $("composerSubject").value = messageSubject(task.body);
+      $("composerBody").value = messageBodyWithoutSubject(task.body);
+      $("composerStatus").textContent = "Personalized draft ready for review.";
+      $("composer").classList.add("open");
+      $("composer").setAttribute("aria-hidden", "false");
+      setTimeout(()=>$("composerBody").focus(), 50);
+    }
+    function closeComposer(){
+      composerTaskId = "";
+      $("composer").classList.remove("open");
+      $("composer").setAttribute("aria-hidden", "true");
+    }
+    function saveComposer(){
+      const task = queue.find(item => item.id === composerTaskId);
+      if (!task) { toast("Task not found"); return null; }
+      task.to = $("composerRecipient").value.trim();
+      task.recipient = task.to;
+      task.body = composeMessage($("composerSubject").value, $("composerBody").value, task.channel);
+      task.editedAt = now();
+      save();
+      $("composerStatus").textContent = "Draft saved.";
+      render();
+      return task;
+    }
+    async function approveComposer(){
+      const task = saveComposer();
+      if (!task) return;
+      task.status = "Approved - not sent";
+      save();
+      await syncCrm(true);
+      $("composerStatus").textContent = "Approved and synced.";
+      render();
+      toast("Approved");
+    }
+    async function sendComposer(){
+      const task = saveComposer();
+      if (!task) return;
+      task.status = "Approved - not sent";
+      save();
+      $("composerStatus").textContent = "Sending...";
+      const sent = await sendNow(task.id);
+      if (sent) closeComposer();
+      else $("composerStatus").textContent = $("sendProgress").textContent || "Message was not sent.";
+    }
+    function copyComposer(){
+      const task = saveComposer();
+      if (task) copy(task.body);
     }
     async function runSetupChecks(silent = false){
       $("setupChecklistStatus").textContent = "Checking CallCatch setup...";
@@ -788,6 +922,7 @@
     function bindQueueActions(){
       document.querySelectorAll("[data-to]").forEach(input=>{ input.oninput=()=>{ const q=queue.find(x=>x.id===input.dataset.to); if(q){ q.to=input.value; q.recipient=input.value; save(); } }; input.onchange=()=>syncCrm(true).then(render); });
       document.querySelectorAll("[data-body]").forEach(input=>{ input.oninput=()=>{ const q=queue.find(x=>x.id===input.dataset.body); if(q){ q.body=input.value; q.editedAt=now(); save(); } }; input.onchange=()=>syncCrm(true).then(render); });
+      document.querySelectorAll("[data-compose]").forEach(b=>b.onclick=()=>openComposer(b.dataset.compose));
       document.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(queue.find(q=>q.id===b.dataset.copy)?.body || ""));
       document.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>{ const q=queue.find(x=>x.id===b.dataset.approve); if(q){ q.status="Approved - not sent"; save(); syncCrm(true).then(render); } });
       document.querySelectorAll("[data-approve-send]").forEach(b=>b.onclick=()=>approveAndSend(b.dataset.approveSend));
@@ -999,10 +1134,10 @@
           const message = "Cannot send yet because the approval queue did not sync with Render. Refresh the Render app and try again.";
           $("sendProgress").textContent = message;
           toast(message);
-          return;
+          return false;
         }
         const blocked = sendBlockReason(taskId);
-        if (blocked) { $("sendProgress").textContent = blocked; toast(blocked); return; }
+        if (blocked) { $("sendProgress").textContent = blocked; toast(blocked); return false; }
         const localTask = queue.find(q=>q.id===taskId);
         if (localTask) {
           localTask.status = "Sending";
@@ -1018,6 +1153,7 @@
         save(); render();
         $("sendProgress").textContent = result.sent ? `${result.task?.channel === "sms" ? "SMS" : "Email"} sent successfully.` : (result.error || "Message was not sent.");
         toast(result.sent ? "Message sent" : (result.error || "Not sent"));
+        return !!result.sent;
       } catch(error) {
         const localTask = queue.find(q=>q.id===taskId);
         if (localTask) {
@@ -1028,6 +1164,7 @@
         }
         $("sendProgress").textContent = `Send failed: ${error.message}`;
         toast(error.message);
+        return false;
       }
     }
     async function scheduleSend(taskId, when){
@@ -1135,6 +1272,11 @@
       $("sendCenterSyncBtn").onclick=()=>syncCrm(false).then(()=>runSetupChecks(true)).then(render);
       $("sendCenterSendAllBtn").onclick=sendApprovedEmails;
       document.querySelectorAll("[data-send-filter]").forEach(button=>button.onclick=()=>{ sendCenterFilter=button.dataset.sendFilter; renderSendCenter(); });
+      $("composerClose").onclick=closeComposer;
+      $("composerSave").onclick=()=>{ saveComposer(); toast("Draft saved"); };
+      $("composerApprove").onclick=approveComposer;
+      $("composerSend").onclick=sendComposer;
+      $("composerCopy").onclick=copyComposer;
       $("exportCsvBtn").onclick=()=>download("callcatch-prospects.csv",csv(),"text/csv"); $("exportExcelBtn").onclick=()=>download("callcatch-prospects.xls",`<table>${rows().map(r=>`<tr>${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</table>`,"application/vnd.ms-excel"); $("exportJsonBtn").onclick=()=>download("callcatch-prospects.json",JSON.stringify(leads,null,2),"application/json"); $("copySelectedBtn").onclick=()=>copy(JSON.stringify(selected()||{},null,2)); $("pdfBtn").onclick=pdfReport;
       $("refreshAssistantBtn").onclick=()=>{ renderAssistant(); toast("Assistant refreshed"); }; $("themeBtn").onclick=()=>{ const dark=document.body.dataset.theme==="dark"; document.body.dataset.theme=dark?"":"dark"; $("themeBtn").textContent=dark?"Dark Mode":"Light Mode"; };
       $("saveSettingsBtn").onclick=()=>{ settings={team:$("teamMember").value,sender:$("senderName").value,demo:$("demoLink").value,mode:$("automationMode").value}; save(); toast("Settings saved"); };
