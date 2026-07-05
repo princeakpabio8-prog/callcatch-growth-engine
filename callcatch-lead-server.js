@@ -537,7 +537,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/sending/send-all-approved") {
     try {
       const body = await readJson(req);
-      const result = await mutateStore(state => sendApprovedBatch(state, { limit: body.limit }));
+      const result = await mutateStore(state => sendApprovedBatch(state, { limit: body.limit, taskIds: body.taskIds }));
       return send(res, 200, result);
     } catch (error) {
       return send(res, 400, { error: error.message });

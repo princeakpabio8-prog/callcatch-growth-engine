@@ -149,6 +149,27 @@
     .card { border: 1px solid var(--line); border-radius: 7px; padding: 10px; margin-bottom: 8px; background: rgba(127,127,127,.04); cursor: grab; }
     .queue { display: grid; gap: 10px; }
     .queue-item { padding: 12px; }
+    .send-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
+    .filter-btn {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-weight: 900;
+      cursor: pointer;
+    }
+    .filter-btn.active { background: var(--green); border-color: var(--green); color: #fff; }
+    .checklist { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .check-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: rgba(127,127,127,.04);
+      min-height: 94px;
+    }
+    .check-item strong { display: block; margin-bottom: 4px; }
+    .send-center-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; align-items: start; }
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
     th, td { text-align: left; padding: 10px; border-bottom: 1px solid var(--line); font-size: 14px; vertical-align: top; }
@@ -181,8 +202,9 @@
         text-align: center;
       }
       .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-      .grid, .map-grid { grid-template-columns: 1fr; }
+      .grid, .map-grid, .send-center-grid { grid-template-columns: 1fr; }
       .work-grid, .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .checklist { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 760px) {
       main { padding: 14px; }
@@ -209,6 +231,7 @@
       .btn.small { min-height: 38px; }
       .stats, #sendingStats, #analyticsStats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .work-grid, .form-grid, .toolbar, .detail-grid { grid-template-columns: 1fr; }
+      .checklist { grid-template-columns: 1fr; }
       .panel { padding: 12px; }
       h1 { font-size: 24px; }
       h2 { font-size: 18px; }
@@ -249,6 +272,7 @@
       main { padding: 10px; }
       aside { padding: 10px; }
       .actions, .queue-item .actions { grid-template-columns: 1fr; }
+      .send-filters { display: grid; grid-template-columns: 1fr; }
       .stats, #sendingStats, #analyticsStats { grid-template-columns: 1fr; }
       .nav-btn { min-width: 118px; padding: 9px 10px; }
       .panel, .queue-item, .lead-row { border-radius: 7px; }
@@ -262,6 +286,7 @@
       <div class="brand"><div class="mark">C</div><div>CallCatch<br><span style="font-weight:400;color:#b9c8d5;">AI Growth Engine</span></div></div>
       <nav>
         <button class="nav-btn active" data-view="assistant" type="button">Daily Assistant</button>
+        <button class="nav-btn" data-view="sendcenter" type="button">Send Center</button>
         <button class="nav-btn" data-view="finder" type="button">Discovery</button>
         <button class="nav-btn" data-view="crm" type="button">CRM</button>
         <button class="nav-btn" data-view="pipeline" type="button">Pipeline</button>
@@ -298,6 +323,30 @@
           <div class="panel"><h2>Replies Needing Response</h2><div id="workReplies" class="work-list"></div></div>
         </div>
         <div class="grid"><div class="panel"><h2>Today’s Best Prospects</h2><div id="bestProspects" class="lead-list"></div></div><div class="panel"><h2>AI Recommendations</h2><div id="assistantNotes" class="script"></div></div></div>
+      </section>
+
+      <section class="view" id="sendcenter">
+        <div class="top"><div><h1>Unified Send Center</h1><p class="sub">Everything ready, missing, failed, and sent in one place.</p></div><div class="actions"><button class="btn" id="refreshSetupBtn" type="button">Refresh Checks</button><button class="btn" id="sendCenterSyncBtn" type="button">Sync CRM</button><button class="btn primary" id="sendCenterSendAllBtn" type="button">Send All Ready</button></div></div>
+        <div class="stats" id="sendCenterStats"></div>
+        <div class="send-center-grid">
+          <div class="panel">
+            <h2>Messages</h2>
+            <div class="send-filters" id="sendFilters">
+              <button class="filter-btn active" data-send-filter="ready" type="button">Ready</button>
+              <button class="filter-btn" data-send-filter="missing" type="button">Missing Info</button>
+              <button class="filter-btn" data-send-filter="approval" type="button">Needs Approval</button>
+              <button class="filter-btn" data-send-filter="failed" type="button">Failed</button>
+              <button class="filter-btn" data-send-filter="sent" type="button">Sent</button>
+              <button class="filter-btn" data-send-filter="all" type="button">All</button>
+            </div>
+            <div class="queue" id="sendCenterList"></div>
+          </div>
+          <div class="panel">
+            <h2>Setup Checklist</h2>
+            <div class="checklist" id="setupChecklist"></div>
+            <p class="hint" id="setupChecklistStatus">Checks run automatically when the app loads.</p>
+          </div>
+        </div>
       </section>
 
       <section class="view" id="finder">
@@ -354,6 +403,15 @@
     let emailReady = false;
     let smsReady = false;
     let serverSynced = false;
+    let sendCenterFilter = "ready";
+    let setupState = {
+      backend: false,
+      leadSources: false,
+      email: false,
+      sms: false,
+      crm: false,
+      approvalQueue: false
+    };
     let selectedId = leads[0]?.id || "";
     const $ = id => document.getElementById(id);
     const PRODUCTION_API_BASE = "https://callcatch-growth-engine.onrender.com";
@@ -550,6 +608,96 @@
       document.querySelectorAll("[data-work-lead]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.workLead; switchView("crm"); });
       document.querySelectorAll("[data-work-reply]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.workLead; switchView("automation"); });
     }
+    function sendableTasks(){
+      return queue.filter(item => ["email","sms"].includes(item.channel));
+    }
+    function sendMissingInfo(item){
+      const lead = leads.find(candidate => candidate.id === item.leadId) || {};
+      if (item.channel === "sms") return !(item.to || item.recipient || lead.phone);
+      return !(item.to || item.recipient || lead.email);
+    }
+    function sendReady(item){
+      if (!/^approved/i.test(item.status || "")) return false;
+      if (sendMissingInfo(item)) return false;
+      if (item.channel === "email" && !emailReady) return false;
+      if (item.channel === "sms" && !smsReady) return false;
+      return serverSynced;
+    }
+    function sendCategory(item){
+      const status = String(item.status || "");
+      if (/^sent$/i.test(status)) return "sent";
+      if (/failed|rate limited/i.test(status)) return "failed";
+      if (sendMissingInfo(item)) return "missing";
+      if (!/^approved/i.test(status)) return "approval";
+      return sendReady(item) ? "ready" : "missing";
+    }
+    function sendCenterStats(){
+      const tasks = sendableTasks();
+      const count = category => tasks.filter(item => sendCategory(item) === category).length;
+      return [
+        ["Ready", count("ready")],
+        ["Missing Info", count("missing")],
+        ["Needs Approval", count("approval")],
+        ["Failed", count("failed")],
+        ["Sent", count("sent")],
+        ["Total", tasks.length]
+      ];
+    }
+    function sendCenterItemHtml(item){
+      const lead = leads.find(candidate => candidate.id === item.leadId) || {};
+      const checks = sendChecklist(item);
+      const category = sendCategory(item);
+      const recipientLabel = item.channel === "sms" ? "Phone" : "Email";
+      const recipient = item.to || item.recipient || (item.channel === "sms" ? lead.phone : lead.email) || "";
+      return `<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag ${category === "ready" || category === "sent" ? "hot" : category === "failed" || category === "missing" ? "bad" : "warn"}">${esc(category.replace("-", " "))}</span></div><p class="hint">${esc(item.channel.toUpperCase())} | ${esc(item.status || "Needs Approval")} | Lead ID: ${esc(item.leadId || "")}</p><div class="insights">${checks.map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${recipientLabel}</label><input data-to="${item.id}" value="${esc(recipient)}" placeholder="${item.channel === "sms" ? "+15551234567" : "prospect@example.com"}"></div><div class="script" style="margin-top:8px;">${esc(item.body || "")}</div><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-approve="${item.id}">Mark Approved</button><button class="btn small" data-sendnow="${item.id}">Send Now</button><button class="btn small" data-open-lead="${item.leadId || ""}">Open Lead</button><button class="btn small" data-remove="${item.id}">Remove</button></div></div>`;
+    }
+    function renderSetupChecklist(){
+      const items = [
+        ["Render Backend", setupState.backend, "Live app is reachable."],
+        ["Lead Sources", setupState.leadSources, "Public discovery APIs respond."],
+        ["Email Provider", setupState.email, "Resend, Brevo, or SMTP is configured."],
+        ["SMS Provider", setupState.sms, "Twilio is configured."],
+        ["CRM Sync", setupState.crm, "Leads and queue are synced with Render."],
+        ["Approval Queue", setupState.approvalQueue, "Outreach tasks are available."]
+      ];
+      $("setupChecklist").innerHTML = items.map(([label, ok, detail])=>`<div class="check-item"><span class="tag ${ok ? "hot" : "bad"}">${ok ? "Ready" : "Needs Setup"}</span><strong>${esc(label)}</strong><p class="hint">${esc(detail)}</p></div>`).join("");
+    }
+    function renderSendCenter(){
+      const tasks = sendableTasks();
+      $("sendCenterStats").innerHTML = sendCenterStats().map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join("");
+      document.querySelectorAll("[data-send-filter]").forEach(button => button.classList.toggle("active", button.dataset.sendFilter === sendCenterFilter));
+      const visible = tasks.filter(item => sendCenterFilter === "all" || sendCategory(item) === sendCenterFilter);
+      $("sendCenterList").innerHTML = visible.length ? visible.map(sendCenterItemHtml).join("") : `<p class="sub">No ${sendCenterFilter === "all" ? "" : sendCenterFilter} messages right now.</p>`;
+      renderSetupChecklist();
+      bindQueueActions();
+    }
+    async function runSetupChecks(silent = false){
+      $("setupChecklistStatus").textContent = "Checking CallCatch setup...";
+      try {
+        const [health, network, email, sms, crm] = await Promise.allSettled([
+          api("/health"),
+          api("/api/network-check"),
+          api("/api/email/status"),
+          api("/api/sms/status"),
+          api("/api/crm")
+        ]);
+        setupState.backend = health.status === "fulfilled" && !!health.value.ok;
+        setupState.leadSources = network.status === "fulfilled" && (network.value.checks || []).some(check => check.ok);
+        setupState.email = email.status === "fulfilled" && !!email.value.configured;
+        setupState.sms = sms.status === "fulfilled" && !!sms.value.configured;
+        setupState.crm = crm.status === "fulfilled";
+        setupState.approvalQueue = queue.length > 0 || (crm.status === "fulfilled" && (crm.value.approvalQueue || []).length > 0);
+        emailReady = setupState.email;
+        smsReady = setupState.sms;
+        serverSynced = setupState.crm;
+        $("setupChecklistStatus").textContent = "Setup checks updated.";
+        if (!silent) toast("Setup checks updated");
+      } catch {
+        $("setupChecklistStatus").textContent = "Setup checks could not complete.";
+        if (!silent) toast("Setup check failed");
+      }
+      renderSendCenter();
+    }
     function leadRowHtml(l){
       return `<div class="lead-row ${l.id===selectedId?"active":""}" data-id="${l.id}"><div class="lead-top"><div class="lead-name">${esc(l.business)}</div><span class="tag ${tagClass(l.callCatchFitScore)}">${l.callCatchFitScore}</span></div><div class="meta"><span>${esc(l.trade)}</span><span>${esc([l.city,l.state].filter(Boolean).join(", ") || l.area || "")}</span><span>${esc(l.stage)}</span><span>${esc(l.responsePriority)}</span></div></div>`;
     }
@@ -588,11 +736,15 @@
         }
       });
       $("approvalQueue").innerHTML = queue.length ? queue.map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag warn">${esc(item.status)}</span></div><p class="hint">Task ID: ${esc(item.id)} | Lead ID: ${esc(item.leadId || "")}</p>${["email","sms"].includes(item.channel) ? `<div class="insights">${sendChecklist(item).map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${item.channel === "sms" ? "Recipient Phone" : "Recipient Email"}</label><input data-to="${item.id}" value="${esc(item.to || item.recipient || "")}" placeholder="${item.channel === "sms" ? "Auto-filled from business phone when available" : "Auto-filled when a public email is found"}"></div>` : ""}<div class="script" style="margin-top:8px;">${esc(item.body)}</div><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-approve="${item.id}">Mark Approved</button>${["email","sms"].includes(item.channel)?`<button class="btn small" data-sendnow="${item.id}">Send Now</button><button class="btn small" data-schedule="${item.id}" data-when="today 2 pm">Today 2 PM</button><button class="btn small" data-schedule="${item.id}" data-when="tomorrow 9 am">Tomorrow 9 AM</button><button class="btn small" data-schedule="${item.id}" data-when="next monday 8 am">Next Monday 8 AM</button>`:""}<button class="btn small" data-remove="${item.id}">Remove</button></div></div>`).join("") : `<p class="sub">No generated outreach waiting for approval.</p>`;
+      bindQueueActions();
+    }
+    function bindQueueActions(){
       document.querySelectorAll("[data-to]").forEach(input=>{ input.oninput=()=>{ const q=queue.find(x=>x.id===input.dataset.to); if(q){ q.to=input.value; q.recipient=input.value; save(); } }; input.onchange=()=>syncCrm(true).then(render); });
-      document.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(queue.find(q=>q.id===b.dataset.copy).body));
-      document.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>{ const q=queue.find(x=>x.id===b.dataset.approve); q.status="Approved - not sent"; save(); syncCrm(true).then(render); });
+      document.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(queue.find(q=>q.id===b.dataset.copy)?.body || ""));
+      document.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>{ const q=queue.find(x=>x.id===b.dataset.approve); if(q){ q.status="Approved - not sent"; save(); syncCrm(true).then(render); } });
       document.querySelectorAll("[data-sendnow]").forEach(b=>b.onclick=()=>sendNow(b.dataset.sendnow));
       document.querySelectorAll("[data-schedule]").forEach(b=>b.onclick=()=>scheduleSend(b.dataset.schedule, b.dataset.when));
+      document.querySelectorAll("[data-open-lead]").forEach(b=>b.onclick=()=>{ if(b.dataset.openLead){ selectedId=b.dataset.openLead; switchView("crm"); } });
       document.querySelectorAll("[data-remove]").forEach(b=>b.onclick=()=>{ queue=queue.filter(q=>q.id!==b.dataset.remove); save(); render(); });
     }
     function sendChecklist(item){
@@ -608,7 +760,7 @@
       return [
         { label: (item.to || item.recipient || lead.email) ? "Email found" : "Needs email", ok: !!(item.to || item.recipient || lead.email) },
         { label: /^approved/i.test(item.status || "") ? "Approved" : "Needs approval", ok: /^approved/i.test(item.status || "") },
-        { label: emailReady ? "SMTP connected" : "SMTP not checked", ok: emailReady },
+        { label: emailReady ? "Email connected" : "Email not checked", ok: emailReady },
         { label: serverSynced ? "Synced" : "Needs sync", ok: serverSynced }
       ];
     }
@@ -656,7 +808,7 @@
       $("auditTable").innerHTML = auditLog.length ? `<tr><th>Time</th><th>Action</th><th>Details</th></tr>${auditLog.slice(0,40).map(row=>`<tr><td>${new Date(row.at).toLocaleString()}</td><td>${esc(row.action)}</td><td>${esc(JSON.stringify(row.details || {}))}</td></tr>`).join("")}` : `<tr><td>No server audit entries loaded yet.</td></tr>`;
     }
     function render(){
-      renderStats(); renderAssistant(); renderTodayWork(); renderList(); renderDetail(); renderPipeline(); renderQueue(); renderInbox(); renderAnalytics(); renderTerritory(); renderSettings(); renderAudit(); renderSendingStats();
+      renderStats(); renderAssistant(); renderTodayWork(); renderSendCenter(); renderList(); renderDetail(); renderPipeline(); renderQueue(); renderInbox(); renderAnalytics(); renderTerritory(); renderSettings(); renderAudit(); renderSendingStats();
     }
     async function search(){
       if($("source").value!=="Free Public Sources"){ $("finderStatus").textContent="That provider is a future adapter slot."; return; }
@@ -758,12 +910,17 @@
     async function sendApprovedEmails(){
       try {
         await syncCrm(true);
-        const approved = queue.filter(q=>["email","sms"].includes(q.channel) && /^approved/i.test(q.status||""));
+        const approved = queue.filter(q=>["email","sms"].includes(q.channel) && sendReady(q));
+        if (!approved.length) {
+          $("sendProgress").textContent = "No ready messages to send. Check Send Center for missing info or setup issues.";
+          toast("No ready messages");
+          return;
+        }
         approved.forEach(q=>{ q.status = "Sending"; });
         save();
         render();
         $("sendProgress").textContent = `Sending... 0 / ${approved.length} Complete`;
-        const result = await api("/api/sending/send-all-approved", { method:"POST", body: JSON.stringify({}) });
+        const result = await api("/api/sending/send-all-approved", { method:"POST", body: JSON.stringify({ taskIds: approved.map(item=>item.id) }) });
         const crm = await api("/api/crm");
         leads = crm.leads || leads;
         queue = crm.approvalQueue || queue;
@@ -916,11 +1073,15 @@
         : "API connected through this app. Search results become CRM records automatically.";
       document.querySelectorAll(".nav-btn").forEach(b=>b.onclick=()=>switchView(b.dataset.view));
       $("searchBtn").onclick=search; $("saveSearchBtn").onclick=saveSearch; $("importBtn").onclick=importCsv; $("generateQueueBtn").onclick=enrollCampaign; $("syncBtn").onclick=()=>syncCrm(false).then(render); $("startGrowthBtn").onclick=startDailyGrowth; $("emailStatusBtn").onclick=()=>checkEmailStatus(false); $("sendTestBtn").onclick=sendTestEmail; $("sendSmsTestBtn").onclick=sendTestSms; $("sendApprovedBtn").onclick=sendApprovedEmails; $("saveSendingBtn").onclick=saveSendingLimits; $("runDueBtn").onclick=runDueScheduled; $("followupBtn").onclick=generateFollowups; $("recordReplyBtn").onclick=recordReply;
+      $("refreshSetupBtn").onclick=()=>runSetupChecks(false);
+      $("sendCenterSyncBtn").onclick=()=>syncCrm(false).then(()=>runSetupChecks(true)).then(render);
+      $("sendCenterSendAllBtn").onclick=sendApprovedEmails;
+      document.querySelectorAll("[data-send-filter]").forEach(button=>button.onclick=()=>{ sendCenterFilter=button.dataset.sendFilter; renderSendCenter(); });
       $("exportCsvBtn").onclick=()=>download("callcatch-prospects.csv",csv(),"text/csv"); $("exportExcelBtn").onclick=()=>download("callcatch-prospects.xls",`<table>${rows().map(r=>`<tr>${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</table>`,"application/vnd.ms-excel"); $("exportJsonBtn").onclick=()=>download("callcatch-prospects.json",JSON.stringify(leads,null,2),"application/json"); $("copySelectedBtn").onclick=()=>copy(JSON.stringify(selected()||{},null,2)); $("pdfBtn").onclick=pdfReport;
       $("refreshAssistantBtn").onclick=()=>{ renderAssistant(); toast("Assistant refreshed"); }; $("themeBtn").onclick=()=>{ const dark=document.body.dataset.theme==="dark"; document.body.dataset.theme=dark?"":"dark"; $("themeBtn").textContent=dark?"Dark Mode":"Light Mode"; };
       $("saveSettingsBtn").onclick=()=>{ settings={team:$("teamMember").value,sender:$("senderName").value,demo:$("demoLink").value,mode:$("automationMode").value}; save(); toast("Settings saved"); };
       ["search","tradeFilter","stageFilter"].forEach(id=>$(id).oninput=render);
-      loadServerCrm().then(()=>Promise.all([checkEmailStatus(true), checkSmsStatus(true)])).then(()=>{ render(); refreshSendingMetrics(); }).catch(()=>render());
+      loadServerCrm().then(()=>Promise.all([checkEmailStatus(true), checkSmsStatus(true)])).then(()=>runSetupChecks(true)).then(()=>{ render(); refreshSendingMetrics(); }).catch(()=>render());
     }
     init();
   </script>

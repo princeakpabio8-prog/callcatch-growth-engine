@@ -208,8 +208,11 @@ async function sendTaskNow(state, taskId) {
   }
 }
 
-async function sendApprovedBatch(state, { limit } = {}) {
-  const tasks = approvedSendableTasks(state).slice(0, Number(limit) || 500);
+async function sendApprovedBatch(state, { limit, taskIds } = {}) {
+  const allowedIds = Array.isArray(taskIds) && taskIds.length ? new Set(taskIds) : null;
+  const tasks = approvedSendableTasks(state)
+    .filter(task => !allowedIds || allowedIds.has(task.id))
+    .slice(0, Number(limit) || 500);
   const total = tasks.length;
   const sent = [];
   const failed = [];
