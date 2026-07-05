@@ -2,6 +2,7 @@ const { MemoryCache } = require("./cache");
 const { geocodeArea } = require("./providers/nominatim");
 const { searchOpenStreetMap } = require("./providers/openstreetmap");
 const { enrichProspect } = require("./prospectIntelligence");
+const { scanWebsite } = require("./websiteScanner");
 const { fallbackLocation } = require("./usLocations");
 const { readStore } = require("./dataStore");
 
@@ -73,6 +74,19 @@ function qualityReason(lead) {
   return reasons.join("; ") || "basic public listing match";
 }
 
+function deepQualityScore(lead) {
+  let score = Number(lead.callCatchFitScore || lead.aiLeadQualityScore || lead.confidenceScore || 0);
+  if (lead.email) score += 35;
+  if (lead.websiteIntelligence?.researchDepth === "deep") score += 10;
+  if (lead.websiteIntelligence?.leadQualitySignals?.length) score += Math.min(14, lead.websiteIntelligence.leadQualitySignals.length * 2);
+  if (lead.websiteIntelligence?.emergencyService) score += 8;
+  if (lead.websiteIntelligence?.freeEstimate) score += 4;
+  if (lead.websiteIntelligence?.careersHiring) score += 3;
+  if (lead.websiteIntelligence?.weakSignals?.length) score += 8;
+  if (!lead.email) score -= 80;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
 function enrichLead(lead) {
   const confidence = confidenceScore(lead);
   const opportunity = opportunityScore(lead);
@@ -98,6 +112,52 @@ function enrichLead(lead) {
     sourceId: lead.sourceId || ""
   };
   return enrichProspect(base, {});
+}
+
+async function deepResearchLeads(leads, { count, errors }) {
+  const researched = [];
+  const candidates = [...leads]
+    .sort((a, b) => {
+      const aHasEmail = a.email ? 1 : 0;
+      const bHasEmail = b.email ? 1 : 0;
+      const aHasWebsite = a.website ? 1 : 0;
+      const bHasWebsite = b.website ? 1 : 0;
+      return (bHasEmail - aHasEmail) || (bHasWebsite - aHasWebsite) || (b.aiLeadQualityScore - a.aiLeadQualityScore);
+    })
+    .slice(0, Math.max(count * 4, 16));
+
+  for (const lead of candidates) {
+    if (!lead.website) {
+      if (lead.email) researched.push({ ...lead, researchDepth: "listing-only", deepQualityScore: deepQualityScore(lead) });
+      continue;
+    }
+    try {
+      const scan = await scanWebsite(lead.website);
+      const email = lead.email || (scan.emails || [])[0] || "";
+      const phone = lead.phone || (scan.phones || [])[0] || "";
+      const enriched = enrichProspect({ ...lead, email, phone }, scan);
+      researched.push({
+        ...enriched,
+        owner: enriched.owner || (scan.ownerMentions || [])[0] || "",
+        researchDepth: scan.researchDepth || "standard",
+        deepQualityScore: deepQualityScore(enriched),
+        leadQualityReason: [
+          lead.leadQualityReason,
+          email ? "public email discovered" : "",
+          scan.researchDepth ? `${scan.researchDepth} website research` : "",
+          ...(scan.leadQualitySignals || []).slice(0, 5)
+        ].filter(Boolean).join("; ")
+      });
+    } catch (error) {
+      errors.push(`Website research failed for ${lead.business}: ${error.message}`);
+      if (lead.email) researched.push({ ...lead, researchDepth: "listing-only", deepQualityScore: deepQualityScore(lead) });
+    }
+  }
+
+  return researched
+    .filter(lead => lead.email)
+    .sort((a, b) => (b.deepQualityScore || 0) - (a.deepQualityScore || 0))
+    .slice(0, count);
 }
 
 function applyFilters(leads, { minRating, maxReviews }) {
@@ -180,6 +240,7 @@ async function savedCrmFallback(input, count, errors = []) {
     const wantedState = normalizeState(input.state);
     const wantedCity = cityFromArea(input.area || input.city);
     const matches = (state.leads || [])
+      .filter(lead => lead.email)
       .filter(lead => !trade || normalizeText(lead.trade).includes(trade) || normalizeText(lead.business).includes(trade))
       .filter(lead => !wantedState || normalizeState(lead.state).includes(wantedState) || normalizeText(lead.area).includes(wantedState))
       .filter(lead => !wantedCity || normalizeText(lead.city).includes(wantedCity) || normalizeText(lead.area).includes(wantedCity))
@@ -205,16 +266,24 @@ async function searchLeads(input = {}) {
     radius,
     count,
     minRating: input.minRating || 0,
-    maxReviews: input.maxReviews || 0
+    maxReviews: input.maxReviews || 0,
+    deepResearch: input.deepResearch !== false
   });
 
   const cached = cache.get(key);
   if (cached) return { ...cached, cached: true };
 
-  const providerResult = await runProviders({ trade, area, state: input.state, city: input.city, count });
+  const providerResult = await runProviders({ trade, area, state: input.state, city: input.city, count: Math.min(count * 4, 80) });
   let leads = applyFilters(dedupe(providerResult.leads).map(enrichLead), input)
     .sort((a, b) => b.aiLeadQualityScore - a.aiLeadQualityScore)
-    .slice(0, count);
+    .slice(0, Math.max(count * 4, count));
+  const beforeDeepResearch = leads.length;
+  leads = input.deepResearch === false
+    ? leads.filter(lead => lead.email).slice(0, count)
+    : await deepResearchLeads(leads, { count, errors: providerResult.errors });
+  if (!leads.length && beforeDeepResearch) {
+    providerResult.errors.push(`Deep research checked ${beforeDeepResearch} candidate businesses but did not find public email-ready prospects. Try a nearby city, a larger radius, or another trade.`);
+  }
   let source = "OpenStreetMap + Nominatim";
   if (!leads.length && providerResult.errors.length) {
     leads = await savedCrmFallback({ ...input, trade, area }, count, providerResult.errors);
@@ -233,6 +302,9 @@ async function searchLeads(input = {}) {
       radius,
       city: providerResult.location.city,
       state: providerResult.location.state,
+      deepResearch: input.deepResearch !== false,
+      candidatesResearched: beforeDeepResearch,
+      emailReadyOnly: true,
       quality: leads.length >= count ? "strong" : leads.length > 0 ? "partial" : "no-results"
     }
   };

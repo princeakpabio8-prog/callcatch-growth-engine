@@ -40,6 +40,11 @@ function buildInsights(lead, scan = {}) {
   if (scan.emergencyService || emergencyTrade(lead.trade)) insights.push("Emergency or urgent-service category");
   if (scan.emergencyService) insights.push("Emergency service messaging detected");
   if (scan.financing) insights.push("Financing language detected");
+  if (scan.freeEstimate) insights.push("Free estimate or quote messaging detected");
+  if (scan.serviceAreaMessaging) insights.push("Service area messaging detected");
+  if (scan.careersHiring) insights.push("Hiring or growth signal detected");
+  if ((scan.trustSignals || []).length) insights.push(`Trust signals found: ${(scan.trustSignals || []).slice(0, 3).join(", ")}`);
+  if ((scan.weakSignals || []).length) insights.push(`Website weakness signals found: ${(scan.weakSignals || []).slice(0, 3).join(", ")}`);
   if (!scan.businessHours) insights.push("Business hours not clearly detected");
   return insights;
 }
@@ -155,6 +160,8 @@ function researchedOpening(lead, profile) {
   if (scan.noOnlineBooking) return `While looking through ${lead.business}, I noticed customers may not have a clear online booking path when they need help quickly.`;
   if (scan.financing) return `I noticed ${lead.business} mentions financing, which usually means a missed call can mean a higher-value job is at risk.`;
   if (reviews >= 100) return `I saw ${lead.business} has built a strong review base in ${city}, which tells me homeowners already trust the company.`;
+  if ((scan.trustSignals || []).length) return `While looking through ${lead.business}, I noticed trust signals like ${(scan.trustSignals || []).slice(0, 2).join(" and ")}, which usually means inbound calls are valuable.`;
+  if ((scan.serviceKeywords || []).length) return `I came across ${lead.business} while reviewing ${lead.trade || "home service"} companies in ${city} and noticed you mention ${(scan.serviceKeywords || []).slice(0, 2).join(" and ")}.`;
   if (lead.website) return `I came across ${lead.business} while reviewing ${lead.trade || "home service"} companies serving ${city}.`;
   return `I came across ${lead.business} while researching ${lead.trade || "home service"} companies in ${city}.`;
 }

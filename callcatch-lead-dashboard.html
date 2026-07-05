@@ -987,15 +987,15 @@
       renderSendCenter();
     }
     function leadRowHtml(l){
-      return `<div class="lead-row ${l.id===selectedId?"active":""}" data-id="${l.id}"><div class="lead-top"><div class="lead-name">${esc(l.business)}</div><span class="tag ${tagClass(l.callCatchFitScore)}">${l.callCatchFitScore}</span></div><div class="meta"><span>${esc(l.trade)}</span><span>${esc([l.city,l.state].filter(Boolean).join(", ") || l.area || "")}</span><span>${esc(l.stage)}</span><span>${esc(l.responsePriority)}</span>${l.email ? `<span class="tag hot">Email Ready</span>` : `<span class="tag bad">Needs Email</span>`}${l.phone ? `<span class="tag">Phone</span>` : ""}</div></div>`;
+      return `<div class="lead-row ${l.id===selectedId?"active":""}" data-id="${l.id}"><div class="lead-top"><div class="lead-name">${esc(l.business)}</div><span class="tag ${tagClass(l.deepQualityScore || l.callCatchFitScore)}">${l.deepQualityScore || l.callCatchFitScore}</span></div><div class="meta"><span>${esc(l.trade)}</span><span>${esc([l.city,l.state].filter(Boolean).join(", ") || l.area || "")}</span><span>${esc(l.stage)}</span><span>${esc(l.responsePriority)}</span>${l.email ? `<span class="tag hot">Email Ready</span>` : `<span class="tag bad">Needs Email</span>`}${l.researchDepth ? `<span class="tag">Research: ${esc(l.researchDepth)}</span>` : ""}${l.phone ? `<span class="tag">Phone</span>` : ""}</div></div>`;
     }
     function renderList(){ $("leadList").innerHTML = filtered().map(leadRowHtml).join("") || `<p class="sub">No prospects found. Run Discovery or import a CSV.</p>`; document.querySelectorAll(".lead-row").forEach(row=>row.onclick=()=>{selectedId=row.dataset.id; render();}); }
     function renderDetail(){
       const l = selected();
       if(!l){ $("leadDetail").innerHTML = `<h2>No prospects yet</h2><p class="sub">Go to Discovery, search a trade and market, then prospects will appear here.</p>`; return; }
       $("leadDetail").innerHTML = `<div class="lead-top"><div><h2>${esc(l.business)}</h2><p class="sub">${esc(l.trade)} | ${esc(l.phone || "No phone")} | ${esc(l.email || "No email")} | ${esc(l.website || l.mapsUrl || "")}</p></div><span class="tag ${tagClass(l.callCatchFitScore)}">${esc(l.aiOpportunityLevel)}</span></div>
-      <div class="detail-grid"><div class="mini"><span>Fit Score</span><strong>${l.callCatchFitScore}</strong></div><div class="mini"><span>Revenue Opp.</span><strong>${money(l.revenueOpportunityEstimate)}</strong></div><div class="mini"><span>Website</span><strong>${l.websiteQualityScore||0}</strong></div><div class="mini"><span>Follow-up</span><strong>${esc(l.followUpStatus || l.responsePriority || "Not started")}</strong></div></div>
-      <div class="insights">${(l.aiInsights||[]).map(i=>`<span class="tag">${esc(i)}</span>`).join("") || `<span class="tag">No scan insights yet</span>`}</div>
+      <div class="detail-grid"><div class="mini"><span>Fit Score</span><strong>${l.callCatchFitScore}</strong></div><div class="mini"><span>Lead Quality</span><strong>${l.deepQualityScore || l.aiLeadQualityScore || l.confidenceScore || 0}</strong></div><div class="mini"><span>Website</span><strong>${l.websiteQualityScore||0}</strong></div><div class="mini"><span>Follow-up</span><strong>${esc(l.followUpStatus || l.responsePriority || "Not started")}</strong></div></div>
+      <div class="insights">${[...(l.aiInsights||[]), ...(l.websiteIntelligence?.leadQualitySignals || []), l.leadQualityReason || ""].filter(Boolean).slice(0,14).map(i=>`<span class="tag">${esc(i)}</span>`).join("") || `<span class="tag">No scan insights yet</span>`}</div>
       <p class="sub">${esc(l.recommendedSalesAngle || "")}</p>
       <div class="form-grid"><div><label>Stage</label><select id="detailStage">${STAGES.map(s=>`<option ${s===l.stage?"selected":""}>${s}</option>`).join("")}</select></div><div><label>Owner</label><input id="owner" value="${esc(l.owner||"")}"></div><div><label>Next Follow-up</label><input id="nextFollow" type="date" value="${esc(l.nextFollowUp||"")}"></div><div><label>Assigned</label><input id="assigned" value="${esc(l.assignedTeamMember||settings.team)}"></div></div>
       <label>Notes</label><textarea id="notes">${esc(l.notes||"")}</textarea>
@@ -1146,15 +1146,16 @@
     }
     async function search(){
       if($("source").value!=="Free Public Sources"){ $("finderStatus").textContent="That provider is a future adapter slot."; return; }
-      $("finderStatus").textContent="Searching and scoring prospects...";
+      $("finderStatus").textContent="Deep researching prospects: finding businesses, scanning websites, and keeping email-ready leads...";
       const area = [$("city").value, $("state").value].filter(Boolean).join(", ");
       try {
-        const payload = await api("/api/leads",{method:"POST",body:JSON.stringify({trade:$("trade").value,city:$("city").value,area,state:$("state").value,zip:$("zip").value,radius:$("radius").value,count:$("count").value})});
+        const payload = await api("/api/leads",{method:"POST",body:JSON.stringify({trade:$("trade").value,city:$("city").value,area,state:$("state").value,zip:$("zip").value,radius:$("radius").value,count:$("count").value,deepResearch:true})});
         const added = upsertLeads(payload.leads || []);
         const warning = (payload.errors || []).length ? ` Warning: ${payload.errors[0]}` : "";
         const skipped = lastImportStats.skippedNoEmail ? ` Skipped ${lastImportStats.skippedNoEmail} without email.` : "";
         const duplicates = lastImportStats.duplicates ? ` Ignored ${lastImportStats.duplicates} duplicates.` : "";
-        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} email-ready CRM records from ${payload.source || "public sources"}.${skipped}${duplicates}${warning}`;
+        const researched = payload.search?.candidatesResearched ? ` Researched ${payload.search.candidatesResearched} candidates.` : "";
+        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} email-ready CRM records from ${payload.source || "public sources"}.${researched}${skipped}${duplicates}${warning}`;
         if ((payload.leads || []).length) switchView("crm");
         toast(`${added} prospects added`);
       } catch(e){ $("finderStatus").textContent=e.message + `. Check ${apiUrl("/api/network-check")} to verify public data access.`; toast("Search failed"); }
