@@ -474,7 +474,7 @@
         <div class="grid"><div class="panel"><div class="toolbar"><input id="search" placeholder="Search prospects"><select id="tradeFilter"><option value="">All trades</option></select><select id="stageFilter"><option value="">All stages</option></select></div><div id="leadList" class="lead-list"></div></div><div class="panel" id="leadDetail"><h2>No prospect selected</h2><p class="sub">Run discovery or import leads to begin.</p></div></div>
       </section>
 
-      <section class="view" id="pipeline"><div class="top"><div><h1>Pipeline</h1><p class="sub">Every emailed or contacted prospect appears here on mobile and desktop.</p></div><div class="actions"><button class="btn" id="recoverPipelineBtn" type="button">Refresh Contacted</button></div></div><div class="panel" style="margin-bottom:14px;"><div class="lead-top"><div><h2>Already Contacted</h2><p class="sub">Prospects with sent emails, replies, or last contact history.</p></div><span class="tag hot" id="contactedCount">0</span></div><div class="queue" id="contactedPipelineList"></div></div><div class="pipeline" id="pipelineBoard"></div></section>
+      <section class="view" id="pipeline"><div class="top"><div><h1>Pipeline</h1><p class="sub">Every emailed or contacted prospect appears here on mobile and desktop.</p></div><div class="actions"><button class="btn" id="recoverPipelineBtn" type="button">Refresh Contacted</button></div></div><div class="panel" style="margin-bottom:14px;"><div class="lead-top"><div><h2>Pipeline Memory</h2><p class="sub" id="pipelineMemoryText">Checking saved contacted history...</p></div><span class="tag" id="pipelineMemoryStorage">Storage</span></div><div class="stats" id="pipelineMemoryStats"></div></div><div class="panel" style="margin-bottom:14px;"><div class="lead-top"><div><h2>Already Contacted</h2><p class="sub">Prospects with sent emails, replies, or last contact history.</p></div><span class="tag hot" id="contactedCount">0</span></div><div class="queue" id="contactedPipelineList"></div></div><div class="pipeline" id="pipelineBoard"></div></section>
       <section class="view" id="automation">
         <div class="top"><div><h1>Campaigns & Approval Queue</h1><p class="sub">Create multi-step campaigns. Emails send only after approval and SMTP setup.</p></div><div class="actions"><button class="btn" id="syncBtn" type="button">Sync All</button><button class="btn" id="emailStatusBtn" type="button">Check Email</button><button class="btn" id="sendApprovedBtn" type="button">Send All Approved</button><button class="btn primary" id="generateQueueBtn" type="button">Enroll Qualified Leads</button></div></div>
         <div class="panel"><div class="form-grid"><div><label for="campaignName">Campaign Name</label><input id="campaignName" value="Default Outbound Sequence"></div><div><label for="campaignFit">Minimum Fit Score</label><input id="campaignFit" type="number" value="68"></div><div><label for="campaignTrade">Trade Filter</label><select id="campaignTrade"><option value="">All trades</option></select></div><div><label>Safety</label><input value="Review before sending" disabled></div></div><p class="hint">Sequence: Day 1 email, Day 3 LinkedIn, Day 5 follow-up email, Day 7 phone reminder, Day 10 final email.</p></div>
@@ -528,6 +528,7 @@
     let serverSynced = false;
     let sendCenterFilter = "ready";
     let composerTaskId = "";
+    let pipelineMemory = null;
     let lastImportStats = { added: 0, skippedNoEmail: 0, duplicates: 0 };
     let setupState = {
       backend: false,
@@ -594,7 +595,7 @@
     }
     async function syncEverywhere(silent = false){
       const ok = await syncCrm(true);
-      await Promise.allSettled([checkEmailStatus(true), checkSmsStatus(true), refreshSendingMetrics()]);
+      await Promise.allSettled([checkEmailStatus(true), checkSmsStatus(true), refreshSendingMetrics(), refreshPipelineMemory()]);
       render();
       if (!silent) toast(ok ? "Synced everywhere" : "Sync unavailable");
       return ok;
@@ -627,6 +628,41 @@
         .filter(item => item.channel === "email" && /^sent$/i.test(item.status || ""))
         .map(item => ({ ...item, lead: leads.find(lead => lead.id === item.leadId) || {} }))
         .sort((a,b)=>new Date(b.sentAt || 0)-new Date(a.sentAt || 0));
+    }
+    async function refreshPipelineMemory(){
+      try {
+        pipelineMemory = await api("/api/pipeline/contacted");
+        if (Array.isArray(pipelineMemory.contacted) && pipelineMemory.contacted.length) {
+          const existingIds = new Set(leads.map(lead=>lead.id));
+          pipelineMemory.contacted.forEach(item=>{
+            if (!existingIds.has(item.id)) {
+              leads.push(normalizeLead({
+                id: item.id,
+                business: item.business,
+                trade: item.trade,
+                email: item.email,
+                stage: item.stage || "Contacted",
+                lastContact: item.lastContact,
+                source: "Pipeline memory"
+              }));
+              existingIds.add(item.id);
+            }
+          });
+          recoverPipelineFromSentHistory();
+          save();
+        }
+        return pipelineMemory;
+      } catch {
+        pipelineMemory = {
+          storage: "unavailable",
+          leads: leads.length,
+          approvalQueue: queue.length,
+          sentEmailTasks: sentEmailTasks().length,
+          contactedProspects: contactedProspects().length,
+          message: "Could not read Render pipeline memory. Using this browser's local memory."
+        };
+        return pipelineMemory;
+      }
     }
     function leadSentEmails(lead = {}){
       const stored = (lead.sentEmails || []).map(item => ({ ...item, business: lead.business, leadId: lead.id, body: item.body || "" }));
@@ -1237,6 +1273,20 @@
       const recovered = recoverPipelineFromSentHistory();
       if (recovered) { save(); syncCrm(true); }
       const contacted = contactedProspects();
+      const memoryText = $("pipelineMemoryText");
+      const memoryStorage = $("pipelineMemoryStorage");
+      const memoryStats = $("pipelineMemoryStats");
+      if (memoryText) memoryText.textContent = pipelineMemory?.message || "Pipeline memory has not been checked yet. Tap Refresh Contacted.";
+      if (memoryStorage) memoryStorage.textContent = pipelineMemory?.storage || (serverSynced ? "Render" : "Local");
+      if (memoryStats) {
+        const stats = [
+          ["CRM Leads", pipelineMemory?.leads ?? leads.length],
+          ["Contacted Saved", pipelineMemory?.contactedProspects ?? contacted.length],
+          ["Sent Email Tasks", pipelineMemory?.sentEmailTasks ?? sentEmailTasks().length],
+          ["Email Audits", pipelineMemory?.emailSentAudits ?? 0]
+        ];
+        memoryStats.innerHTML = stats.map(([label,value])=>`<div class="stat"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
+      }
       const contactedCount = $("contactedCount");
       const contactedList = $("contactedPipelineList");
       if (contactedCount) contactedCount.textContent = contacted.length;
@@ -1698,7 +1748,7 @@
       ["search","tradeFilter","stageFilter"].forEach(id=>$(id).oninput=render);
       document.addEventListener("visibilitychange", ()=>{ if (!document.hidden) syncEverywhere(true); });
       window.addEventListener("focus", ()=>syncEverywhere(true));
-      loadServerCrm().then(()=>Promise.all([checkEmailStatus(true), checkSmsStatus(true)])).then(()=>runSetupChecks(true)).then(()=>{ render(); refreshSendingMetrics(); }).catch(()=>render());
+      loadServerCrm().then(()=>Promise.all([checkEmailStatus(true), checkSmsStatus(true), refreshPipelineMemory()])).then(()=>runSetupChecks(true)).then(()=>{ render(); refreshSendingMetrics(); }).catch(()=>render());
     }
     init();
   </script>

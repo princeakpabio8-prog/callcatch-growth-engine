@@ -302,6 +302,47 @@ function hydrateSentEmailHistory(state) {
   return recovered;
 }
 
+function contactedLeads(state = {}) {
+  const terminal = new Set(["Contacted", "Follow-up", "Interested", "Demo Scheduled", "Trial Started", "Customer"]);
+  return (state.leads || []).filter(lead =>
+    terminal.has(lead.stage)
+    || !!lead.lastContact
+    || (lead.sentEmails || []).length > 0
+    || (lead.replies || []).length > 0
+  );
+}
+
+function pipelineMemoryReport(state = {}) {
+  const sentQueue = (state.approvalQueue || []).filter(task => task.channel === "email" && /^sent$/i.test(task.status || ""));
+  const emailSentAudits = (state.auditLog || []).filter(entry => entry.action === "email_sent");
+  const contacted = contactedLeads(state);
+  return {
+    storage: storageMode(),
+    leads: (state.leads || []).length,
+    approvalQueue: (state.approvalQueue || []).length,
+    sentEmailTasks: sentQueue.length,
+    leadsWithSentEmails: (state.leads || []).filter(lead => (lead.sentEmails || []).length > 0).length,
+    contactedProspects: contacted.length,
+    emailSentAudits: emailSentAudits.length,
+    canRecover: sentQueue.length > 0 || emailSentAudits.length > 0 || contacted.length > 0,
+    message: contacted.length
+      ? `${contacted.length} contacted prospect${contacted.length === 1 ? "" : "s"} are saved and should appear in Pipeline.`
+      : sentQueue.length || emailSentAudits.length
+        ? "Sent-email history exists, but CRM records were missing. CallCatch will recover what it can."
+        : "No saved contacted history was found in this app memory. Old sends may have lived only in a browser session, local file, or a Render instance that restarted before Postgres was connected.",
+    contacted: contacted.slice(0, 100).map(lead => ({
+      id: lead.id,
+      business: lead.business,
+      trade: lead.trade,
+      stage: lead.stage,
+      email: lead.email,
+      lastContact: lead.lastContact,
+      sentEmails: (lead.sentEmails || []).length,
+      replies: (lead.replies || []).length
+    }))
+  };
+}
+
 async function enrichLeadForOutreach(lead = {}) {
   const researchUrl = lead.website || lead.facebook || "";
   if (!researchUrl || (lead.websiteIntelligence && lead.websiteIntelligence.ok !== false)) {
@@ -576,6 +617,14 @@ const server = http.createServer(async (req, res) => {
       return state;
     });
     return send(res, 200, state);
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/pipeline/contacted") {
+    const state = await mutateStore(state => {
+      hydrateSentEmailHistory(state);
+      return state;
+    });
+    return send(res, 200, pipelineMemoryReport(state));
   }
 
   if (req.method === "POST" && url.pathname === "/api/crm/leads") {
