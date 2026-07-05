@@ -630,9 +630,9 @@
     }
     function applyServerState(crm = {}, mergeLocal = false){
       if (Array.isArray(crm.leads)) leads = (mergeLocal ? mergeById(leads, crm.leads) : crm.leads).filter(isStorableProspect);
-      if (Array.isArray(crm.approvalQueue)) queue = compactEmailDuplicates(mergeLocal ? mergeById(queue, crm.approvalQueue) : crm.approvalQueue);
       auditLog = crm.auditLog || auditLog;
       recoverPipelineFromSentHistory();
+      if (Array.isArray(crm.approvalQueue)) queue = compactEmailDuplicates(mergeLocal ? mergeById(queue, crm.approvalQueue) : crm.approvalQueue);
       serverSynced = true;
       if (!selectedId && leads[0]) selectedId = leads[0].id;
       save();
@@ -885,7 +885,58 @@
         lastActivity ? `Activity ${formatDateTime(lastActivity)}` : ""
       ].filter(Boolean);
     }
+    function emailIdentity(value = ""){
+      return String(value || "").toLowerCase().match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/)?.[0] || "";
+    }
+    function taskRecipient(item = {}){
+      const lead = leads.find(candidate => candidate.id === item.leadId) || {};
+      return emailIdentity(item.to || item.recipient || lead.email || "");
+    }
+    function sentEmailKeys(){
+      const keys = new Set();
+      queue.filter(item => item.channel === "email" && /^sent$/i.test(item.status || "")).forEach(item => {
+        const recipient = taskRecipient(item);
+        if (recipient) keys.add(`email:${recipient}`);
+        keys.add(`fp:${item.sendFingerprint || sendFingerprint(item)}`);
+      });
+      leads.forEach(lead => {
+        if (leadHasSentEmail(lead)) {
+          if (lead.email) keys.add(`email:${emailIdentity(lead.email)}`);
+          keys.add(`lead:${lead.id}`);
+          keys.add(`company:${companyKey(lead)}`);
+        }
+        (lead.sentEmails || []).forEach(sent => {
+          const recipient = emailIdentity(sent.to || sent.recipient || "");
+          if (recipient) keys.add(`email:${recipient}`);
+        });
+      });
+      (auditLog || []).filter(entry => entry.action === "email_sent").forEach(entry => {
+        const recipient = emailIdentity(entry.details?.to || "");
+        if (recipient) keys.add(`email:${recipient}`);
+      });
+      return keys;
+    }
+    function isInitialCampaignEmail(item = {}){
+      if (item.channel !== "email") return false;
+      const step = taskStepKey(item);
+      const title = String(item.title || "").toLowerCase();
+      return step === "initial-email" || title.includes("cold email") || title === "email" || title.includes("version a") || title.includes("version b");
+    }
+    function staleCampaignEmailTask(item = {}, sentKeys = sentEmailKeys()){
+      if (item.channel !== "email" || /^sent$/i.test(item.status || "")) return false;
+      if (!isInitialCampaignEmail(item)) return false;
+      const lead = leads.find(candidate => candidate.id === item.leadId) || {};
+      const recipient = taskRecipient(item);
+      return !!(
+        sentKeys.has(`fp:${item.sendFingerprint || sendFingerprint(item)}`)
+        || (recipient && sentKeys.has(`email:${recipient}`))
+        || (lead.id && sentKeys.has(`lead:${lead.id}`))
+        || (lead.id && leadHasSentEmail(lead))
+        || (lead.id && ["Contacted","Demo Scheduled","Trial Started","Customer"].includes(pipelineStage(lead)))
+      );
+    }
     function compactEmailDuplicates(items = queue){
+      const sentKeys = sentEmailKeys();
       const sentFingerprints = new Set((items || [])
         .filter(item => item.channel === "email" && /^sent$/i.test(item.status || ""))
         .map(item => item.sendFingerprint || sendFingerprint(item)));
@@ -894,11 +945,19 @@
         if (item.channel !== "email") return true;
         const fp = item.sendFingerprint || sendFingerprint(item);
         if (/^sent$/i.test(item.status || "")) return true;
+        if (staleCampaignEmailTask(item, sentKeys)) return false;
         if (sentFingerprints.has(fp)) return false;
         if (keptDrafts.has(fp)) return false;
         keptDrafts.add(fp);
         return true;
       });
+    }
+    function cleanupStaleQueue(){
+      const before = queue.length;
+      queue = compactEmailDuplicates(queue);
+      const removed = before - queue.length;
+      if (removed > 0) save();
+      return removed;
     }
     function contactScore(lead = {}){
       let score = 0;
@@ -1735,6 +1794,7 @@
       $("auditTable").innerHTML = auditLog.length ? `<tr><th>Time</th><th>Action</th><th>Details</th></tr>${auditLog.slice(0,40).map(row=>`<tr><td>${new Date(row.at).toLocaleString()}</td><td>${esc(row.action)}</td><td>${esc(JSON.stringify(row.details || {}))}</td></tr>`).join("")}` : `<tr><td>No server audit entries loaded yet.</td></tr>`;
     }
     function render(){
+      cleanupStaleQueue();
       renderStats(); renderAssistant(); renderActionGuide(); renderTodayWork(); renderSendCenter(); renderList(); renderDetail(); renderPipeline(); renderQueue(); renderInbox(); renderSentHistory(); renderAnalytics(); renderTerritory(); renderSettings(); renderAudit(); renderSendingStats(); renderFollowupCenter();
     }
     async function search(){

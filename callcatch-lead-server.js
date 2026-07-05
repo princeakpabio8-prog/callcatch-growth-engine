@@ -138,17 +138,64 @@ function queueFingerprint(task = {}, lead = {}) {
   return [company, task.channel || "message", queueStepKey(task)].join("|");
 }
 
+function emailIdentity(value = "") {
+  return parseEmail(value || "").toLowerCase();
+}
+
+function taskRecipientEmail(task = {}, lead = {}) {
+  return emailIdentity(task.to || task.recipient || lead.email || "");
+}
+
+function initialCampaignEmailTask(task = {}) {
+  if (task.channel !== "email") return false;
+  const step = queueStepKey(task);
+  const title = String(task.title || "").toLowerCase();
+  return step === "initial-email" || title.includes("cold email") || title === "email" || title.includes("version a") || title.includes("version b");
+}
+
+function contactedKeySet(leads = []) {
+  const keys = new Set();
+  for (const lead of leads || []) {
+    const sent = (lead.sentEmails || []).length > 0;
+    const contacted = sent
+      || !!lead.lastContact
+      || (lead.replies || []).length > 0
+      || ["Contacted", "Demo Scheduled", "Trial Started", "Customer"].includes(lead.stage || "");
+    if (!contacted) continue;
+    if (lead.id) keys.add(`lead:${lead.id}`);
+    if (lead.email) keys.add(`email:${emailIdentity(lead.email)}`);
+    keys.add(`company:${normalizeCompanyKey(lead)}`);
+    for (const sentEmail of lead.sentEmails || []) {
+      const recipient = emailIdentity(sentEmail.to || sentEmail.recipient || "");
+      if (recipient) keys.add(`email:${recipient}`);
+    }
+  }
+  return keys;
+}
+
+function taskMatchesContacted(task = {}, lead = {}, contactedKeys = new Set()) {
+  const recipient = taskRecipientEmail(task, lead);
+  return !!(
+    (lead.id && contactedKeys.has(`lead:${lead.id}`))
+    || (recipient && contactedKeys.has(`email:${recipient}`))
+    || contactedKeys.has(`company:${normalizeCompanyKey(lead.id ? lead : task)}`)
+  );
+}
+
 function compactApprovalQueue(items = [], leads = []) {
   const leadById = new Map(leads.map(lead => [lead.id, lead]));
+  const contactedKeys = contactedKeySet(leads);
   const sentFingerprints = new Set(items
     .filter(item => item.channel === "email" && /^sent$/i.test(item.status || ""))
     .map(item => item.sendFingerprint || queueFingerprint(item, leadById.get(item.leadId) || {})));
   const draftFingerprints = new Set();
   return items.filter(item => {
     if (item.channel !== "email") return true;
-    const fp = item.sendFingerprint || queueFingerprint(item, leadById.get(item.leadId) || {});
+    const lead = leadById.get(item.leadId) || {};
+    const fp = item.sendFingerprint || queueFingerprint(item, lead);
     item.sendFingerprint = fp;
     if (/^sent$/i.test(item.status || "")) return true;
+    if (initialCampaignEmailTask(item) && taskMatchesContacted(item, lead, contactedKeys)) return false;
     if (sentFingerprints.has(fp)) return false;
     if (draftFingerprints.has(fp)) return false;
     draftFingerprints.add(fp);
@@ -305,6 +352,8 @@ function hydrateSentEmailHistory(state) {
       }
     }
   }
+
+  state.approvalQueue = compactApprovalQueue(state.approvalQueue || [], state.leads || []);
 
   if (recovered) {
     state.auditLog.unshift({
@@ -501,6 +550,7 @@ async function importResendSentEmails(state, options = {}) {
   }
 
   hydrateSentEmailHistory(state);
+  state.approvalQueue = compactApprovalQueue(state.approvalQueue || [], state.leads || []);
   state.auditLog.unshift({
     id: newId("audit"),
     at: new Date().toISOString(),
@@ -908,11 +958,15 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readJson(req);
       const campaign = { ...(body.campaign || buildCampaign(body)) };
-      const sourceLeads = Array.isArray(body.leads) ? body.leads : (await readStore()).leads;
+      const currentState = await readStore();
+      hydrateSentEmailHistory(currentState);
+      const contactedKeys = contactedKeySet(currentState.leads || []);
+      const sourceLeads = Array.isArray(body.leads) ? body.leads : currentState.leads;
       const candidates = sourceLeads
         .filter(emailReadyLead)
         .filter(lead => Number(lead.callCatchFitScore || 0) >= Number(campaign.minFitScore || 68))
-        .filter(lead => !campaign.trade || lead.trade === campaign.trade);
+        .filter(lead => !campaign.trade || lead.trade === campaign.trade)
+        .filter(lead => !taskMatchesContacted({ channel: "email", leadId: lead.id, business: lead.business, website: lead.website, city: lead.city, state: lead.state, to: lead.email, title: "Cold Email" }, lead, contactedKeys));
       const enrichedCandidates = [];
       for (const lead of candidates) {
         enrichedCandidates.push(await enrichLeadForOutreach(lead));
@@ -924,6 +978,7 @@ const server = http.createServer(async (req, res) => {
           .map(task => ({ ...task, id: newId("task"), createdAt: new Date().toISOString() })));
         state.leads = (state.leads || []).map(existing => enrichedCandidates.find(lead => lead.id && lead.id === existing.id) || existing);
         state.approvalQueue.unshift(...tasks);
+        state.approvalQueue = compactApprovalQueue(state.approvalQueue || [], state.leads || []);
         state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "campaign_enrolled", details: { campaign: campaign.name, leads: enrichedCandidates.length, tasks: tasks.length, enriched: true } });
         return { leads: enrichedCandidates.length, enrichedLeads: enrichedCandidates, tasks };
       });
