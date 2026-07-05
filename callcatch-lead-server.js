@@ -40,6 +40,44 @@ function emailReadyLead(lead = {}) {
   return !!String(lead.email || "").trim();
 }
 
+function queueStepKey(task = {}) {
+  if (task.sequenceStep) return task.sequenceStep;
+  if (task.channel === "email" && task.emailVariant) return "initial-email";
+  const title = String(task.title || task.channel || "message").toLowerCase();
+  if (title.includes("final")) return "final-followup";
+  if (title.includes("follow")) return "followup-1";
+  if (task.channel === "email" && title.includes("cold email")) return "initial-email";
+  return title.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "message";
+}
+
+function queueFingerprint(task = {}, lead = {}) {
+  const company = normalizeCompanyKey(lead.id ? lead : {
+    business: task.business,
+    website: task.website,
+    city: task.city,
+    state: task.state
+  }) || String(task.leadId || task.business || "").toLowerCase();
+  return [company, task.channel || "message", queueStepKey(task)].join("|");
+}
+
+function compactApprovalQueue(items = [], leads = []) {
+  const leadById = new Map(leads.map(lead => [lead.id, lead]));
+  const sentFingerprints = new Set(items
+    .filter(item => item.channel === "email" && /^sent$/i.test(item.status || ""))
+    .map(item => item.sendFingerprint || queueFingerprint(item, leadById.get(item.leadId) || {})));
+  const draftFingerprints = new Set();
+  return items.filter(item => {
+    if (item.channel !== "email") return true;
+    const fp = item.sendFingerprint || queueFingerprint(item, leadById.get(item.leadId) || {});
+    item.sendFingerprint = fp;
+    if (/^sent$/i.test(item.status || "")) return true;
+    if (sentFingerprints.has(fp)) return false;
+    if (draftFingerprints.has(fp)) return false;
+    draftFingerprints.add(fp);
+    return true;
+  });
+}
+
 async function enrichLeadForOutreach(lead = {}) {
   const researchUrl = lead.website || lead.facebook || "";
   if (!researchUrl || (lead.websiteIntelligence && lead.websiteIntelligence.ok !== false)) {
@@ -444,7 +482,7 @@ const server = http.createServer(async (req, res) => {
         const existing = new Map(state.approvalQueue.map(item => [item.id, item]));
         const mergedIncoming = normalized.map(item => ({ ...(existing.get(item.id) || {}), ...item }));
         const untouched = state.approvalQueue.filter(item => !incomingIds.has(item.id));
-        state.approvalQueue = mergedIncoming.concat(untouched);
+        state.approvalQueue = compactApprovalQueue(mergedIncoming.concat(untouched), state.leads || []);
         state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "approval_queue_updated", details: { count: normalized.length } });
         return state.approvalQueue;
       });

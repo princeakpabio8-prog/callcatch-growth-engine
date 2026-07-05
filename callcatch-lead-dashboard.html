@@ -889,7 +889,7 @@
     }
     function duplicateSent(item){
       const fp = item.sendFingerprint || sendFingerprint(item);
-      return queue.find(other => other.id !== item.id && /^sent|approved|sending|scheduled|needs approval/i.test(other.status || "") && (other.sendFingerprint || sendFingerprint(other)) === fp);
+      return queue.find(other => other.id !== item.id && /^sent|sending|scheduled/i.test(other.status || "") && (other.sendFingerprint || sendFingerprint(other)) === fp);
     }
     function sendReady(item){
       if (!/^approved/i.test(item.status || "")) return false;
@@ -1103,7 +1103,7 @@
       document.querySelectorAll("[data-body]").forEach(input=>{ input.oninput=()=>{ const q=queue.find(x=>x.id===input.dataset.body); if(q){ q.body=input.value; q.editedAt=now(); save(); } }; input.onchange=()=>syncCrm(true).then(render); });
       document.querySelectorAll("[data-compose]").forEach(b=>b.onclick=()=>openComposer(b.dataset.compose));
       document.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(queue.find(q=>q.id===b.dataset.copy)?.body || ""));
-      document.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>{ const q=queue.find(x=>x.id===b.dataset.approve); if(q){ q.status="Approved - not sent"; save(); syncCrm(true).then(render); } });
+      document.querySelectorAll("[data-approve]").forEach(b=>b.onclick=()=>{ const q=queue.find(x=>x.id===b.dataset.approve); if(q){ q.status="Approved - not sent"; q.approvedAt=now(); save(); render(); toast("Marked approved"); syncCrm(true).then(render); } });
       document.querySelectorAll("[data-approve-send]").forEach(b=>b.onclick=()=>approveAndSend(b.dataset.approveSend));
       document.querySelectorAll("[data-sendnow]").forEach(b=>b.onclick=()=>sendNow(b.dataset.sendnow));
       document.querySelectorAll("[data-schedule]").forEach(b=>b.onclick=()=>scheduleSend(b.dataset.schedule, b.dataset.when));
@@ -1359,6 +1359,7 @@
           toast(message);
           return false;
         }
+        await checkEmailStatus(true);
         const blocked = sendBlockReason(taskId);
         if (blocked) { $("sendProgress").textContent = blocked; toast(blocked); return false; }
         const localTask = queue.find(q=>q.id===taskId);

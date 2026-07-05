@@ -215,7 +215,7 @@ function sendFingerprint(lead = {}, task = {}) {
 
 function duplicateSentTask(state, lead, task) {
   const fingerprint = sendFingerprint(lead, task);
-  const duplicate = (state.approvalQueue || []).find(item => item.id !== task.id && /^sent|approved|sending|scheduled|needs approval/i.test(item.status || "") && (item.sendFingerprint || sendFingerprint(lead, item)) === fingerprint);
+  const duplicate = (state.approvalQueue || []).find(item => item.id !== task.id && /^sent|sending|scheduled/i.test(item.status || "") && (item.sendFingerprint || sendFingerprint(lead, item)) === fingerprint);
   return { fingerprint, duplicate };
 }
 
