@@ -26,6 +26,89 @@ function unique(values) {
   return [...new Set(values.filter(Boolean).map(value => String(value).trim()))];
 }
 
+function decodeHtmlEntities(value = "") {
+  return String(value)
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([a-f0-9]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)))
+    .replace(/&amp;/g, "&")
+    .replace(/&commat;/g, "@")
+    .replace(/&period;/g, ".");
+}
+
+function decodeCloudflareEmail(hex = "") {
+  const clean = String(hex || "").replace(/[^a-f0-9]/gi, "");
+  if (clean.length < 4 || clean.length % 2) return "";
+  const key = parseInt(clean.slice(0, 2), 16);
+  let email = "";
+  for (let index = 2; index < clean.length; index += 2) {
+    email += String.fromCharCode(parseInt(clean.slice(index, index + 2), 16) ^ key);
+  }
+  return email;
+}
+
+function extractEmails(html = "") {
+  const decoded = decodeHtmlEntities(html);
+  const emails = [];
+  emails.push(...(decoded.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) || []));
+
+  const mailtoRegex = /href\s*=\s*["']mailto:([^"'?]+)(?:\?[^"']*)?["']/gi;
+  let mailto;
+  while ((mailto = mailtoRegex.exec(decoded))) {
+    try {
+      emails.push(decodeURIComponent(mailto[1]));
+    } catch {
+      emails.push(mailto[1]);
+    }
+  }
+
+  const cfRegex = /data-cfemail\s*=\s*["']([a-f0-9]+)["']/gi;
+  let cfMatch;
+  while ((cfMatch = cfRegex.exec(decoded))) {
+    emails.push(decodeCloudflareEmail(cfMatch[1]));
+  }
+
+  const obfuscated = decoded
+    .replace(/\s*(?:\[|\(|\{)?\s*at\s*(?:\]|\)|\})?\s*/gi, "@")
+    .replace(/\s*(?:\[|\(|\{)?\s*dot\s*(?:\]|\)|\})?\s*/gi, ".")
+    .replace(/\s+@\s+/g, "@")
+    .replace(/\s+\.\s+/g, ".");
+  emails.push(...(obfuscated.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) || []));
+
+  return unique(emails.map(email => email.toLowerCase()));
+}
+
+function sameHost(link, url) {
+  try {
+    const parsed = new URL(link);
+    return /^https?:$/i.test(parsed.protocol) && parsed.hostname === new URL(url).hostname;
+  } catch {
+    return false;
+  }
+}
+
+function commonProbeLinks(url, links = []) {
+  const base = new URL(url);
+  const root = `${base.protocol}//${base.hostname}`;
+  const commonPaths = [
+    "/contact",
+    "/contact-us",
+    "/about",
+    "/about-us",
+    "/team",
+    "/locations",
+    "/service-area",
+    "/request-service",
+    "/schedule",
+    "/booking",
+    "/free-estimate",
+    "/quote"
+  ].map(path => `${root}${path}`);
+  return unique([...links, ...commonPaths])
+    .filter(link => /contact|quote|estimate|appointment|schedule|booking|get-started|service|about|team|locations|areas/i.test(link))
+    .filter(link => sameHost(link, url))
+    .slice(0, 16);
+}
+
 function mergeSignals(scans) {
   const merged = {
     emails: [],
@@ -143,7 +226,7 @@ function facebookProbeUrls(link) {
 
 function detect(html, links) {
   const lower = html.toLowerCase();
-  const emailMatches = html.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) || [];
+  const emailMatches = extractEmails(html);
   const phoneMatches = html.match(/(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/g) || [];
   const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "";
   const metaDescription = (html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i) || [])[1] || "";
@@ -245,17 +328,7 @@ async function scanWebsite(rawUrl) {
   try {
     const html = await textFetch(url, { signal: AbortSignal.timeout(10000) });
     const links = extractLinks(html, url);
-    const contactLinks = links
-      .filter(link => /contact|quote|estimate|appointment|schedule|booking|get-started|service|about|team|locations|areas/i.test(link))
-      .filter(link => {
-        try {
-          const parsed = new URL(link);
-          return /^https?:$/i.test(parsed.protocol) && parsed.hostname === new URL(url).hostname;
-        } catch {
-          return false;
-        }
-      })
-      .slice(0, 10);
+    const contactLinks = commonProbeLinks(url, links);
     const pageScans = [detect(html, links)];
     const contactPages = await Promise.allSettled(contactLinks.map(async link => {
       const contactHtml = await textFetch(link, { signal: AbortSignal.timeout(8000) });
