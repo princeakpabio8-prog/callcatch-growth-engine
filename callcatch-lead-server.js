@@ -374,6 +374,16 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (req.method === "POST" && url.pathname === "/api/outreach/generate") {
+    try {
+      const body = await readJson(req);
+      const lead = body.lead || {};
+      return send(res, 200, { assets: outreachAssets(lead) });
+    } catch (error) {
+      return send(res, 400, { error: error.message });
+    }
+  }
+
   if (req.method === "GET" && url.pathname === "/api/audit-log") {
     const state = await readStore();
     return send(res, 200, { auditLog: state.auditLog || [] });
