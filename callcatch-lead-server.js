@@ -15,6 +15,7 @@ const {
   generateFollowUps,
   metrics: sendingMetrics,
   recordReply,
+  runSequenceAutomation,
   runDueScheduled,
   scheduleTask,
   sendApprovedBatch,
@@ -24,6 +25,7 @@ const {
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
 const PUBLIC_DIR = __dirname;
+let automationRunning = false;
 
 function send(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -79,6 +81,22 @@ function readJson(req) {
     });
     req.on("error", reject);
   });
+}
+
+async function runBackgroundAutomation() {
+  if (automationRunning) return;
+  automationRunning = true;
+  try {
+    await mutateStore(state => {
+      const config = mergeConfig(state.dailyGrowth || {});
+      const autoPilot = config.enabled && config.automationLevel === "Auto Pilot";
+      return runSequenceAutomation(state, { autoPilot });
+    });
+  } catch (error) {
+    log("error", "sequence_automation_failed", { error: error.message });
+  } finally {
+    automationRunning = false;
+  }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -567,8 +585,18 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/sending/generate-followups") {
     try {
       const body = await readJson(req);
-      const generated = await mutateStore(state => generateFollowUps(state, { days: body.days || 3, autoPilot: body.autoPilot }));
+      const generated = await mutateStore(state => generateFollowUps(state, { autoPilot: body.autoPilot }));
       return send(res, 200, { generated });
+    } catch (error) {
+      return send(res, 400, { error: error.message });
+    }
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/sending/run-sequence") {
+    try {
+      const body = await readJson(req);
+      const result = await mutateStore(state => runSequenceAutomation(state, { autoPilot: body.autoPilot }));
+      return send(res, 200, result);
     } catch (error) {
       return send(res, 400, { error: error.message });
     }
@@ -691,4 +719,6 @@ server.listen(PORT, HOST, () => {
     url: HOST === "0.0.0.0" ? `http://0.0.0.0:${PORT}` : `http://127.0.0.1:${PORT}`,
     requiresApiKey: false
   });
+  runBackgroundAutomation();
+  setInterval(runBackgroundAutomation, 30 * 60 * 1000);
 });

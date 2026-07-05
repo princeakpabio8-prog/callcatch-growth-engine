@@ -106,6 +106,18 @@ SMS sending uses the same approval queue as email. A text message is not sent un
 
 For a Twilio trial account, recipient phone numbers usually must be verified in Twilio before SMS can be delivered. Use E.164 phone format such as `+12145550123`.
 
+## Follow-up Sequence Automation
+
+CallCatch automatically manages the standard outreach sequence:
+
+- Email #1 is sent from an approved email task.
+- After 3 days with no reply, CallCatch creates `Follow-up #1`.
+- After `Follow-up #1` is sent, CallCatch waits 4 more days.
+- If there is still no reply, CallCatch creates `Final Follow-up`.
+- Any reply stops the remaining follow-up tasks for that lead.
+
+In `Assisted` mode, follow-ups are generated into the Approval Queue for review. In `Auto Pilot` mode, due sequence emails can be approved and sent automatically by the server background runner.
+
 On Render, add these in the service Environment tab.
 
 ## Render Deployment

@@ -12,6 +12,10 @@ const DEFAULT_LIMITS = {
 };
 
 const MEETING_WORDS = ["let's talk", "lets talk", "interested", "can we schedule", "call me", "book", "demo", "calendar", "meeting"];
+const SEQUENCE_STEPS = [
+  { key: "followup-1", title: "Follow-up #1", waitDays: 3 },
+  { key: "final-followup", title: "Final Follow-up", waitDays: 4 }
+];
 
 function nowIso() {
   return new Date().toISOString();
@@ -138,6 +142,32 @@ function approvedSendableTasks(state) {
 
 function findLead(state, task) {
   return (state.leads || []).find(lead => lead.id === task.leadId) || {};
+}
+
+function hasLeadReply(lead) {
+  return (lead.replies || []).length > 0 || ["Interested", "Demo Scheduled", "Trial Started", "Customer", "Lost"].includes(lead.stage);
+}
+
+function isInitialEmail(task = {}) {
+  const title = String(task.title || "").toLowerCase();
+  return task.channel === "email" && task.status === "Sent" && !title.includes("follow-up") && !title.includes("followup") && !task.sequenceStep;
+}
+
+function sequenceEmailBody(lead, stepKey) {
+  const assets = outreachAssets(lead);
+  const base = String(assets.emailA || assets.email || "").split(/\r?\n/);
+  const subject = stepKey === "followup-1"
+    ? `Subject: Following up on ${lead.business}`
+    : `Subject: Last quick note for ${lead.business}`;
+  const body = base.filter(line => !/^subject:/i.test(line)).join("\n").trim();
+  if (stepKey === "followup-1") {
+    return `${subject}\n\nHi ${lead.business} team,\n\nJust following up on my note about missed calls and faster response times.\n\n${body.split("\n\n").slice(2, 4).join("\n\n")}\n\nWould it be worth a quick 10-minute look this week?\n\nBest,\n\nPrince Esien\nFounder, CallCatch\nEmail: hello@callcatch.site\nWeb: https://callcatch.site`;
+  }
+  return `${subject}\n\nHi ${lead.business} team,\n\nI will close the loop after this.\n\nThe quick idea was simple: when a homeowner calls and nobody answers, CallCatch can text them instantly so they do not move on to another contractor.\n\nIf recovering even a few missed calls each month would help, I am happy to show you how it works in under 10 minutes.\n\nBest,\n\nPrince Esien\nFounder, CallCatch\nEmail: hello@callcatch.site\nWeb: https://callcatch.site`;
+}
+
+function addDaysIso(dateValue, days) {
+  return new Date(new Date(dateValue).getTime() + Number(days) * 24 * 60 * 60 * 1000).toISOString();
 }
 
 async function sendTaskNow(state, taskId) {
@@ -271,34 +301,87 @@ async function runDueScheduled(state, date = new Date()) {
   return results;
 }
 
-function generateFollowUps(state, { days = 3, autoPilot = false } = {}) {
-  const cutoff = Date.now() - Number(days) * 24 * 60 * 60 * 1000;
-  const existingKeys = new Set((state.approvalQueue || []).map(task => `${task.leadId}|${task.title}`));
+function generateFollowUps(state, { autoPilot = false, now = new Date() } = {}) {
+  const queue = state.approvalQueue || [];
   const generated = [];
-  for (const task of state.approvalQueue || []) {
-    if (task.channel !== "email" || task.status !== "Sent" || !task.sentAt || task.replyAt) continue;
-    if (new Date(task.sentAt).getTime() > cutoff) continue;
-    const lead = findLead(state, task);
-    const key = `${lead.id}|Day ${days} Follow-up`;
-    if (existingKeys.has(key)) continue;
-    const assets = outreachAssets(lead);
-    const follow = {
-      id: newId("task"),
-      leadId: lead.id,
-      business: lead.business,
-      channel: "email",
-      title: `Day ${days} Follow-up`,
-      body: assets.email.replace("Quick idea", "Following up on the quick idea"),
-      status: autoPilot ? "Approved - follow-up" : "Needs Approval",
-      createdAt: nowIso(),
-      parentTaskId: task.id
-    };
-    state.approvalQueue.unshift(follow);
-    addTimeline(lead, `Generated ${follow.title}`);
-    generated.push(follow);
+  const existingSteps = new Set(queue.map(task => `${task.leadId}|${task.sequenceStep || task.title}`));
+
+  for (const initial of queue.filter(isInitialEmail)) {
+    if (!initial.sentAt) continue;
+    const lead = findLead(state, initial);
+    if (!lead.id || hasLeadReply(lead)) continue;
+
+    const firstDue = new Date(addDaysIso(initial.sentAt, SEQUENCE_STEPS[0].waitDays));
+    if (firstDue <= now && !existingSteps.has(`${lead.id}|followup-1`)) {
+      const follow = {
+        id: newId("task"),
+        leadId: lead.id,
+        business: lead.business,
+        channel: "email",
+        title: "Follow-up #1",
+        sequenceStep: "followup-1",
+        sequenceParentTaskId: initial.id,
+        dueAt: firstDue.toISOString(),
+        to: initial.to || initial.recipient || lead.email || "",
+        recipient: initial.to || initial.recipient || lead.email || "",
+        body: sequenceEmailBody(lead, "followup-1"),
+        status: autoPilot ? "Approved - sequence" : "Needs Approval",
+        createdAt: nowIso()
+      };
+      queue.unshift(follow);
+      existingSteps.add(`${lead.id}|followup-1`);
+      addTimeline(lead, "Generated Follow-up #1 after 3 days with no reply");
+      generated.push(follow);
+    }
+
+    const firstSent = queue.find(task => task.leadId === lead.id && task.sequenceStep === "followup-1" && task.status === "Sent" && task.sentAt);
+    if (!firstSent || hasLeadReply(lead)) continue;
+    const finalDue = new Date(addDaysIso(firstSent.sentAt, SEQUENCE_STEPS[1].waitDays));
+    if (finalDue <= now && !existingSteps.has(`${lead.id}|final-followup`)) {
+      const final = {
+        id: newId("task"),
+        leadId: lead.id,
+        business: lead.business,
+        channel: "email",
+        title: "Final Follow-up",
+        sequenceStep: "final-followup",
+        sequenceParentTaskId: initial.id,
+        dueAt: finalDue.toISOString(),
+        to: initial.to || initial.recipient || lead.email || "",
+        recipient: initial.to || initial.recipient || lead.email || "",
+        body: sequenceEmailBody(lead, "final-followup"),
+        status: autoPilot ? "Approved - sequence" : "Needs Approval",
+        createdAt: nowIso()
+      };
+      queue.unshift(final);
+      existingSteps.add(`${lead.id}|final-followup`);
+      addTimeline(lead, "Generated Final Follow-up after 4 more days with no reply");
+      generated.push(final);
+    }
   }
+
+  state.approvalQueue = queue;
   sendingState(state).metrics.followUpsGenerated += generated.length;
   return generated;
+}
+
+async function runSequenceAutomation(state, { autoPilot = false, now = new Date() } = {}) {
+  const generated = generateFollowUps(state, { autoPilot, now });
+  const scheduled = await runDueScheduled(state, now);
+  const sent = [];
+  if (autoPilot) {
+    for (const task of generated.filter(item => /^approved/i.test(item.status || ""))) {
+      const result = await sendTaskNow(state, task.id);
+      sent.push(result);
+    }
+  }
+  state.auditLog.unshift({
+    id: newId("audit"),
+    at: nowIso(),
+    action: "sequence_automation_run",
+    details: { generated: generated.length, scheduled: scheduled.length, sent: sent.filter(item => item.sent).length, autoPilot }
+  });
+  return { generated, scheduled, sent };
 }
 
 function detectMeetingIntent(text) {
@@ -349,7 +432,7 @@ function recordReply(state, { leadId, taskId, from, body }) {
     task.replyBody = body;
   }
   for (const item of state.approvalQueue || []) {
-    if (item.leadId === lead.id && ["Needs Approval", "Approved - not sent", "Scheduled"].includes(item.status)) {
+    if (item.leadId === lead.id && item.status !== "Sent" && item.id !== task?.id) {
       item.status = "Stopped - reply received";
     }
   }
@@ -386,6 +469,7 @@ module.exports = {
   generateFollowUps,
   metrics,
   recordReply,
+  runSequenceAutomation,
   runDueScheduled,
   scheduleTask,
   sendApprovedBatch,
