@@ -653,6 +653,27 @@
         })
         .sort((a,b)=>new Date(b.sentAt || 0)-new Date(a.sentAt || 0));
     }
+    function mergeLeadRecord(existing = {}, incoming = {}){
+      const merged = {...existing, ...incoming, id: existing.id || incoming.id};
+      ["business","trade","city","state","zip","area","phone","website","email","owner","address","source","mapsUrl"].forEach(key=>{
+        merged[key] = existing[key] || incoming[key] || "";
+      });
+      const uniq = list => [...new Map((list || []).map(item=>[typeof item === "string" ? item : JSON.stringify(item), item])).values()];
+      merged.tags = uniq([...(existing.tags || []), ...(incoming.tags || [])]);
+      merged.aiInsights = uniq([...(existing.aiInsights || []), ...(incoming.aiInsights || [])]);
+      merged.timeline = uniq([...(incoming.timeline || []), ...(existing.timeline || [])]).slice(0,300);
+      merged.sentEmails = uniq([...(existing.sentEmails || []), ...(incoming.sentEmails || [])]).slice(0,100);
+      merged.replies = uniq([...(existing.replies || []), ...(incoming.replies || [])]).slice(0,100);
+      merged.callCatchFitScore = Math.max(Number(existing.callCatchFitScore || 0), Number(incoming.callCatchFitScore || 0));
+      merged.revenueOpportunityEstimate = Math.max(Number(existing.revenueOpportunityEstimate || 0), Number(incoming.revenueOpportunityEstimate || 0));
+      merged.updatedAt = now();
+      return merged;
+    }
+    function leadConversation(lead = {}){
+      const sent = leadSentEmails(lead).map(item=>({ at:item.sentAt, type:"Sent Email", title:item.subject || item.title || "Email sent", body:item.body || "", tone:"hot" }));
+      const replies = (lead.replies || []).map(item=>({ at:item.at, type:item.meetingIntent ? "Reply: meeting intent" : "Reply", title:item.subject || item.from || "Prospect reply", body:item.body || "", tone:item.meetingIntent ? "hot" : "warn" }));
+      return [...sent, ...replies].filter(item=>item.at).sort((a,b)=>new Date(b.at)-new Date(a.at));
+    }
     function leadEmailStatus(lead = {}){
       const sent = leadSentEmails(lead);
       if (sent.length) return { label: "Email Sent", className: "hot", detail: sent[0].sentAt ? new Date(sent[0].sentAt).toLocaleDateString() : "" };
@@ -739,12 +760,18 @@
       let added = 0;
       let skippedNoEmail = 0;
       let duplicates = 0;
-      const keys = new Set(leads.map(l => companyKey(l)));
+      const keyToLead = new Map(leads.map(l => [companyKey(l), l]));
       batch.map(normalizeLead).forEach(lead => {
         const key = companyKey(lead);
         if (!isEmailReachableLead(lead)) { skippedNoEmail += 1; return; }
-        if (keys.has(key)) { duplicates += 1; return; }
-        keys.add(key); leads.unshift(lead); added += 1;
+        if (keyToLead.has(key)) {
+          const existing = keyToLead.get(key);
+          const merged = mergeLeadRecord(existing, lead);
+          Object.assign(existing, merged);
+          duplicates += 1;
+          return;
+        }
+        leads.unshift(lead); keyToLead.set(key, lead); added += 1;
         if (lead.callCatchFitScore >= Number($("minFit")?.value || 68)) queueOutreach(lead, false);
       });
       lastImportStats = { added, skippedNoEmail, duplicates };
@@ -1122,6 +1149,7 @@
       const l = selected();
       if(!l){ $("leadDetail").innerHTML = `<h2>No prospects yet</h2><p class="sub">Go to Discovery, search a trade and market, then prospects will appear here.</p>`; return; }
       const sentEmails = leadSentEmails(l);
+      const conversation = leadConversation(l);
       $("leadDetail").innerHTML = `<div class="lead-top"><div><h2>${esc(l.business)}</h2><p class="sub">${esc(l.trade)} | ${esc(l.phone || "No phone")} | ${esc(l.email || "No email")} | ${esc(l.website || l.mapsUrl || "")}</p></div><span class="tag ${tagClass(l.callCatchFitScore)}">${esc(l.aiOpportunityLevel)}</span></div>
       <div class="detail-grid"><div class="mini"><span>Fit Score</span><strong>${l.callCatchFitScore}</strong></div><div class="mini"><span>Lead Quality</span><strong>${l.deepQualityScore || l.aiLeadQualityScore || l.confidenceScore || 0}</strong></div><div class="mini"><span>Website</span><strong>${l.websiteQualityScore||0}</strong></div><div class="mini"><span>Follow-up</span><strong>${esc(l.followUpStatus || l.responsePriority || "Not started")}</strong></div></div>
       <div class="insights">${[...(l.aiInsights||[]), ...(l.websiteIntelligence?.leadQualitySignals || []), l.leadQualityReason || ""].filter(Boolean).slice(0,14).map(i=>`<span class="tag">${esc(i)}</span>`).join("") || `<span class="tag">No scan insights yet</span>`}</div>
@@ -1129,6 +1157,7 @@
       <div class="form-grid"><div><label>Stage</label><select id="detailStage">${STAGES.map(s=>`<option ${s===l.stage?"selected":""}>${s}</option>`).join("")}</select></div><div><label>Owner</label><input id="owner" value="${esc(l.owner||"")}"></div><div><label>Next Follow-up</label><input id="nextFollow" type="date" value="${esc(l.nextFollowUp||"")}"></div><div><label>Assigned</label><input id="assigned" value="${esc(l.assignedTeamMember||settings.team)}"></div></div>
       <label>Notes</label><textarea id="notes">${esc(l.notes||"")}</textarea>
       <div class="actions" style="margin-top:10px;"><button class="btn primary small" id="saveLeadBtn">Save Lead</button><button class="btn small" id="scanBtn">Scan Website</button><button class="btn small" id="queueBtn">Generate Outreach</button><button class="btn small" id="copyEmailBtn">Copy Email</button></div>
+      <h3 style="margin-top:14px;">Conversation</h3><div class="queue">${conversation.length ? conversation.slice(0,6).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.title)}</strong><span class="tag ${item.tone}">${esc(item.type)}</span></div><p class="hint">${new Date(item.at).toLocaleString()}</p><div class="script" style="min-height:64px;">${esc(item.body || "")}</div></div>`).join("") : `<p class="sub">No sent emails or replies yet.</p>`}</div>
       <h3 style="margin-top:14px;">Sent Emails</h3><div class="queue">${sentEmails.length ? sentEmails.slice(0,5).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.subject || item.title || "Sent email")}</strong><span class="tag hot">Sent</span></div><p class="hint">${esc(item.to || "")} | ${item.sentAt ? new Date(item.sentAt).toLocaleString() : ""}</p><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy-sent="${esc(item.taskId || item.id || "")}">Copy Email</button></div></div>`).join("") : `<p class="sub">No sent emails yet.</p>`}</div>
       <h3 style="margin-top:14px;">Timeline</h3><div class="script">${(l.timeline||[]).map(t=>`${new Date(t.at).toLocaleString()} - ${t.text}`).join("\n")}</div>`;
       $("detailStage").onchange=e=>{ l.stage=e.target.value; addTimeline(l,`Moved to ${l.stage}`); save(); render(); syncCrm(true).then(render); };
@@ -1139,9 +1168,25 @@
       document.querySelectorAll("[data-copy-sent]").forEach(button=>button.onclick=()=>{ const item = sentEmails.find(email => String(email.taskId || email.id || "") === button.dataset.copySent); copy(item?.body || item?.subject || ""); });
     }
     function renderPipeline(){
-      $("pipelineBoard").innerHTML = STAGES.map(stage=>`<div class="stage" data-stage="${stage}"><h3>${stage}<span>${stageCount(stage)}</span></h3>${leads.filter(l=>l.stage===stage).map(l=>{ const emailStatus=leadEmailStatus(l); return `<div class="card" draggable="true" data-id="${l.id}"><strong>${esc(l.business)}</strong><div class="meta"><span>${l.callCatchFitScore} fit</span><span>${money(l.revenueOpportunityEstimate)}</span><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}</span></div></div>`; }).join("")}</div>`).join("");
+      $("pipelineBoard").innerHTML = STAGES.map(stage=>`<div class="stage" data-stage="${stage}"><h3>${stage}<span>${stageCount(stage)}</span></h3>${leads.filter(l=>l.stage===stage).map(l=>{ const emailStatus=leadEmailStatus(l); return `<div class="card" draggable="true" data-id="${l.id}"><strong>${esc(l.business)}</strong><div class="meta"><span>${l.callCatchFitScore} fit</span><span>${money(l.revenueOpportunityEstimate)}</span><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}</span></div><div class="actions" style="margin-top:8px;"><button class="btn small" data-pipe-action="Follow-up|${l.id}">Follow Up</button><button class="btn small" data-pipe-action="Interested|${l.id}">Interested</button><button class="btn small" data-pipe-action="Demo Scheduled|${l.id}">Demo</button><button class="btn small" data-pipe-action="Lost|${l.id}">Lost</button></div></div>`; }).join("")}</div>`).join("");
       document.querySelectorAll(".card").forEach(c=>c.ondragstart=e=>e.dataTransfer.setData("text/plain",c.dataset.id));
       document.querySelectorAll(".stage").forEach(s=>{ s.ondragover=e=>e.preventDefault(); s.ondrop=e=>{ const l=leads.find(x=>x.id===e.dataTransfer.getData("text/plain")); if(l){ l.stage=s.dataset.stage; addTimeline(l,`Moved to ${l.stage}`); save(); render(); syncCrm(true).then(render); } }; });
+      document.querySelectorAll("[data-pipe-action]").forEach(button=>button.onclick=event=>{
+        event.stopPropagation();
+        const [action, leadId] = button.dataset.pipeAction.split("|");
+        const lead = leads.find(item=>item.id===leadId);
+        if (!lead) return;
+        if (action === "Follow-up") {
+          lead.stage = "Follow-up";
+          lead.nextFollowUp = new Date(Date.now() + 24*60*60*1000).toISOString().slice(0,10);
+          lead.followUpStatus = "Follow-up due tomorrow";
+        } else {
+          lead.stage = action;
+          if (action === "Demo Scheduled") lead.followUpStatus = "Demo needs confirmation";
+        }
+        addTimeline(lead, action === "Follow-up" ? "Pipeline follow-up scheduled" : `Pipeline marked ${lead.stage}`);
+        save(); render(); syncEverywhere(true); toast(`${lead.business} updated`);
+      });
     }
     function renderQueue(){
       queue.forEach(item => {

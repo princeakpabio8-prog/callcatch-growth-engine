@@ -498,7 +498,7 @@ function suggestedReply(lead, body, meetingIntent) {
   return `Hi, thanks for the reply. The quick version: CallCatch texts missed callers instantly so they do not move on to the next company. Worth a short walkthrough?`;
 }
 
-function recordReply(state, { leadId, taskId, from, body }) {
+function recordReply(state, { leadId, taskId, from, body, subject, provider, messageId }) {
   const taskById = (state.approvalQueue || []).find(item => item.id === taskId);
   const lead = (state.leads || []).find(item => item.id === leadId)
     || findLead(state, taskById || { leadId })
@@ -509,11 +509,20 @@ function recordReply(state, { leadId, taskId, from, body }) {
   const meetingIntent = detectMeetingIntent(body);
   lead.stage = meetingIntent ? "Demo Scheduled" : "Interested";
   lead.replies = lead.replies || [];
+  const duplicateReply = lead.replies.find(item =>
+    (messageId && item.messageId === messageId)
+    || (String(item.from || "").toLowerCase() === String(from || "").toLowerCase()
+      && String(item.body || "").trim() === String(body || "").trim())
+  );
+  if (duplicateReply) return { lead, reply: duplicateReply, meetingIntent, duplicate: true };
   const reply = {
     id: newId("reply"),
     at,
     from,
+    subject: subject || "",
     body,
+    provider: provider || "",
+    messageId: messageId || "",
     taskId: task ? task.id : "",
     meetingIntent,
     status: "Needs Response",

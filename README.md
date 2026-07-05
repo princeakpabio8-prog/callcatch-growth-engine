@@ -12,7 +12,7 @@ Internal outbound sales platform for CallCatch. It discovers prospects, scores t
 - Smart sending engine with send-now, send-all-approved, scheduled sends, rate limits, follow-up generation, reply tracking, and meeting-intent detection.
 - SMTP email adapter.
 - CSV, Excel-compatible, JSON, clipboard, and PDF exports.
-- Local JSON storage.
+- Production storage with Render Postgres support and local JSON fallback.
 
 ## Local Setup
 
@@ -48,6 +48,16 @@ Network check:
 http://127.0.0.1:8787/api/network-check
 ```
 
+## Production Storage
+
+For Render, add a Render Postgres database and set `DATABASE_URL` to the database Internal Database URL. CallCatch will automatically use Postgres when `DATABASE_URL` is present. If `DATABASE_URL` is blank, it falls back to the local JSON file.
+
+Check storage mode at:
+
+```text
+/health
+```
+
 ## Email Sending
 
 Do not commit real email API keys or SMTP passwords.
@@ -65,6 +75,14 @@ SMTP_REPLY_TO=hello@callcatch.site
 ```
 
 With `EMAIL_PROVIDER=auto`, CallCatch uses Resend first when `RESEND_API_KEY` is present, Brevo second when `BREVO_API_KEY` is present, then SMTP as a fallback.
+
+For Resend inbound replies, point Resend inbound routing/webhooks to:
+
+```text
+https://your-render-app.onrender.com/api/webhooks/resend/inbound
+```
+
+Replies are stored on the lead timeline, stop remaining follow-ups, and appear in the CallCatch reply inbox.
 
 Optional Brevo setup:
 

@@ -6,7 +6,7 @@ const { searchLeads } = require("./lead-engine/searchEngine");
 const { fetchJson } = require("./lead-engine/httpClient");
 const { scanWebsite } = require("./lead-engine/websiteScanner");
 const { enrichProspect, outreachAssets } = require("./lead-engine/prospectIntelligence");
-const { audit, mutateStore, newId, readStore } = require("./lead-engine/dataStore");
+const { audit, mutateStore, newId, readStore, storageMode } = require("./lead-engine/dataStore");
 const { buildCampaign, buildSequenceTasks } = require("./lead-engine/campaigns");
 const { DEFAULT_DAILY_GROWTH, automationCapabilities, mergeConfig, runDailyGrowth } = require("./lead-engine/dailyGrowth");
 const { activeProvider, configured: emailConfigured, emailConfig, parseEmail, sendEmail } = require("./lead-engine/emailAdapter");
@@ -34,6 +34,69 @@ function normalizeCompanyKey(lead = {}) {
     .replace(/www\./, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
+}
+
+function mergeUniqueList(a = [], b = []) {
+  const seen = new Set();
+  return [...a, ...b].filter(item => {
+    const key = typeof item === "string" ? item : JSON.stringify(item);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function mergeLeadRecord(existing = {}, incoming = {}) {
+  const merged = { ...existing, ...incoming, id: existing.id || incoming.id };
+  for (const key of ["business", "trade", "city", "state", "zip", "area", "phone", "website", "email", "owner", "address", "source", "mapsUrl", "osmUrl"]) {
+    merged[key] = existing[key] || incoming[key] || "";
+  }
+  merged.tags = mergeUniqueList(existing.tags || [], incoming.tags || []);
+  merged.aiInsights = mergeUniqueList(existing.aiInsights || [], incoming.aiInsights || []);
+  merged.timeline = mergeUniqueList(incoming.timeline || [], existing.timeline || []).slice(0, 300);
+  merged.sentEmails = mergeUniqueList(existing.sentEmails || [], incoming.sentEmails || []).slice(0, 100);
+  merged.replies = mergeUniqueList(existing.replies || [], incoming.replies || []).slice(0, 100);
+  merged.callCatchFitScore = Math.max(Number(existing.callCatchFitScore || 0), Number(incoming.callCatchFitScore || 0));
+  merged.revenueOpportunityEstimate = Math.max(Number(existing.revenueOpportunityEstimate || 0), Number(incoming.revenueOpportunityEstimate || 0));
+  merged.updatedAt = new Date().toISOString();
+  return merged;
+}
+
+function stripHtml(value = "") {
+  return String(value || "")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function headerValue(headers, name) {
+  const lower = name.toLowerCase();
+  return Object.entries(headers || {}).find(([key]) => key.toLowerCase() === lower)?.[1] || "";
+}
+
+function normalizeInboundReplyPayload(body = {}, headers = {}) {
+  const data = body.data || body.email || body.message || body;
+  const from = data.from?.email || data.from || body.from || body.sender || body.replyFrom || "";
+  const text = data.text || data.text_body || data.body || body.text || body.body || body.message || "";
+  const html = data.html || data.html_body || body.html || "";
+  const toValue = Array.isArray(data.to) ? data.to.map(item => item.email || item).join(", ") : (data.to || body.to || "");
+  return {
+    leadId: body.leadId || data.leadId || "",
+    taskId: body.taskId || data.taskId || data.headers?.["X-CallCatch-Task"] || data.headers?.["x-callcatch-task"] || "",
+    from,
+    to: toValue,
+    subject: data.subject || body.subject || "",
+    body: text || stripHtml(html),
+    provider: body.provider || (urlSafeHeader(headers, "resend-signature") ? "resend" : "inbound"),
+    rawType: body.type || data.type || "",
+    messageId: data.message_id || data.id || body.id || ""
+  };
+}
+
+function urlSafeHeader(headers, name) {
+  return headerValue(headers, name);
 }
 
 function emailReadyLead(lead = {}) {
@@ -325,7 +388,7 @@ const server = http.createServer(async (req, res) => {
       modules: ["prospect-intelligence", "website-scanner", "approval-queue"],
       automation: ["daily-growth", "campaign-sequences", "approval-first-autopilot"],
       sendingEngine: ["send-now", "bulk-send", "scheduled-send", "rate-limits", "reply-tracking"],
-      storage: "json-file",
+      storage: storageMode(),
       email: {
         configured: emailConfigured(),
         provider: activeProvider(emailConfig()),
@@ -474,10 +537,11 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const incoming = Array.isArray(body.leads) ? body.leads : [];
       const saved = await mutateStore(state => {
+        state.leads = state.leads || [];
         const existing = new Map(state.leads.map(lead => [lead.id, lead]));
-        const companyKeys = new Set(state.leads.map(normalizeCompanyKey));
+        const keyToId = new Map(state.leads.map(lead => [normalizeCompanyKey(lead), lead.id]));
         let skippedNoEmail = 0;
-        let skippedDuplicate = 0;
+        let mergedDuplicate = 0;
         incoming.forEach(lead => {
           const id = lead.id || newId("lead");
           const alreadySaved = existing.has(id);
@@ -486,12 +550,14 @@ const server = http.createServer(async (req, res) => {
             skippedNoEmail += 1;
             return;
           }
-          if (!alreadySaved && companyKeys.has(key)) {
-            skippedDuplicate += 1;
+          const duplicateId = keyToId.get(key);
+          if (!alreadySaved && duplicateId && existing.has(duplicateId)) {
+            existing.set(duplicateId, mergeLeadRecord(existing.get(duplicateId), lead));
+            mergedDuplicate += 1;
             return;
           }
-          companyKeys.add(key);
-          existing.set(id, { ...lead, id, updatedAt: new Date().toISOString() });
+          keyToId.set(key, id);
+          existing.set(id, alreadySaved ? mergeLeadRecord(existing.get(id), lead) : { ...lead, id, updatedAt: new Date().toISOString() });
         });
         state.leads = [...existing.values()].filter(emailReadyLead);
         hydrateSentEmailHistory(state);
@@ -510,7 +576,7 @@ const server = http.createServer(async (req, res) => {
           id: newId("audit"),
           at: new Date().toISOString(),
           action: "crm_leads_synced",
-          details: { count: incoming.length, skippedNoEmail, skippedDuplicate, emailFirst: true }
+          details: { count: incoming.length, skippedNoEmail, mergedDuplicate, emailFirst: true }
         });
         return state.leads;
       });
@@ -871,15 +937,10 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (req.method === "POST" && url.pathname === "/api/replies/inbound") {
+  if (req.method === "POST" && (url.pathname === "/api/replies/inbound" || url.pathname === "/api/webhooks/resend/inbound")) {
     try {
       const body = await readJson(req);
-      const result = await mutateStore(state => recordReply(state, {
-        leadId: body.leadId,
-        taskId: body.taskId,
-        from: body.from || body.sender || body.replyFrom,
-        body: body.body || body.text || body.message
-      }));
+      const result = await mutateStore(state => recordReply(state, normalizeInboundReplyPayload(body, req.headers)));
       return send(res, 200, { accepted: true, ...result });
     } catch (error) {
       return send(res, 400, { error: error.message });
