@@ -99,6 +99,11 @@ function urlSafeHeader(headers, name) {
   return headerValue(headers, name);
 }
 
+function arrayFirst(value) {
+  if (Array.isArray(value)) return value[0] || "";
+  return value || "";
+}
+
 function emailReadyLead(lead = {}) {
   return !!String(lead.email || "").trim() || (lead.sentEmails || []).some(item => String(item.to || item.recipient || "").trim());
 }
@@ -341,6 +346,158 @@ function pipelineMemoryReport(state = {}) {
       replies: (lead.replies || []).length
     }))
   };
+}
+
+async function resendRequest(pathname, config) {
+  if (!config.resendApiKey) throw new Error("RESEND_API_KEY is not configured on Render");
+  const response = await fetch(`https://api.resend.com${pathname}`, {
+    headers: {
+      Authorization: `Bearer ${config.resendApiKey}`,
+      "Content-Type": "application/json"
+    }
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.message || payload.error || `Resend request failed with ${response.status}`);
+  }
+  return payload;
+}
+
+function emailValue(value) {
+  if (Array.isArray(value)) return parseEmail(value.map(item => item.email || item).join(", "));
+  if (value && typeof value === "object") return parseEmail(value.email || value.address || "");
+  return parseEmail(value || "");
+}
+
+function businessFromResendEmail(email = {}) {
+  const subject = String(email.subject || "").trim();
+  const patterns = [
+    /quick idea for\s+(.+)$/i,
+    /question about\s+(.+)$/i,
+    /helping\s+(.+?)\s+capture/i,
+    /missed calls at\s+(.+)$/i,
+    /follow-up for\s+(.+)$/i,
+    /closing the loop for\s+(.+)$/i
+  ];
+  for (const pattern of patterns) {
+    const match = subject.match(pattern);
+    if (match?.[1]) return match[1].replace(/[?.!]+$/g, "").trim();
+  }
+  const to = emailValue(email.to || email.recipient);
+  const domain = to.split("@")[1] || "";
+  if (domain) {
+    return domain.split(".")[0].replace(/[-_]+/g, " ").replace(/\b\w/g, char => char.toUpperCase());
+  }
+  return subject || "Recovered Resend Prospect";
+}
+
+function resendEmailBody(email = {}) {
+  return email.text || email.text_body || stripHtml(email.html || email.html_body || "") || "";
+}
+
+function leadFromResendEmail(email = {}) {
+  const to = emailValue(email.to || email.recipient);
+  const sentAt = email.created_at || email.createdAt || email.sent_at || email.sentAt || new Date().toISOString();
+  const subject = email.subject || "Recovered Resend email";
+  const business = businessFromResendEmail(email);
+  const messageId = email.id || email.message_id || "";
+  return {
+    id: newId("lead"),
+    business,
+    trade: "Home Services",
+    email: to,
+    stage: "Contacted",
+    source: "Recovered from Resend history",
+    callCatchFitScore: 60,
+    revenueOpportunityEstimate: 0,
+    aiOpportunityLevel: "Contacted",
+    responsePriority: "Follow up",
+    lastContact: sentAt.slice(0, 10),
+    nextFollowUp: addDays(sentAt, 3).slice(0, 10),
+    followUpStatus: "Follow-up #1 scheduled",
+    tags: ["resend-recovered"],
+    timeline: [{ at: sentAt, text: `Recovered sent email from Resend: ${subject}` }],
+    sentEmails: [{
+      id: newId("sent"),
+      taskId: "",
+      title: subject,
+      to,
+      subject,
+      body: resendEmailBody(email),
+      sentAt,
+      provider: "Resend",
+      messageId,
+      recoveredFrom: "resend"
+    }]
+  };
+}
+
+async function importResendSentEmails(state, options = {}) {
+  const config = emailConfig();
+  const limit = Math.min(100, Math.max(1, Number(options.limit || 50)));
+  const list = await resendRequest("/emails", config);
+  const items = (list.data || list.emails || []).slice(0, limit);
+  const detailed = [];
+  for (const item of items) {
+    if (item.id && options.retrieve !== false) {
+      try {
+        detailed.push({ ...item, ...(await resendRequest(`/emails/${encodeURIComponent(item.id)}`, config)) });
+        continue;
+      } catch {}
+    }
+    detailed.push(item);
+  }
+
+  state.leads = state.leads || [];
+  const byEmail = new Map(state.leads.filter(lead => lead.email).map(lead => [String(lead.email).toLowerCase(), lead]));
+  const byMessage = new Map();
+  for (const lead of state.leads) {
+    for (const sent of lead.sentEmails || []) {
+      if (sent.messageId) byMessage.set(sent.messageId, lead);
+    }
+  }
+
+  let imported = 0;
+  let merged = 0;
+  let skipped = 0;
+  const importedLeads = [];
+
+  for (const email of detailed) {
+    const to = emailValue(email.to || email.recipient);
+    const messageId = email.id || email.message_id || "";
+    if (!to) {
+      skipped += 1;
+      continue;
+    }
+    const recovered = leadFromResendEmail({ ...email, to });
+    const existing = (messageId && byMessage.get(messageId)) || byEmail.get(to.toLowerCase());
+    if (existing) {
+      const before = (existing.sentEmails || []).length;
+      Object.assign(existing, mergeLeadRecord(existing, recovered));
+      existing.stage = existing.stage === "New" ? "Contacted" : (existing.stage || "Contacted");
+      existing.lastContact = existing.lastContact || recovered.lastContact;
+      ensureSentRecord(existing, recovered.sentEmails[0]);
+      byEmail.set(to.toLowerCase(), existing);
+      if (messageId) byMessage.set(messageId, existing);
+      merged += (existing.sentEmails || []).length > before ? 1 : 0;
+      importedLeads.push(existing);
+      continue;
+    }
+    state.leads.unshift(recovered);
+    byEmail.set(to.toLowerCase(), recovered);
+    if (messageId) byMessage.set(messageId, recovered);
+    imported += 1;
+    importedLeads.push(recovered);
+  }
+
+  hydrateSentEmailHistory(state);
+  state.auditLog.unshift({
+    id: newId("audit"),
+    at: new Date().toISOString(),
+    action: "resend_history_imported",
+    details: { found: items.length, imported, merged, skipped }
+  });
+  return { found: items.length, imported, merged, skipped, leads: importedLeads.slice(0, 50), report: pipelineMemoryReport(state) };
 }
 
 async function enrichLeadForOutreach(lead = {}) {
@@ -625,6 +782,16 @@ const server = http.createServer(async (req, res) => {
       return state;
     });
     return send(res, 200, pipelineMemoryReport(state));
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/recovery/resend-sent") {
+    try {
+      const body = await readJson(req);
+      const result = await mutateStore(state => importResendSentEmails(state, body));
+      return send(res, 200, result);
+    } catch (error) {
+      return send(res, 400, { error: error.message });
+    }
   }
 
   if (req.method === "POST" && url.pathname === "/api/crm/leads") {
