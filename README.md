@@ -98,10 +98,13 @@ SMS_PROVIDER=twilio
 TWILIO_ACCOUNT_SID=
 TWILIO_AUTH_TOKEN=
 TWILIO_FROM_NUMBER=
+TWILIO_MESSAGING_SERVICE_SID=
 TWILIO_TIMEOUT_MS=15000
 ```
 
 SMS sending uses the same approval queue as email. A text message is not sent until the task is approved and the user clicks `Send Now` or `Send All Approved`.
+
+For a Twilio trial account, recipient phone numbers usually must be verified in Twilio before SMS can be delivered. Use E.164 phone format such as `+12145550123`.
 
 On Render, add these in the service Environment tab.
 

@@ -889,7 +889,7 @@
         const status = await api("/api/sms/status");
         smsReady = !!status.configured;
         $("smsStatus").value = status.configured ? "Configured" : "Not configured";
-        $("smsProvider").value = status.provider ? `${status.provider.toUpperCase()} ${status.from || ""}`.trim() : "-";
+        $("smsProvider").value = status.provider ? `${status.provider.toUpperCase()} ${status.messagingService || status.from || ""}`.trim() : "-";
         renderQueue();
         if (!silent) toast(status.configured ? "SMS ready" : "SMS not configured");
       } catch {

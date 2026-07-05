@@ -403,6 +403,7 @@ const server = http.createServer(async (req, res) => {
       configured: smsConfigured(config),
       provider: config.provider,
       from: config.fromNumber || "",
+      messagingService: config.messagingServiceSid ? `${config.messagingServiceSid.slice(0, 6)}...${config.messagingServiceSid.slice(-4)}` : "",
       account: config.accountSid ? `${config.accountSid.slice(0, 6)}...${config.accountSid.slice(-4)}` : "",
       source: config.source
     });
