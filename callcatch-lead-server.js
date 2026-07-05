@@ -78,6 +78,121 @@ function compactApprovalQueue(items = [], leads = []) {
   });
 }
 
+function addDays(dateValue, days) {
+  return new Date(new Date(dateValue).getTime() + Number(days) * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function emailSubject(body, fallback = "CallCatch follow-up") {
+  return String(body || "")
+    .split(/\r?\n/)
+    .find(line => /^subject:/i.test(line))
+    ?.replace(/^subject:\s*/i, "")
+    .trim() || fallback;
+}
+
+function ensureSentRecord(lead, record) {
+  lead.sentEmails = lead.sentEmails || [];
+  const key = record.taskId || record.messageId || `${record.subject}|${record.sentAt}|${record.to}`;
+  const exists = lead.sentEmails.some(item => (item.taskId || item.messageId || `${item.subject}|${item.sentAt}|${item.to}`) === key);
+  if (exists) return false;
+  lead.sentEmails.unshift(record);
+  lead.sentEmails = lead.sentEmails
+    .sort((a, b) => new Date(b.sentAt || 0) - new Date(a.sentAt || 0))
+    .slice(0, 100);
+  return true;
+}
+
+function hydrateSentEmailHistory(state) {
+  state.leads = state.leads || [];
+  state.approvalQueue = state.approvalQueue || [];
+  state.auditLog = state.auditLog || [];
+  const leadById = new Map(state.leads.map(lead => [lead.id, lead]));
+  let recovered = 0;
+
+  for (const task of state.approvalQueue) {
+    if (task.channel !== "email" || !/^sent$/i.test(task.status || "") || !task.sentAt) continue;
+    const lead = leadById.get(task.leadId);
+    if (!lead) continue;
+    const added = ensureSentRecord(lead, {
+      id: newId("sent"),
+      taskId: task.id,
+      title: task.title || "Sent email",
+      to: task.to || task.recipient || lead.email || "",
+      subject: emailSubject(task.body, task.title || "Sent email"),
+      body: task.body || "",
+      sentAt: task.sentAt,
+      provider: task.provider || "",
+      messageId: task.messageId || "",
+      recoveredFrom: "approval_queue"
+    });
+    if (added) recovered += 1;
+  }
+
+  for (const entry of state.auditLog) {
+    if (entry.action !== "email_sent") continue;
+    const lead = leadById.get(entry.details?.leadId);
+    if (!lead) continue;
+    const task = state.approvalQueue.find(item => item.id === entry.details?.taskId) || {};
+    const added = ensureSentRecord(lead, {
+      id: newId("sent"),
+      taskId: entry.details?.taskId || "",
+      title: task.title || "Sent email",
+      to: entry.details?.to || task.to || task.recipient || lead.email || "",
+      subject: emailSubject(task.body, task.title || "Sent email"),
+      body: task.body || "",
+      sentAt: entry.at,
+      provider: task.provider || "",
+      messageId: task.messageId || "",
+      recoveredFrom: "audit_log"
+    });
+    if (added) recovered += 1;
+  }
+
+  for (const lead of state.leads) {
+    for (const event of lead.timeline || []) {
+      if (!/email sent|sent email|sent .*email/i.test(event.text || "")) continue;
+      const added = ensureSentRecord(lead, {
+        id: newId("sent"),
+        taskId: "",
+        title: event.text || "Sent email",
+        to: lead.email || "",
+        subject: event.text || "Sent email",
+        body: "",
+        sentAt: event.at || new Date().toISOString(),
+        provider: "",
+        messageId: "",
+        recoveredFrom: "timeline"
+      });
+      if (added) recovered += 1;
+    }
+
+    const latest = (lead.sentEmails || [])[0];
+    if (latest?.sentAt) {
+      if (lead.stage === "New") lead.stage = "Contacted";
+      lead.lastContact = lead.lastContact || latest.sentAt.slice(0, 10);
+      if (!lead.nextFollowUp && !["Interested", "Demo Scheduled", "Trial Started", "Customer", "Lost"].includes(lead.stage)) {
+        lead.nextFollowUp = addDays(latest.sentAt, 3).slice(0, 10);
+        lead.followUpStatus = lead.followUpStatus || "Follow-up #1 scheduled";
+        lead.followUpPlan = lead.followUpPlan || {
+          nextStep: "Follow-up #1",
+          nextDueAt: addDays(latest.sentAt, 3),
+          recoveredFrom: "sent_history"
+        };
+      }
+    }
+  }
+
+  if (recovered) {
+    state.auditLog.unshift({
+      id: newId("audit"),
+      at: new Date().toISOString(),
+      action: "sent_history_recovered",
+      details: { recovered }
+    });
+  }
+  return recovered;
+}
+
 async function enrichLeadForOutreach(lead = {}) {
   const researchUrl = lead.website || lead.facebook || "";
   if (!researchUrl || (lead.websiteIntelligence && lead.websiteIntelligence.ok !== false)) {
@@ -347,7 +462,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "GET" && url.pathname === "/api/crm") {
-    const state = await readStore();
+    const state = await mutateStore(state => {
+      hydrateSentEmailHistory(state);
+      return state;
+    });
     return send(res, 200, state);
   }
 
@@ -376,6 +494,7 @@ const server = http.createServer(async (req, res) => {
           existing.set(id, { ...lead, id, updatedAt: new Date().toISOString() });
         });
         state.leads = [...existing.values()].filter(emailReadyLead);
+        hydrateSentEmailHistory(state);
         const leadById = new Map(state.leads.map(lead => [lead.id, lead]));
         for (const task of state.approvalQueue || []) {
           if (["email", "sms"].includes(task.channel) && !task.to && !task.recipient) {
