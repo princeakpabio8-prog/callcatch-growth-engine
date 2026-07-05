@@ -470,8 +470,8 @@
       </section>
 
       <section class="view" id="crm">
-        <div class="top"><div><h1>Prospect CRM</h1><p class="sub">Manage leads, intelligence, notes, tags, follow-ups, and outreach drafts.</p></div><div class="actions"><button class="btn" id="exportCsvBtn" type="button">CSV</button><button class="btn" id="exportExcelBtn" type="button">Excel</button><button class="btn" id="exportJsonBtn" type="button">JSON</button><button class="btn" id="copySelectedBtn" type="button">Copy Selected</button><button class="btn" id="pdfBtn" type="button">PDF Report</button></div></div>
-        <div class="grid"><div class="panel"><div class="toolbar"><input id="search" placeholder="Search prospects"><select id="tradeFilter"><option value="">All trades</option></select><select id="stageFilter"><option value="">All stages</option></select></div><div id="leadList" class="lead-list"></div></div><div class="panel" id="leadDetail"><h2>No prospect selected</h2><p class="sub">Run discovery or import leads to begin.</p></div></div>
+        <div class="top"><div><h1>Prospect CRM</h1><p class="sub">CRM shows uncontacted prospects. Once emailed, replied, or moved forward, they live in Pipeline.</p></div><div class="actions"><button class="btn" id="exportCsvBtn" type="button">CSV</button><button class="btn" id="exportExcelBtn" type="button">Excel</button><button class="btn" id="exportJsonBtn" type="button">JSON</button><button class="btn" id="copySelectedBtn" type="button">Copy Selected</button><button class="btn" id="pdfBtn" type="button">PDF Report</button></div></div>
+        <div class="grid"><div class="panel"><div class="toolbar"><input id="search" placeholder="Search prospects"><select id="tradeFilter"><option value="">All trades</option></select><select id="stageFilter"><option value="">CRM Inbox</option></select></div><p class="hint" id="crmInboxHint">Contacted prospects are moved to Pipeline automatically.</p><div id="leadList" class="lead-list"></div></div><div class="panel" id="leadDetail"><h2>No prospect selected</h2><p class="sub">Run discovery or import leads to begin.</p></div></div>
       </section>
 
       <section class="view" id="pipeline"><div class="top"><div><h1>Pipeline</h1><p class="sub">Every emailed or contacted prospect appears here on mobile and desktop.</p></div><div class="actions"><button class="btn" id="recoverPipelineBtn" type="button">Refresh Contacted</button><button class="btn primary" id="restoreResendBtn" type="button">Restore from Resend</button></div></div><div class="panel" style="margin-bottom:14px;"><div class="lead-top"><div><h2>Pipeline Memory</h2><p class="sub" id="pipelineMemoryText">Checking saved contacted history...</p></div><span class="tag" id="pipelineMemoryStorage">Storage</span></div><div class="stats" id="pipelineMemoryStats"></div></div><div class="panel" style="margin-bottom:14px;"><div class="lead-top"><div><h2>Already Contacted</h2><p class="sub">Prospects with sent emails, replies, or last contact history.</p></div><span class="tag hot" id="contactedCount">0</span></div><div class="queue" id="contactedPipelineList"></div></div><div class="pipeline" id="pipelineBoard"></div></section>
@@ -740,6 +740,9 @@
         || ["Contacted","Follow-up","Demo Scheduled","Trial Started","Customer"].includes(pipelineStage(lead))
       ));
     }
+    function belongsInPipeline(lead = {}){
+      return contactedProspects().some(item => item.id === lead.id);
+    }
     function sentTaskToLead(task = {}){
       const sentAt = task.sentAt || now();
       return normalizeLead({
@@ -930,9 +933,10 @@
     }
     function filtered(){
       const q = ($("search")?.value || "").toLowerCase();
+      const stage = $("stageFilter")?.value || "";
       return sortLeadsForAction(leads.filter(l => !q || [l.business,l.trade,l.city,l.state,l.phone,l.website,l.email,l.tags?.join(" ")].join(" ").toLowerCase().includes(q))
         .filter(l => !$("tradeFilter")?.value || l.trade === $("tradeFilter").value)
-        .filter(l => !$("stageFilter")?.value || l.stage === $("stageFilter").value));
+        .filter(l => stage ? l.stage === stage : !belongsInPipeline(l)));
     }
     function weaknessProfile(lead){
       const insights = lead.aiInsights || [];
@@ -1304,7 +1308,20 @@
       const emailStatus = leadEmailStatus(l);
       return `<div class="lead-row ${l.id===selectedId?"active":""}" data-id="${l.id}"><div class="lead-top"><div class="lead-name">${esc(l.business)}</div><span class="tag ${tagClass(l.deepQualityScore || l.callCatchFitScore)}">${l.deepQualityScore || l.callCatchFitScore}</span></div><div class="meta"><span>${esc(l.trade)}</span><span>${esc([l.city,l.state].filter(Boolean).join(", ") || l.area || "")}</span><span>${esc(l.stage)}</span><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}${emailStatus.detail ? ` ${esc(emailStatus.detail)}` : ""}</span>${l.email ? `<span class="tag hot">Email Ready</span>` : `<span class="tag bad">Needs Email</span>`}${l.researchDepth ? `<span class="tag">Research: ${esc(l.researchDepth)}</span>` : ""}${l.phone ? `<span class="tag">Phone</span>` : ""}</div></div>`;
     }
-    function renderList(){ $("leadList").innerHTML = filtered().map(leadRowHtml).join("") || `<p class="sub">No prospects found. Run Discovery or import a CSV.</p>`; document.querySelectorAll(".lead-row").forEach(row=>row.onclick=()=>{selectedId=row.dataset.id; render();}); }
+    function renderList(){
+      const visible = filtered();
+      const pipelineCount = contactedProspects().length;
+      const stage = $("stageFilter")?.value || "";
+      if ($("crmInboxHint")) {
+        $("crmInboxHint").textContent = stage
+          ? `Showing ${stage} records. Contacted prospects normally live in Pipeline.`
+          : `${pipelineCount} contacted prospect${pipelineCount === 1 ? "" : "s"} moved to Pipeline. CRM Inbox shows uncontacted prospects only.`;
+      }
+      $("leadList").innerHTML = visible.map(leadRowHtml).join("") || (stage
+        ? `<p class="sub">No ${esc(stage)} prospects found here.</p>`
+        : `<p class="sub">No uncontacted CRM prospects. Run Discovery for new prospects, or open Pipeline for contacted companies.</p>`);
+      document.querySelectorAll(".lead-row").forEach(row=>row.onclick=()=>{selectedId=row.dataset.id; render();});
+    }
     function renderDetail(){
       const l = selected();
       if(!l){ $("leadDetail").innerHTML = `<h2>No prospects yet</h2><p class="sub">Go to Discovery, search a trade and market, then prospects will appear here.</p>`; return; }
