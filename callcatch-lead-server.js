@@ -389,7 +389,9 @@ const server = http.createServer(async (req, res) => {
       }
       const result = await mutateStore(state => {
         const campaign = { ...(body.campaign || buildCampaign(body)), variantStats: state.sending?.variantStats || {} };
-        const tasks = enrichedCandidates.flatMap(lead => buildSequenceTasks(lead, campaign, outreachAssets(lead)).map(task => ({ ...task, id: newId("task"), createdAt: new Date().toISOString() })));
+        const tasks = enrichedCandidates.flatMap(lead => buildSequenceTasks(lead, campaign, outreachAssets(lead))
+          .filter(task => !body.mobileEmailOnly || task.channel === "email")
+          .map(task => ({ ...task, id: newId("task"), createdAt: new Date().toISOString() })));
         state.leads = (state.leads || []).map(existing => enrichedCandidates.find(lead => lead.id && lead.id === existing.id) || existing);
         state.approvalQueue.unshift(...tasks);
         state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "campaign_enrolled", details: { campaign: campaign.name, leads: enrichedCandidates.length, tasks: tasks.length, enriched: true } });

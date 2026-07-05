@@ -288,6 +288,7 @@
       .btn.small { min-height: 38px; }
       .stats, #sendingStats, #analyticsStats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .work-grid, .form-grid, .toolbar, .detail-grid { grid-template-columns: 1fr; }
+      .mobile-non-email { display: none !important; }
       .checklist { grid-template-columns: 1fr; }
       .panel { padding: 12px; }
       h1 { font-size: 24px; }
@@ -381,7 +382,7 @@
         <div class="stats" id="stats"></div>
         <div class="work-grid">
           <div class="panel"><h2>Send These Emails</h2><div id="workEmails" class="work-list"></div></div>
-          <div class="panel"><h2>Call These Leads</h2><div id="workCalls" class="work-list"></div></div>
+          <div class="panel mobile-non-email"><h2>Call These Leads</h2><div id="workCalls" class="work-list"></div></div>
           <div class="panel"><h2>Follow Up Today</h2><div id="workFollowups" class="work-list"></div></div>
           <div class="panel"><h2>Replies Needing Response</h2><div id="workReplies" class="work-list"></div></div>
         </div>
@@ -442,7 +443,7 @@
         <div class="top"><div><h1>Campaigns & Approval Queue</h1><p class="sub">Create multi-step campaigns. Emails send only after approval and SMTP setup.</p></div><div class="actions"><button class="btn" id="syncBtn" type="button">Sync CRM</button><button class="btn" id="emailStatusBtn" type="button">Check Email</button><button class="btn" id="sendApprovedBtn" type="button">Send All Approved</button><button class="btn primary" id="generateQueueBtn" type="button">Enroll Qualified Leads</button></div></div>
         <div class="panel"><div class="form-grid"><div><label for="campaignName">Campaign Name</label><input id="campaignName" value="Default Outbound Sequence"></div><div><label for="campaignFit">Minimum Fit Score</label><input id="campaignFit" type="number" value="68"></div><div><label for="campaignTrade">Trade Filter</label><select id="campaignTrade"><option value="">All trades</option></select></div><div><label>Safety</label><input value="Review before sending" disabled></div></div><p class="hint">Sequence: Day 1 email, Day 3 LinkedIn, Day 5 follow-up email, Day 7 phone reminder, Day 10 final email.</p></div>
         <div class="panel" style="margin-top:12px;"><h2>Email Adapter</h2><div class="form-grid"><div><label for="testEmail">Test Recipient</label><input id="testEmail" placeholder="you@example.com"></div><div><label>Status</label><input id="emailStatus" value="Not checked" disabled></div><div><label>Provider</label><input id="emailProvider" value="-" disabled></div><div><label>Action</label><button class="btn primary" id="sendTestBtn" type="button">Send Email Test</button></div></div><p class="hint">Email API keys and SMTP credentials stay in Render environment variables. The browser never stores your sending secrets.</p></div>
-        <div class="panel" style="margin-top:12px;"><h2>SMS Adapter</h2><div class="form-grid"><div><label for="testSms">Test Phone</label><input id="testSms" placeholder="+15551234567"></div><div><label>Status</label><input id="smsStatus" value="Not checked" disabled></div><div><label>Provider</label><input id="smsProvider" value="-" disabled></div><div><label>Action</label><button class="btn primary" id="sendSmsTestBtn" type="button">Send SMS Test</button></div></div><p class="hint">Twilio credentials stay in Render. Use E.164 phone format, for example +12145550123.</p></div>
+        <div class="panel mobile-non-email" style="margin-top:12px;"><h2>SMS Adapter</h2><div class="form-grid"><div><label for="testSms">Test Phone</label><input id="testSms" placeholder="+15551234567"></div><div><label>Status</label><input id="smsStatus" value="Not checked" disabled></div><div><label>Provider</label><input id="smsProvider" value="-" disabled></div><div><label>Action</label><button class="btn primary" id="sendSmsTestBtn" type="button">Send SMS Test</button></div></div><p class="hint">Twilio credentials stay in Render. Use E.164 phone format, for example +12145550123.</p></div>
         <div class="panel" style="margin-top:12px;"><h2>Smart Sending</h2><div class="stats" id="sendingStats"></div><div class="form-grid"><div><label for="maxHour">Max Emails / Hour</label><input id="maxHour" type="number" value="20"></div><div><label for="maxDay">Max Emails / Day</label><input id="maxDay" type="number" value="100"></div><div><label for="minDelay">Min Delay Seconds</label><input id="minDelay" type="number" value="45"></div><div><label for="maxDelay">Max Delay Seconds</label><input id="maxDelay" type="number" value="180"></div></div><div class="actions"><button class="btn" id="saveSendingBtn" type="button">Save Limits</button><button class="btn" id="runDueBtn" type="button">Run Due Scheduled</button><button class="btn" id="followupBtn" type="button">Run Follow-up Sequence</button></div><p class="hint" id="sendProgress">Sequence: Email #1, wait 3 days, Follow-up #1, wait 4 more days, Final Follow-up. Replies stop the remaining sequence.</p></div>
         <div class="panel" style="margin-top:12px;"><h2>Reply Tracking</h2><div class="form-grid"><div><label for="replyLead">Lead ID</label><input id="replyLead" placeholder="lead id"></div><div><label for="replyTask">Task ID</label><input id="replyTask" placeholder="optional task id"></div><div><label for="replyFrom">From</label><input id="replyFrom" placeholder="reply@example.com"></div><div><label>Action</label><button class="btn primary" id="recordReplyBtn" type="button">Record Reply</button></div></div><textarea id="replyBody" placeholder="Paste reply text here"></textarea></div>
         <div class="panel" style="margin-top:12px;"><h2>Reply Inbox</h2><div class="queue" id="replyInbox"></div></div>
@@ -693,13 +694,14 @@
           };
         }
       } catch {}
-      [
+      const outreachItems = [
         { channel:"email", title:"Cold Email - Version A", body:assets.emailA, emailVariant:"A" },
         { channel:"email", title:"Cold Email - Version B", body:assets.emailB, emailVariant:"B" },
         { channel:"sms", title:"SMS", body:assets.sms },
         { channel:"linkedin", title:"LinkedIn Message", body:assets.linkedin },
         { channel:"call", title:"Cold Call Script", body:assets.call }
-      ].forEach(item => {
+      ].filter(item => !mobileEmailFocus() || item.channel === "email");
+      outreachItems.forEach(item => {
         const recipient = item.channel === "email" ? (lead.email || "") : item.channel === "sms" ? (lead.phone || "") : "";
         const draft = { id:id(), leadId:lead.id, business:lead.business, ...item, to: recipient, recipient, status:"Needs Approval", createdAt:now() };
         const fp = sendFingerprint(draft);
@@ -738,6 +740,12 @@
     function renderWorkItem(label, detail, action, attrs = ""){
       return `<div class="work-item"><strong>${esc(label)}</strong><p class="hint">${esc(detail)}</p>${action ? `<button class="btn small" ${attrs}>${esc(action)}</button>` : ""}</div>`;
     }
+    function mobileEmailFocus(){
+      return window.matchMedia("(max-width: 760px)").matches;
+    }
+    function mobileVisibleTasks(items){
+      return mobileEmailFocus() ? items.filter(item => item.channel === "email") : items;
+    }
     function renderTodayWork(){
       const readyEmails = sortTasksForAction(queue.filter(q=>q.channel==="email" && /^approved/i.test(q.status||""))).slice(0,5);
       const callTasks = queue.filter(q=>q.channel==="call" && q.status !== "Sent").slice(0,5);
@@ -752,7 +760,7 @@
       document.querySelectorAll("[data-work-reply]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.workLead; switchView("automation"); });
     }
     function sendableTasks(){
-      return sortTasksForAction(queue.filter(item => ["email","sms"].includes(item.channel)));
+      return sortTasksForAction(mobileVisibleTasks(queue.filter(item => ["email","sms"].includes(item.channel))));
     }
     function sendMissingInfo(item){
       const lead = leads.find(candidate => candidate.id === item.leadId) || {};
@@ -848,7 +856,7 @@
         ["SMS Provider", setupState.sms, "Twilio is configured."],
         ["CRM Sync", setupState.crm, "Leads and queue are synced with Render."],
         ["Approval Queue", setupState.approvalQueue, "Outreach tasks are available."]
-      ];
+      ].filter(([label]) => !(mobileEmailFocus() && label === "SMS Provider"));
       $("setupChecklist").innerHTML = items.map(([label, ok, detail])=>`<div class="check-item"><span class="tag ${ok ? "hot" : "bad"}">${ok ? "Ready" : "Needs Setup"}</span><strong>${esc(label)}</strong><p class="hint">${esc(detail)}</p></div>`).join("");
     }
     function renderSendCenter(){
@@ -856,7 +864,8 @@
       $("sendCenterStats").innerHTML = sendCenterStats().map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join("");
       document.querySelectorAll("[data-send-filter]").forEach(button => button.classList.toggle("active", button.dataset.sendFilter === sendCenterFilter));
       const visible = tasks.filter(item => sendCenterFilter === "all" || sendCategory(item) === sendCenterFilter);
-      $("sendCenterList").innerHTML = visible.length ? visible.map(sendCenterItemHtml).join("") : `<p class="sub">No ${sendCenterFilter === "all" ? "" : sendCenterFilter} messages right now.</p>`;
+      const emptyText = mobileEmailFocus() ? "No email messages in this section right now." : `No ${sendCenterFilter === "all" ? "" : sendCenterFilter} messages right now.`;
+      $("sendCenterList").innerHTML = visible.length ? visible.map(sendCenterItemHtml).join("") : `<p class="sub">${esc(emptyText)}</p>`;
       renderSetupChecklist();
       bindQueueActions();
     }
@@ -982,7 +991,8 @@
           }
         }
       });
-      $("approvalQueue").innerHTML = queue.length ? queue.map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag warn">${esc(item.status)}</span></div><p class="hint">Task ID: ${esc(item.id)} | Lead ID: ${esc(item.leadId || "")}</p>${["email","sms"].includes(item.channel) ? `<div class="insights">${sendChecklist(item).map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${item.channel === "sms" ? "Recipient Phone" : "Recipient Email"}</label><input data-to="${item.id}" value="${esc(item.to || item.recipient || "")}" placeholder="${item.channel === "sms" ? "Auto-filled from business phone when available" : "Auto-filled when a public email is found"}"></div>` : ""}<div class="script" style="margin-top:8px;">${esc(item.body)}</div><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-approve="${item.id}">Mark Approved</button>${["email","sms"].includes(item.channel)?`<button class="btn small" data-sendnow="${item.id}">Send Now</button><button class="btn small" data-schedule="${item.id}" data-when="today 2 pm">Today 2 PM</button><button class="btn small" data-schedule="${item.id}" data-when="tomorrow 9 am">Tomorrow 9 AM</button><button class="btn small" data-schedule="${item.id}" data-when="next monday 8 am">Next Monday 8 AM</button>`:""}<button class="btn small" data-remove="${item.id}">Remove</button></div></div>`).join("") : `<p class="sub">No generated outreach waiting for approval.</p>`;
+      const visibleQueue = mobileVisibleTasks(queue);
+      $("approvalQueue").innerHTML = visibleQueue.length ? visibleQueue.map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag warn">${esc(item.status)}</span></div><p class="hint">Task ID: ${esc(item.id)} | Lead ID: ${esc(item.leadId || "")}</p>${["email","sms"].includes(item.channel) ? `<div class="insights">${sendChecklist(item).map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${item.channel === "sms" ? "Recipient Phone" : "Recipient Email"}</label><input data-to="${item.id}" value="${esc(item.to || item.recipient || "")}" placeholder="${item.channel === "sms" ? "Auto-filled from business phone when available" : "Auto-filled when a public email is found"}"></div>` : ""}<div class="script" style="margin-top:8px;">${esc(item.body)}</div><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-approve="${item.id}">Mark Approved</button>${["email","sms"].includes(item.channel)?`<button class="btn small" data-sendnow="${item.id}">Send Now</button><button class="btn small" data-schedule="${item.id}" data-when="today 2 pm">Today 2 PM</button><button class="btn small" data-schedule="${item.id}" data-when="tomorrow 9 am">Tomorrow 9 AM</button><button class="btn small" data-schedule="${item.id}" data-when="next monday 8 am">Next Monday 8 AM</button>`:""}<button class="btn small" data-remove="${item.id}">Remove</button></div></div>`).join("") : `<p class="sub">${mobileEmailFocus() ? "No email outreach waiting for approval." : "No generated outreach waiting for approval."}</p>`;
       bindQueueActions();
     }
     function bindQueueActions(){
@@ -1112,7 +1122,7 @@
       const campaign = { name:$("campaignName").value, minFitScore:$("campaignFit").value, trade:$("campaignTrade").value };
       try {
         toast("Scanning qualified websites and building outreach...");
-        const result = await api("/api/campaigns/enroll", { method:"POST", body: JSON.stringify({ campaign, leads }) });
+        const result = await api("/api/campaigns/enroll", { method:"POST", body: JSON.stringify({ campaign, leads, mobileEmailOnly: mobileEmailFocus() }) });
         if (Array.isArray(result.enrichedLeads)) {
           result.enrichedLeads.map(normalizeLead).forEach(enriched => {
             const index = leads.findIndex(lead => lead.id === enriched.id);
@@ -1179,10 +1189,10 @@
     async function sendApprovedEmails(){
       try {
         await syncCrm(true);
-        const approved = queue.filter(q=>["email","sms"].includes(q.channel) && sendReady(q));
+        const approved = mobileVisibleTasks(queue).filter(q=>["email","sms"].includes(q.channel) && sendReady(q));
         if (!approved.length) {
-          $("sendProgress").textContent = "No ready messages to send. Check Send Center for missing info or setup issues.";
-          toast("No ready messages");
+          $("sendProgress").textContent = mobileEmailFocus() ? "No ready emails to send. Check Send Center for missing info or setup issues." : "No ready messages to send. Check Send Center for missing info or setup issues.";
+          toast(mobileEmailFocus() ? "No ready emails" : "No ready messages");
           return;
         }
         approved.forEach(q=>{ q.status = "Sending"; });
