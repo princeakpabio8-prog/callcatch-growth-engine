@@ -622,6 +622,18 @@ const server = http.createServer(async (req, res) => {
             lead.stage = lead.stage === "New" ? "Contacted" : lead.stage;
             lead.timeline = lead.timeline || [];
             lead.timeline.unshift({ at: sendResult.sentAt, text: `Email sent: ${item.title || "Approved email"}` });
+            lead.sentEmails = lead.sentEmails || [];
+            lead.sentEmails.unshift({
+              id: newId("sent"),
+              taskId: item.id,
+              title: item.title || "Approved email",
+              to,
+              subject: String(item.body || "").split(/\r?\n/).find(line => /^subject:/i.test(line))?.replace(/^subject:\s*/i, "") || "CallCatch follow-up",
+              sentAt: sendResult.sentAt,
+              provider: sendResult.provider || "email",
+              messageId: sendResult.messageId
+            });
+            lead.sentEmails = lead.sentEmails.slice(0, 100);
             sent.push({ id: item.id, business: item.business, to, messageId: sendResult.messageId });
           } catch (error) {
             item.status = "Send Failed";

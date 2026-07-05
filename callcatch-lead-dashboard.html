@@ -484,9 +484,10 @@
         <div class="panel" style="margin-top:12px;"><h2>Follow-up Command Center</h2><p class="hint">Email follow-ups are generated only when they are due. Replies stop the sequence automatically.</p><div class="queue" id="followupCenter"></div></div>
         <div class="panel" style="margin-top:12px;"><h2>Reply Tracking</h2><div class="form-grid"><div><label for="replyLead">Lead ID</label><input id="replyLead" placeholder="lead id"></div><div><label for="replyTask">Task ID</label><input id="replyTask" placeholder="optional task id"></div><div><label for="replyFrom">From</label><input id="replyFrom" placeholder="reply@example.com"></div><div><label>Action</label><button class="btn primary" id="recordReplyBtn" type="button">Record Reply</button></div></div><textarea id="replyBody" placeholder="Paste reply text here"></textarea></div>
         <div class="panel" style="margin-top:12px;"><h2>Reply Inbox</h2><div class="queue" id="replyInbox"></div></div>
+        <div class="panel" style="margin-top:12px;"><h2>Sent Email History</h2><div class="queue" id="sentHistory"></div></div>
         <div class="queue" id="approvalQueue" style="margin-top:12px;"></div>
       </section>
-      <section class="view" id="analytics"><div class="top"><div><h1>Dashboard Analytics</h1><p class="sub">Outbound performance and pipeline health.</p></div></div><div class="stats" id="analyticsStats"></div><div class="panel"><h2>Weekly Snapshot</h2><div class="table-wrap"><table id="analyticsTable"></table></div></div></section>
+      <section class="view" id="analytics"><div class="top"><div><h1>Dashboard Analytics</h1><p class="sub">Outbound performance and pipeline health.</p></div></div><div class="stats" id="analyticsStats"></div><div class="panel"><h2>Weekly Snapshot</h2><div class="table-wrap"><table id="analyticsTable"></table></div></div><div class="panel" style="margin-top:14px;"><h2>Recent Sent Emails</h2><div class="table-wrap"><table id="sentEmailTable"></table></div></div></section>
       <section class="view" id="territory"><div class="top"><div><h1>Territory Intelligence</h1><p class="sub">A lightweight U.S. opportunity map using available prospect coordinates.</p></div></div><div class="map-grid"><div class="map" id="territoryMap"></div><div class="panel"><h2>Markets</h2><div id="marketTable" class="table-wrap"></div></div></div></section>
       <section class="view" id="settings"><div class="top"><div><h1>Settings & Safety</h1><p class="sub">Automation is approval-first by default. Full automation is disabled unless explicitly enabled.</p></div></div><div class="panel"><div class="form-grid"><div><label for="teamMember">Assigned Team Member</label><input id="teamMember" value="Sales Team"></div><div><label for="senderName">Sender Name</label><input id="senderName" value="CallCatch"></div><div><label for="demoLink">Demo Link</label><input id="demoLink" value="https://callcatch.site"></div><div><label for="automationMode">Sending Mode</label><select id="automationMode"><option>Review before sending</option><option>Full automation disabled</option></select></div></div><button class="btn primary" id="saveSettingsBtn" type="button">Save Settings</button><p class="hint">Email, SMS, LinkedIn, calendar, Slack, CRM, and payment integrations are adapter-ready but not connected in this local build. No message is sent from this dashboard.</p></div><div class="panel" style="margin-top:14px;"><h2>Audit Log</h2><div class="table-wrap"><table id="auditTable"></table></div></div></section>
     </main>
@@ -606,6 +607,47 @@
     function tagClass(score){ return score >= 78 ? "hot" : score >= 58 ? "warn" : "bad"; }
     function stageCount(stage){ return leads.filter(l=>l.stage===stage).length; }
     function addTimeline(lead, text){ lead.timeline = lead.timeline || []; lead.timeline.unshift({ at: now(), text }); }
+    function sentEmailTasks(){
+      return queue
+        .filter(item => item.channel === "email" && /^sent$/i.test(item.status || ""))
+        .map(item => ({ ...item, lead: leads.find(lead => lead.id === item.leadId) || {} }))
+        .sort((a,b)=>new Date(b.sentAt || 0)-new Date(a.sentAt || 0));
+    }
+    function leadSentEmails(lead = {}){
+      const stored = (lead.sentEmails || []).map(item => ({ ...item, business: lead.business, leadId: lead.id, body: item.body || "" }));
+      const fromTasks = sentEmailTasks()
+        .filter(item => item.leadId === lead.id)
+        .map(item => ({
+          id: item.id,
+          taskId: item.id,
+          title: item.title || "Outbound email",
+          business: item.business || lead.business,
+          to: item.to || item.recipient || lead.email,
+          subject: messageSubject(item.body),
+          body: item.body,
+          sentAt: item.sentAt,
+          provider: item.provider || "",
+          messageId: item.messageId || ""
+        }));
+      const seen = new Set();
+      return [...stored, ...fromTasks]
+        .filter(item => {
+          const key = item.taskId || `${item.subject}|${item.sentAt}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .sort((a,b)=>new Date(b.sentAt || 0)-new Date(a.sentAt || 0));
+    }
+    function leadEmailStatus(lead = {}){
+      const sent = leadSentEmails(lead);
+      if (sent.length) return { label: "Email Sent", className: "hot", detail: sent[0].sentAt ? new Date(sent[0].sentAt).toLocaleDateString() : "" };
+      const approved = queue.find(item => item.leadId === lead.id && item.channel === "email" && /^approved/i.test(item.status || ""));
+      if (approved) return { label: "Approved", className: "warn", detail: "" };
+      const draft = queue.find(item => item.leadId === lead.id && item.channel === "email" && !/^sent$/i.test(item.status || ""));
+      if (draft) return { label: "Drafted", className: "", detail: "" };
+      return { label: "No Email Sent", className: "bad", detail: "" };
+    }
     function compactEmailDuplicates(items = queue){
       const sentFingerprints = new Set((items || [])
         .filter(item => item.channel === "email" && /^sent$/i.test(item.status || ""))
@@ -1058,12 +1100,14 @@
       renderSendCenter();
     }
     function leadRowHtml(l){
-      return `<div class="lead-row ${l.id===selectedId?"active":""}" data-id="${l.id}"><div class="lead-top"><div class="lead-name">${esc(l.business)}</div><span class="tag ${tagClass(l.deepQualityScore || l.callCatchFitScore)}">${l.deepQualityScore || l.callCatchFitScore}</span></div><div class="meta"><span>${esc(l.trade)}</span><span>${esc([l.city,l.state].filter(Boolean).join(", ") || l.area || "")}</span><span>${esc(l.stage)}</span><span>${esc(l.responsePriority)}</span>${l.email ? `<span class="tag hot">Email Ready</span>` : `<span class="tag bad">Needs Email</span>`}${l.researchDepth ? `<span class="tag">Research: ${esc(l.researchDepth)}</span>` : ""}${l.phone ? `<span class="tag">Phone</span>` : ""}</div></div>`;
+      const emailStatus = leadEmailStatus(l);
+      return `<div class="lead-row ${l.id===selectedId?"active":""}" data-id="${l.id}"><div class="lead-top"><div class="lead-name">${esc(l.business)}</div><span class="tag ${tagClass(l.deepQualityScore || l.callCatchFitScore)}">${l.deepQualityScore || l.callCatchFitScore}</span></div><div class="meta"><span>${esc(l.trade)}</span><span>${esc([l.city,l.state].filter(Boolean).join(", ") || l.area || "")}</span><span>${esc(l.stage)}</span><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}${emailStatus.detail ? ` ${esc(emailStatus.detail)}` : ""}</span>${l.email ? `<span class="tag hot">Email Ready</span>` : `<span class="tag bad">Needs Email</span>`}${l.researchDepth ? `<span class="tag">Research: ${esc(l.researchDepth)}</span>` : ""}${l.phone ? `<span class="tag">Phone</span>` : ""}</div></div>`;
     }
     function renderList(){ $("leadList").innerHTML = filtered().map(leadRowHtml).join("") || `<p class="sub">No prospects found. Run Discovery or import a CSV.</p>`; document.querySelectorAll(".lead-row").forEach(row=>row.onclick=()=>{selectedId=row.dataset.id; render();}); }
     function renderDetail(){
       const l = selected();
       if(!l){ $("leadDetail").innerHTML = `<h2>No prospects yet</h2><p class="sub">Go to Discovery, search a trade and market, then prospects will appear here.</p>`; return; }
+      const sentEmails = leadSentEmails(l);
       $("leadDetail").innerHTML = `<div class="lead-top"><div><h2>${esc(l.business)}</h2><p class="sub">${esc(l.trade)} | ${esc(l.phone || "No phone")} | ${esc(l.email || "No email")} | ${esc(l.website || l.mapsUrl || "")}</p></div><span class="tag ${tagClass(l.callCatchFitScore)}">${esc(l.aiOpportunityLevel)}</span></div>
       <div class="detail-grid"><div class="mini"><span>Fit Score</span><strong>${l.callCatchFitScore}</strong></div><div class="mini"><span>Lead Quality</span><strong>${l.deepQualityScore || l.aiLeadQualityScore || l.confidenceScore || 0}</strong></div><div class="mini"><span>Website</span><strong>${l.websiteQualityScore||0}</strong></div><div class="mini"><span>Follow-up</span><strong>${esc(l.followUpStatus || l.responsePriority || "Not started")}</strong></div></div>
       <div class="insights">${[...(l.aiInsights||[]), ...(l.websiteIntelligence?.leadQualitySignals || []), l.leadQualityReason || ""].filter(Boolean).slice(0,14).map(i=>`<span class="tag">${esc(i)}</span>`).join("") || `<span class="tag">No scan insights yet</span>`}</div>
@@ -1071,15 +1115,17 @@
       <div class="form-grid"><div><label>Stage</label><select id="detailStage">${STAGES.map(s=>`<option ${s===l.stage?"selected":""}>${s}</option>`).join("")}</select></div><div><label>Owner</label><input id="owner" value="${esc(l.owner||"")}"></div><div><label>Next Follow-up</label><input id="nextFollow" type="date" value="${esc(l.nextFollowUp||"")}"></div><div><label>Assigned</label><input id="assigned" value="${esc(l.assignedTeamMember||settings.team)}"></div></div>
       <label>Notes</label><textarea id="notes">${esc(l.notes||"")}</textarea>
       <div class="actions" style="margin-top:10px;"><button class="btn primary small" id="saveLeadBtn">Save Lead</button><button class="btn small" id="scanBtn">Scan Website</button><button class="btn small" id="queueBtn">Generate Outreach</button><button class="btn small" id="copyEmailBtn">Copy Email</button></div>
+      <h3 style="margin-top:14px;">Sent Emails</h3><div class="queue">${sentEmails.length ? sentEmails.slice(0,5).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.subject || item.title || "Sent email")}</strong><span class="tag hot">Sent</span></div><p class="hint">${esc(item.to || "")} | ${item.sentAt ? new Date(item.sentAt).toLocaleString() : ""}</p><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy-sent="${esc(item.taskId || item.id || "")}">Copy Email</button></div></div>`).join("") : `<p class="sub">No sent emails yet.</p>`}</div>
       <h3 style="margin-top:14px;">Timeline</h3><div class="script">${(l.timeline||[]).map(t=>`${new Date(t.at).toLocaleString()} - ${t.text}`).join("\n")}</div>`;
       $("detailStage").onchange=e=>{ l.stage=e.target.value; addTimeline(l,`Moved to ${l.stage}`); save(); render(); };
       $("saveLeadBtn").onclick=()=>{ Object.assign(l,{owner:$("owner").value,nextFollowUp:$("nextFollow").value,assignedTeamMember:$("assigned").value,notes:$("notes").value}); addTimeline(l,"Lead profile updated"); save(); render(); toast("Lead saved"); };
       $("scanBtn").onclick=()=>scanSelected(l);
       $("queueBtn").onclick=()=>queueOutreach(l);
       $("copyEmailBtn").onclick=()=>copy(outreach(l).emailA);
+      document.querySelectorAll("[data-copy-sent]").forEach(button=>button.onclick=()=>{ const item = sentEmails.find(email => String(email.taskId || email.id || "") === button.dataset.copySent); copy(item?.body || item?.subject || ""); });
     }
     function renderPipeline(){
-      $("pipelineBoard").innerHTML = STAGES.map(stage=>`<div class="stage" data-stage="${stage}"><h3>${stage}<span>${stageCount(stage)}</span></h3>${leads.filter(l=>l.stage===stage).map(l=>`<div class="card" draggable="true" data-id="${l.id}"><strong>${esc(l.business)}</strong><div class="meta"><span>${l.callCatchFitScore} fit</span><span>${money(l.revenueOpportunityEstimate)}</span></div></div>`).join("")}</div>`).join("");
+      $("pipelineBoard").innerHTML = STAGES.map(stage=>`<div class="stage" data-stage="${stage}"><h3>${stage}<span>${stageCount(stage)}</span></h3>${leads.filter(l=>l.stage===stage).map(l=>{ const emailStatus=leadEmailStatus(l); return `<div class="card" draggable="true" data-id="${l.id}"><strong>${esc(l.business)}</strong><div class="meta"><span>${l.callCatchFitScore} fit</span><span>${money(l.revenueOpportunityEstimate)}</span><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}</span></div></div>`; }).join("")}</div>`).join("");
       document.querySelectorAll(".card").forEach(c=>c.ondragstart=e=>e.dataTransfer.setData("text/plain",c.dataset.id));
       document.querySelectorAll(".stage").forEach(s=>{ s.ondragover=e=>e.preventDefault(); s.ondrop=e=>{ const l=leads.find(x=>x.id===e.dataTransfer.getData("text/plain")); if(l){ l.stage=s.dataset.stage; addTimeline(l,`Moved to ${l.stage}`); save(); render(); } }; });
     }
@@ -1153,6 +1199,19 @@
       document.querySelectorAll("[data-reply-open]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.replyOpen; switchView("crm"); });
       document.querySelectorAll("[data-reply-done]").forEach(b=>b.onclick=()=>markReplyHandled(...b.dataset.replyDone.split("|")));
     }
+    function renderSentHistory(){
+      const history = sentEmailTasks();
+      const el = $("sentHistory");
+      if (el) {
+        el.innerHTML = history.length ? history.slice(0,12).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.business || item.lead.business || "Prospect")} - ${esc(messageSubject(item.body))}</strong><span class="tag hot">Sent</span></div><p class="hint">${esc(item.to || item.recipient || item.lead.email || "")} | ${item.sentAt ? new Date(item.sentAt).toLocaleString() : ""} | ${esc(item.provider || "")}</p><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-open-lead="${item.leadId || ""}">Open Lead</button></div></div>`).join("") : `<p class="sub">No sent emails yet.</p>`;
+      }
+      const table = $("sentEmailTable");
+      if (table) {
+        table.innerHTML = history.length ? `<tr><th>Sent</th><th>Business</th><th>Subject</th><th>Recipient</th><th>Provider</th></tr>${history.slice(0,50).map(item=>`<tr><td>${item.sentAt ? new Date(item.sentAt).toLocaleString() : ""}</td><td>${esc(item.business || item.lead.business || "")}</td><td>${esc(messageSubject(item.body))}</td><td>${esc(item.to || item.recipient || item.lead.email || "")}</td><td>${esc(item.provider || "")}</td></tr>`).join("")}` : `<tr><td>No sent emails yet.</td></tr>`;
+      }
+      document.querySelectorAll("#sentHistory [data-copy]").forEach(button=>button.onclick=()=>copy(queue.find(item=>item.id===button.dataset.copy)?.body || ""));
+      document.querySelectorAll("#sentHistory [data-open-lead]").forEach(button=>button.onclick=()=>{ if(button.dataset.openLead){ selectedId=button.dataset.openLead; switchView("crm"); } });
+    }
     function renderAnalytics(){
       $("analyticsTable").innerHTML = `<tr><th>Metric</th><th>Daily</th><th>Weekly</th><th>Monthly</th></tr>${[["Reply Rate","0%","0%","0%"],["Demo Rate","0%","0%","0%"],["Trial Rate","0%","0%","0%"],["Customer Conversion","0%","0%","0%"],["Revenue Won",money(leads.filter(l=>l.stage==="Customer").reduce((s,l)=>s+Number(l.revenueOpportunityEstimate||0),0)),"-","-"]].map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join("")}`;
     }
@@ -1213,7 +1272,7 @@
       $("auditTable").innerHTML = auditLog.length ? `<tr><th>Time</th><th>Action</th><th>Details</th></tr>${auditLog.slice(0,40).map(row=>`<tr><td>${new Date(row.at).toLocaleString()}</td><td>${esc(row.action)}</td><td>${esc(JSON.stringify(row.details || {}))}</td></tr>`).join("")}` : `<tr><td>No server audit entries loaded yet.</td></tr>`;
     }
     function render(){
-      renderStats(); renderAssistant(); renderActionGuide(); renderTodayWork(); renderSendCenter(); renderList(); renderDetail(); renderPipeline(); renderQueue(); renderInbox(); renderAnalytics(); renderTerritory(); renderSettings(); renderAudit(); renderSendingStats(); renderFollowupCenter();
+      renderStats(); renderAssistant(); renderActionGuide(); renderTodayWork(); renderSendCenter(); renderList(); renderDetail(); renderPipeline(); renderQueue(); renderInbox(); renderSentHistory(); renderAnalytics(); renderTerritory(); renderSettings(); renderAudit(); renderSendingStats(); renderFollowupCenter();
     }
     async function search(){
       if($("source").value!=="Free Public Sources"){ $("finderStatus").textContent="That provider is a future adapter slot."; return; }

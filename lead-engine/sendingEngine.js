@@ -285,6 +285,18 @@ async function sendTaskNow(state, taskId) {
     lead.stage = lead.stage === "New" ? "Contacted" : lead.stage;
     lead.lastContact = result.sentAt.slice(0, 10);
     if (task.channel === "email") {
+      lead.sentEmails = lead.sentEmails || [];
+      lead.sentEmails.unshift({
+        id: newId("sent"),
+        taskId: task.id,
+        title: task.title || "Outbound email",
+        to,
+        subject: String(task.body || "").split(/\r?\n/).find(line => /^subject:/i.test(line))?.replace(/^subject:\s*/i, "") || "CallCatch follow-up",
+        sentAt: result.sentAt,
+        provider: task.provider,
+        messageId: task.messageId
+      });
+      lead.sentEmails = lead.sentEmails.slice(0, 100);
       if (task.sequenceStep === "final-followup") {
         lead.nextFollowUp = "";
         lead.followUpStatus = "Sequence complete";
