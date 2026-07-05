@@ -56,6 +56,10 @@ function leadKey(lead) {
   ].join("|");
 }
 
+function hasEmail(lead) {
+  return !!String(lead.email || "").trim();
+}
+
 function buildSearchPlan(config) {
   const searches = [];
   for (const state of config.states) {
@@ -125,6 +129,7 @@ async function runDailyGrowth({ state, config: rawConfig }) {
   }
 
   const qualified = enriched
+    .filter(hasEmail)
     .filter(lead => Number(lead.callCatchFitScore || 0) >= Number(config.scoreThreshold || 75))
     .map(lead => ({
       ...lead,

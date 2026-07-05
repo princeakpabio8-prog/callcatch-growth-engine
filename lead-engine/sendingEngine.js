@@ -199,10 +199,11 @@ function normalizeKey(value) {
 
 function taskStepKey(task = {}) {
   if (task.sequenceStep) return task.sequenceStep;
-  if (task.emailVariant) return `initial-${task.emailVariant}`;
+  if (task.channel === "email" && task.emailVariant) return "initial-email";
   const title = String(task.title || task.channel || "message").toLowerCase();
   if (title.includes("final")) return "final-followup";
   if (title.includes("follow")) return "followup-1";
+  if (task.channel === "email" && title.includes("cold email")) return "initial-email";
   if (title.includes("sms")) return "sms-initial";
   return normalizeKey(title) || "initial";
 }
@@ -214,7 +215,7 @@ function sendFingerprint(lead = {}, task = {}) {
 
 function duplicateSentTask(state, lead, task) {
   const fingerprint = sendFingerprint(lead, task);
-  const duplicate = (state.approvalQueue || []).find(item => item.id !== task.id && item.status === "Sent" && item.sendFingerprint === fingerprint);
+  const duplicate = (state.approvalQueue || []).find(item => item.id !== task.id && /^sent|approved|sending|scheduled|needs approval/i.test(item.status || "") && (item.sendFingerprint || sendFingerprint(lead, item)) === fingerprint);
   return { fingerprint, duplicate };
 }
 

@@ -44,7 +44,7 @@ function buildSequenceTasks(lead, campaign, outreachAssets) {
     return outreachAssets[step.channel] || outreachAssets.email || "";
   };
   return campaign.sequence.flatMap(step => {
-    const variants = step.channel === "email" ? orderedVariants(lead, campaign) : [""];
+    const variants = step.channel === "email" ? orderedVariants(lead, campaign).slice(0, 1) : [""];
     return variants.map(variant => ({
     leadId: lead.id,
     business: lead.business,

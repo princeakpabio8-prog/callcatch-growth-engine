@@ -27,6 +27,19 @@ const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
 const PUBLIC_DIR = __dirname;
 let automationRunning = false;
 
+function normalizeCompanyKey(lead = {}) {
+  return String(lead.website || `${lead.business || ""}-${lead.city || ""}-${lead.state || ""}`)
+    .toLowerCase()
+    .replace(/https?:\/\//, "")
+    .replace(/www\./, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function emailReadyLead(lead = {}) {
+  return !!String(lead.email || "").trim();
+}
+
 async function enrichLeadForOutreach(lead = {}) {
   if (!lead.website || (lead.websiteIntelligence && lead.websiteIntelligence.ok !== false)) {
     return lead;
@@ -305,11 +318,25 @@ const server = http.createServer(async (req, res) => {
       const incoming = Array.isArray(body.leads) ? body.leads : [];
       const saved = await mutateStore(state => {
         const existing = new Map(state.leads.map(lead => [lead.id, lead]));
+        const companyKeys = new Set(state.leads.map(normalizeCompanyKey));
+        let skippedNoEmail = 0;
+        let skippedDuplicate = 0;
         incoming.forEach(lead => {
           const id = lead.id || newId("lead");
+          const alreadySaved = existing.has(id);
+          const key = normalizeCompanyKey(lead);
+          if (!emailReadyLead(lead) && !alreadySaved) {
+            skippedNoEmail += 1;
+            return;
+          }
+          if (!alreadySaved && companyKeys.has(key)) {
+            skippedDuplicate += 1;
+            return;
+          }
+          companyKeys.add(key);
           existing.set(id, { ...lead, id, updatedAt: new Date().toISOString() });
         });
-        state.leads = [...existing.values()];
+        state.leads = [...existing.values()].filter(emailReadyLead);
         const leadById = new Map(state.leads.map(lead => [lead.id, lead]));
         for (const task of state.approvalQueue || []) {
           if (["email", "sms"].includes(task.channel) && !task.to && !task.recipient) {
@@ -325,7 +352,7 @@ const server = http.createServer(async (req, res) => {
           id: newId("audit"),
           at: new Date().toISOString(),
           action: "crm_leads_synced",
-          details: { count: incoming.length }
+          details: { count: incoming.length, skippedNoEmail, skippedDuplicate, emailFirst: true }
         });
         return state.leads;
       });
@@ -381,6 +408,7 @@ const server = http.createServer(async (req, res) => {
       const campaign = { ...(body.campaign || buildCampaign(body)) };
       const sourceLeads = Array.isArray(body.leads) ? body.leads : (await readStore()).leads;
       const candidates = sourceLeads
+        .filter(emailReadyLead)
         .filter(lead => Number(lead.callCatchFitScore || 0) >= Number(campaign.minFitScore || 68))
         .filter(lead => !campaign.trade || lead.trade === campaign.trade);
       const enrichedCandidates = [];

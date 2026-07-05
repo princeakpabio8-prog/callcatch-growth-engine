@@ -430,7 +430,7 @@
           </div>
           <p class="hint" id="finderStatus">API connected through this app. Search results become CRM records automatically.</p>
         </div>
-        <div class="panel" style="margin-top:14px;"><h2>Import Leads</h2><p class="sub">Paste CSV: business, trade, city/state, phone, website, rating, reviews.</p><textarea id="csvInput" placeholder="Business Name,Trade,City State,Phone,Website,Rating,Reviews"></textarea><div class="actions" style="margin-top:10px;"><button class="btn primary" id="importBtn" type="button">Import CSV</button></div></div>
+        <div class="panel" style="margin-top:14px;"><h2>Import Leads</h2><p class="sub">Paste CSV: business, trade, city/state, phone, website, rating, reviews, email.</p><textarea id="csvInput" placeholder="Business Name,Trade,City State,Phone,Website,Rating,Reviews,Email"></textarea><div class="actions" style="margin-top:10px;"><button class="btn primary" id="importBtn" type="button">Import CSV</button></div></div>
       </section>
 
       <section class="view" id="crm">
@@ -491,6 +491,7 @@
     let serverSynced = false;
     let sendCenterFilter = "ready";
     let composerTaskId = "";
+    let lastImportStats = { added: 0, skippedNoEmail: 0, duplicates: 0 };
     let setupState = {
       backend: false,
       leadSources: false,
@@ -522,11 +523,12 @@
     }
     async function syncCrm(silent = true) {
       try {
+        queue = compactEmailDuplicates(queue);
         await api("/api/crm/leads", { method: "POST", body: JSON.stringify({ leads }) });
         const savedQueue = await api("/api/approval-queue", { method: "POST", body: JSON.stringify({ items: queue }) });
-        queue = savedQueue.items || queue;
+        queue = compactEmailDuplicates(savedQueue.items || queue);
         const crm = await api("/api/crm");
-        leads = crm.leads || leads;
+        leads = (crm.leads || leads).filter(isEmailReachableLead);
         auditLog = crm.auditLog || [];
         serverSynced = true;
         save();
@@ -541,8 +543,8 @@
     async function loadServerCrm() {
       try {
         const crm = await api("/api/crm");
-        if (Array.isArray(crm.leads)) leads = mergeById(leads, crm.leads);
-        if (Array.isArray(crm.approvalQueue)) queue = mergeById(queue, crm.approvalQueue);
+        if (Array.isArray(crm.leads)) leads = mergeById(leads, crm.leads).filter(isEmailReachableLead);
+        if (Array.isArray(crm.approvalQueue)) queue = compactEmailDuplicates(mergeById(queue, crm.approvalQueue));
         auditLog = crm.auditLog || auditLog;
         serverSynced = true;
         if (!selectedId && leads[0]) selectedId = leads[0].id;
@@ -568,6 +570,21 @@
     function tagClass(score){ return score >= 78 ? "hot" : score >= 58 ? "warn" : "bad"; }
     function stageCount(stage){ return leads.filter(l=>l.stage===stage).length; }
     function addTimeline(lead, text){ lead.timeline = lead.timeline || []; lead.timeline.unshift({ at: now(), text }); }
+    function compactEmailDuplicates(items = queue){
+      const sentFingerprints = new Set((items || [])
+        .filter(item => item.channel === "email" && /^sent$/i.test(item.status || ""))
+        .map(item => item.sendFingerprint || sendFingerprint(item)));
+      const keptDrafts = new Set();
+      return (items || []).filter(item => {
+        if (item.channel !== "email") return true;
+        const fp = item.sendFingerprint || sendFingerprint(item);
+        if (/^sent$/i.test(item.status || "")) return true;
+        if (sentFingerprints.has(fp)) return false;
+        if (keptDrafts.has(fp)) return false;
+        keptDrafts.add(fp);
+        return true;
+      });
+    }
     function contactScore(lead = {}){
       let score = 0;
       if (lead.email) score += 60;
@@ -582,6 +599,12 @@
         || ((b.callCatchFitScore || 0) - (a.callCatchFitScore || 0))
         || String(a.business || "").localeCompare(String(b.business || ""))
       );
+    }
+    function companyKey(lead = {}){
+      return normalizeKey(lead.website || `${lead.business || ""}-${lead.city || ""}-${lead.state || ""}`);
+    }
+    function isEmailReachableLead(lead = {}){
+      return !!String(lead.email || "").trim();
     }
     function taskContactScore(item = {}){
       const lead = leads.find(candidate => candidate.id === item.leadId) || {};
@@ -622,13 +645,17 @@
     }
     function upsertLeads(batch){
       let added = 0;
-      const keys = new Set(leads.map(l => `${(l.business||"").toLowerCase()}|${l.phone||""}|${l.website||""}`));
+      let skippedNoEmail = 0;
+      let duplicates = 0;
+      const keys = new Set(leads.map(l => companyKey(l)));
       batch.map(normalizeLead).forEach(lead => {
-        const key = `${lead.business.toLowerCase()}|${lead.phone||""}|${lead.website||""}`;
-        if (keys.has(key)) return;
+        const key = companyKey(lead);
+        if (!isEmailReachableLead(lead)) { skippedNoEmail += 1; return; }
+        if (keys.has(key)) { duplicates += 1; return; }
         keys.add(key); leads.unshift(lead); added += 1;
         if (lead.callCatchFitScore >= Number($("minFit")?.value || 68)) queueOutreach(lead, false);
       });
+      lastImportStats = { added, skippedNoEmail, duplicates };
       if (!selectedId && leads[0]) selectedId = leads[0].id;
       save(); syncCrm(true); render(); return added;
     }
@@ -696,8 +723,7 @@
         }
       } catch {}
       const outreachItems = [
-        { channel:"email", title:"Cold Email - Version A", body:assets.emailA, emailVariant:"A" },
-        { channel:"email", title:"Cold Email - Version B", body:assets.emailB, emailVariant:"B" },
+        { channel:"email", title:"Cold Email", body:assets.emailA || assets.emailB, emailVariant:"A" },
         { channel:"sms", title:"SMS", body:assets.sms },
         { channel:"linkedin", title:"LinkedIn Message", body:assets.linkedin },
         { channel:"call", title:"Cold Call Script", body:assets.call }
@@ -709,7 +735,8 @@
         const exists = queue.some(existing => existing.leadId === lead.id && existing.channel === draft.channel && (existing.sendFingerprint || sendFingerprint(existing)) === fp && existing.status !== "Sent");
         if (!exists) queue.unshift({ ...draft, sendFingerprint: fp });
       });
-      addTimeline(lead, "Outreach drafts generated and queued for approval");
+      queue = compactEmailDuplicates(queue);
+      addTimeline(lead, "Email outreach draft generated and queued for approval");
       save(); syncCrm(true); if(notify){ sendCenterFilter="approval"; switchView("sendcenter"); toast("Personalized outreach queued"); }
     }
     function statData(){
@@ -776,10 +803,11 @@
     }
     function taskStepKey(item = {}){
       if (item.sequenceStep) return item.sequenceStep;
-      if (item.emailVariant) return `initial-${item.emailVariant}`;
+      if (item.channel === "email" && item.emailVariant) return "initial-email";
       const title = String(item.title || item.channel || "message").toLowerCase();
       if (title.includes("final")) return "final-followup";
       if (title.includes("follow")) return "followup-1";
+      if (item.channel === "email" && title.includes("cold email")) return "initial-email";
       if (title.includes("sms")) return "sms-initial";
       return normalizeKey(title) || "initial";
     }
@@ -790,7 +818,7 @@
     }
     function duplicateSent(item){
       const fp = item.sendFingerprint || sendFingerprint(item);
-      return queue.find(other => other.id !== item.id && other.status === "Sent" && (other.sendFingerprint || sendFingerprint(other)) === fp);
+      return queue.find(other => other.id !== item.id && /^sent|approved|sending|scheduled|needs approval/i.test(other.status || "") && (other.sendFingerprint || sendFingerprint(other)) === fp);
     }
     function sendReady(item){
       if (!/^approved/i.test(item.status || "")) return false;
@@ -1124,7 +1152,9 @@
         const payload = await api("/api/leads",{method:"POST",body:JSON.stringify({trade:$("trade").value,city:$("city").value,area,state:$("state").value,zip:$("zip").value,radius:$("radius").value,count:$("count").value})});
         const added = upsertLeads(payload.leads || []);
         const warning = (payload.errors || []).length ? ` Warning: ${payload.errors[0]}` : "";
-        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} new CRM records from ${payload.source || "public sources"}.${warning}`;
+        const skipped = lastImportStats.skippedNoEmail ? ` Skipped ${lastImportStats.skippedNoEmail} without email.` : "";
+        const duplicates = lastImportStats.duplicates ? ` Ignored ${lastImportStats.duplicates} duplicates.` : "";
+        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} email-ready CRM records from ${payload.source || "public sources"}.${skipped}${duplicates}${warning}`;
         if ((payload.leads || []).length) switchView("crm");
         toast(`${added} prospects added`);
       } catch(e){ $("finderStatus").textContent=e.message + `. Check ${apiUrl("/api/network-check")} to verify public data access.`; toast("Search failed"); }
@@ -1139,8 +1169,8 @@
     }
     function importCsv(){
       const lines=$("csvInput").value.split(/\n+/).map(l=>l.trim()).filter(Boolean);
-      const batch=lines.map(line=>{ const [business,trade,area,phone,website,rating,reviews]=line.split(",").map(x=>x?.trim()); return normalizeLead({business,trade,area,phone,website,rating:Number(rating)||0,reviews:Number(reviews)||0,source:"CSV Import"}); });
-      const added=upsertLeads(batch); $("csvInput").value=""; switchView("crm"); toast(`${added} imported`);
+      const batch=lines.map(line=>{ const [business,trade,area,phone,website,rating,reviews,email]=line.split(",").map(x=>x?.trim()); return normalizeLead({business,trade,area,phone,website,rating:Number(rating)||0,reviews:Number(reviews)||0,email,source:"CSV Import"}); });
+      const added=upsertLeads(batch); $("csvInput").value=""; switchView("crm"); toast(`${added} email-ready imported${lastImportStats.skippedNoEmail ? `, ${lastImportStats.skippedNoEmail} skipped` : ""}`);
     }
     async function saveSearch(){
       try {
@@ -1235,8 +1265,8 @@
         $("sendProgress").textContent = `Sending... 0 / ${approved.length} Complete`;
         const result = await api("/api/sending/send-all-approved", { method:"POST", body: JSON.stringify({ taskIds: approved.map(item=>item.id) }) });
         const crm = await api("/api/crm");
-        leads = crm.leads || leads;
-        queue = crm.approvalQueue || queue;
+        leads = (crm.leads || leads).filter(isEmailReachableLead);
+        queue = compactEmailDuplicates(crm.approvalQueue || queue);
         auditLog = crm.auditLog || auditLog;
         save();
         render();
@@ -1268,8 +1298,8 @@
         $("sendProgress").textContent = `Sending ${localTask?.channel === "sms" ? "SMS" : "email"} through Render...`;
         const result = await api("/api/sending/send-now", { method:"POST", body: JSON.stringify({ taskId }) });
         const crm = await api("/api/crm");
-        leads = crm.leads || leads;
-        queue = crm.approvalQueue || queue;
+        leads = (crm.leads || leads).filter(isEmailReachableLead);
+        queue = compactEmailDuplicates(crm.approvalQueue || queue);
         auditLog = crm.auditLog || auditLog;
         save(); render();
         $("sendProgress").textContent = result.sent ? `${result.task?.channel === "sms" ? "SMS" : "Email"} sent successfully.` : (result.error || "Message was not sent.");
@@ -1301,7 +1331,7 @@
         if (blocked) { $("sendProgress").textContent = blocked; toast(blocked); return; }
         const result = await api("/api/sending/schedule", { method:"POST", body: JSON.stringify({ taskId, when }) });
         const crm = await api("/api/crm");
-        queue = crm.approvalQueue || queue; auditLog = crm.auditLog || auditLog; save(); render();
+        queue = compactEmailDuplicates(crm.approvalQueue || queue); auditLog = crm.auditLog || auditLog; save(); render();
         toast(`Scheduled ${new Date(result.job.runAt).toLocaleString()}`);
       } catch(error) { toast(error.message); }
     }
@@ -1315,7 +1345,7 @@
       try {
         const result = await api("/api/sending/run-due", { method:"POST", body: JSON.stringify({}) });
         const crm = await api("/api/crm");
-        leads = crm.leads || leads; queue = crm.approvalQueue || queue; auditLog = crm.auditLog || auditLog; save(); render();
+        leads = (crm.leads || leads).filter(isEmailReachableLead); queue = compactEmailDuplicates(crm.approvalQueue || queue); auditLog = crm.auditLog || auditLog; save(); render();
         toast(`${result.results.length} due jobs processed`);
       } catch(error) { toast(error.message); }
     }
@@ -1323,7 +1353,7 @@
       try {
         const result = await api("/api/sending/run-sequence", { method:"POST", body: JSON.stringify({ autoPilot:$("growthMode").value==="Auto Pilot" }) });
         const crm = await api("/api/crm");
-        queue = crm.approvalQueue || queue; leads = crm.leads || leads; auditLog = crm.auditLog || auditLog; save(); render();
+        queue = compactEmailDuplicates(crm.approvalQueue || queue); leads = (crm.leads || leads).filter(isEmailReachableLead); auditLog = crm.auditLog || auditLog; save(); render();
         const sent = (result.sent || []).filter(item=>item.sent).length;
         toast(`${result.generated.length} follow-ups generated, ${sent} sent`);
       } catch(error) { toast(error.message); }
@@ -1332,7 +1362,7 @@
       try {
         const result = await api("/api/replies/record", { method:"POST", body: JSON.stringify({ leadId:$("replyLead").value, taskId:$("replyTask").value, from:$("replyFrom").value, body:$("replyBody").value }) });
         const crm = await api("/api/crm");
-        leads = crm.leads || leads; queue = crm.approvalQueue || queue; auditLog = crm.auditLog || auditLog; save(); render();
+        leads = (crm.leads || leads).filter(isEmailReachableLead); queue = compactEmailDuplicates(crm.approvalQueue || queue); auditLog = crm.auditLog || auditLog; save(); render();
         $("replyBody").value = "";
         toast(result.meetingIntent ? "Meeting intent detected" : "Reply recorded");
       } catch(error) { toast(error.message); }
@@ -1341,7 +1371,7 @@
       try {
         await api("/api/replies/resolve", { method:"POST", body: JSON.stringify({ leadId, replyId }) });
         const crm = await api("/api/crm");
-        leads = crm.leads || leads; queue = crm.approvalQueue || queue; auditLog = crm.auditLog || auditLog; save(); render();
+        leads = (crm.leads || leads).filter(isEmailReachableLead); queue = compactEmailDuplicates(crm.approvalQueue || queue); auditLog = crm.auditLog || auditLog; save(); render();
         toast("Reply handled");
       } catch(error) { toast(error.message); }
     }
@@ -1364,8 +1394,8 @@
         const result = await api("/api/daily-growth/start", { method:"POST", body: JSON.stringify(growthConfig()) });
         lastGrowthRun = result;
         const crm = await api("/api/crm");
-        leads = crm.leads || leads;
-        queue = crm.approvalQueue || queue;
+        leads = (crm.leads || leads).filter(isEmailReachableLead);
+        queue = compactEmailDuplicates(crm.approvalQueue || queue);
         auditLog = crm.auditLog || auditLog;
         save();
         $("growthStatus").textContent = `Daily Growth complete. ${result.newBusinesses} new businesses, ${result.qualified} qualified, ${result.emailsReady} emails ready.`;
