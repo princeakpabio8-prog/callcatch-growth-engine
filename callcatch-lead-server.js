@@ -108,6 +108,14 @@ function emailReadyLead(lead = {}) {
   return !!String(lead.email || "").trim() || (lead.sentEmails || []).some(item => String(item.to || item.recipient || "").trim());
 }
 
+function storableProspect(lead = {}) {
+  return emailReadyLead(lead)
+    || !!String(lead.business || "").trim()
+    || !!String(lead.phone || "").trim()
+    || !!String(lead.website || "").trim()
+    || !!String(lead.address || "").trim();
+}
+
 function queueStepKey(task = {}) {
   if (task.sequenceStep) return task.sequenceStep;
   if (task.channel === "email" && task.emailVariant) return "initial-email";
@@ -808,7 +816,7 @@ const server = http.createServer(async (req, res) => {
           const id = lead.id || newId("lead");
           const alreadySaved = existing.has(id);
           const key = normalizeCompanyKey(lead);
-          if (!emailReadyLead(lead) && !alreadySaved) {
+          if (!storableProspect(lead) && !alreadySaved) {
             skippedNoEmail += 1;
             return;
           }
@@ -822,7 +830,7 @@ const server = http.createServer(async (req, res) => {
           existing.set(id, alreadySaved ? mergeLeadRecord(existing.get(id), lead) : { ...lead, id, updatedAt: new Date().toISOString() });
         });
         hydrateSentEmailHistory(state);
-        state.leads = [...existing.values(), ...state.leads.filter(lead => !existing.has(lead.id))].filter(emailReadyLead);
+        state.leads = [...existing.values(), ...state.leads.filter(lead => !existing.has(lead.id))].filter(storableProspect);
         hydrateSentEmailHistory(state);
         const leadById = new Map(state.leads.map(lead => [lead.id, lead]));
         for (const task of state.approvalQueue || []) {

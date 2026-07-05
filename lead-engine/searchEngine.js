@@ -134,7 +134,7 @@ async function deepResearchLeads(leads, { count, errors }) {
   for (const lead of candidates) {
     const url = researchUrl(lead);
     if (!url) {
-      if (lead.email) researched.push({ ...lead, researchDepth: "listing-only", deepQualityScore: deepQualityScore(lead) });
+      researched.push({ ...lead, researchDepth: "listing-only", deepQualityScore: deepQualityScore(lead) });
       continue;
     }
     try {
@@ -156,13 +156,18 @@ async function deepResearchLeads(leads, { count, errors }) {
       });
     } catch (error) {
       errors.push(`Website research failed for ${lead.business}: ${error.message}`);
-      if (lead.email) researched.push({ ...lead, researchDepth: "listing-only", deepQualityScore: deepQualityScore(lead) });
+      researched.push({ ...lead, researchDepth: "listing-only", deepQualityScore: deepQualityScore(lead) });
     }
   }
 
-  return researched
-    .filter(lead => lead.email)
-    .sort((a, b) => (b.deepQualityScore || 0) - (a.deepQualityScore || 0))
+  const emailReady = researched.filter(lead => lead.email);
+  const needsEmail = researched.filter(lead => !lead.email);
+  return [...emailReady, ...needsEmail]
+    .sort((a, b) =>
+      (b.email ? 1 : 0) - (a.email ? 1 : 0)
+      || (b.deepQualityScore || 0) - (a.deepQualityScore || 0)
+      || (b.confidenceScore || 0) - (a.confidenceScore || 0)
+    )
     .slice(0, count);
 }
 
@@ -285,10 +290,10 @@ async function searchLeads(input = {}) {
     .slice(0, Math.max(count * 4, count));
   const beforeDeepResearch = leads.length;
   leads = input.deepResearch === false
-    ? leads.filter(lead => lead.email).slice(0, count)
+    ? leads.sort((a, b) => (b.email ? 1 : 0) - (a.email ? 1 : 0) || b.aiLeadQualityScore - a.aiLeadQualityScore).slice(0, count)
     : await deepResearchLeads(leads, { count, errors: providerResult.errors });
   if (!leads.length && beforeDeepResearch) {
-    providerResult.errors.push(`Deep research checked ${beforeDeepResearch} candidate businesses but did not find public email-ready prospects. Try a nearby city, a larger radius, or another trade.`);
+    providerResult.errors.push(`Deep research checked ${beforeDeepResearch} candidate businesses but could not keep usable prospects. Try a nearby city, a larger radius, or another trade.`);
   }
   let source = "OpenStreetMap + Nominatim";
   if (!leads.length && providerResult.errors.length) {
@@ -310,7 +315,9 @@ async function searchLeads(input = {}) {
       state: providerResult.location.state,
       deepResearch: input.deepResearch !== false,
       candidatesResearched: beforeDeepResearch,
-      emailReadyOnly: true,
+      emailReadyOnly: false,
+      emailReady: leads.filter(lead => lead.email).length,
+      needsEmail: leads.filter(lead => !lead.email).length,
       quality: leads.length >= count ? "strong" : leads.length > 0 ? "partial" : "no-results"
     }
   };

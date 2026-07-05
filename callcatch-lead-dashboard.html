@@ -585,7 +585,7 @@
       }
     }
     function applyServerState(crm = {}, mergeLocal = false){
-      if (Array.isArray(crm.leads)) leads = (mergeLocal ? mergeById(leads, crm.leads) : crm.leads).filter(isEmailReachableLead);
+      if (Array.isArray(crm.leads)) leads = (mergeLocal ? mergeById(leads, crm.leads) : crm.leads).filter(isStorableProspect);
       if (Array.isArray(crm.approvalQueue)) queue = compactEmailDuplicates(mergeLocal ? mergeById(queue, crm.approvalQueue) : crm.approvalQueue);
       auditLog = crm.auditLog || auditLog;
       recoverPipelineFromSentHistory();
@@ -838,6 +838,9 @@
     function isEmailReachableLead(lead = {}){
       return !!String(lead.email || "").trim() || (lead.sentEmails || []).some(item => String(item.to || item.recipient || "").trim());
     }
+    function isStorableProspect(lead = {}){
+      return isEmailReachableLead(lead) || !!String(lead.business || lead.phone || lead.website || lead.address || "").trim();
+    }
     function taskContactScore(item = {}){
       const lead = leads.find(candidate => candidate.id === item.leadId) || {};
       let score = contactScore(lead);
@@ -882,7 +885,7 @@
       const keyToLead = new Map(leads.map(l => [companyKey(l), l]));
       batch.map(normalizeLead).forEach(lead => {
         const key = companyKey(lead);
-        if (!isEmailReachableLead(lead)) { skippedNoEmail += 1; return; }
+        if (!isStorableProspect(lead)) { skippedNoEmail += 1; return; }
         if (keyToLead.has(key)) {
           const existing = keyToLead.get(key);
           const merged = mergeLeadRecord(existing, lead);
@@ -891,7 +894,7 @@
           return;
         }
         leads.unshift(lead); keyToLead.set(key, lead); added += 1;
-        if (lead.callCatchFitScore >= Number($("minFit")?.value || 68)) queueOutreach(lead, false);
+        if (isEmailReachableLead(lead) && lead.callCatchFitScore >= Number($("minFit")?.value || 68)) queueOutreach(lead, false);
       });
       lastImportStats = { added, skippedNoEmail, duplicates };
       if (!selectedId && leads[0]) selectedId = leads[0].id;
@@ -1154,13 +1157,18 @@
       return `<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag ${category === "ready" || category === "sent" ? "hot" : category === "failed" || category === "missing" ? "bad" : "warn"}">${esc(duplicate ? "duplicate" : category.replace("-", " "))}</span></div><p class="hint">${esc(item.channel.toUpperCase())} | ${esc(item.status || "Needs Approval")} | Lead ID: ${esc(item.leadId || "")}${duplicate ? ` | Already sent as ${esc(duplicate.title || duplicate.id)}` : ""}</p><div class="insights">${checks.map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${recipientLabel}</label><input data-to="${item.id}" value="${esc(recipient)}" placeholder="${item.channel === "sms" ? "+15551234567" : "prospect@example.com"}"></div><button class="message-preview" data-compose="${item.id}" type="button" style="width:100%;text-align:left;cursor:pointer;"><strong>${esc(messageSubject(item.body))}</strong><p class="hint">${esc(messagePreview(item.body) || "No message generated yet.")}</p></button><div class="actions" style="margin-top:8px;"><button class="btn primary small" data-compose="${item.id}">Review</button><button class="btn small" data-approve-send="${item.id}">${esc(quickAction)}</button><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-open-lead="${item.leadId || ""}">Open Lead</button><button class="btn small" data-remove="${item.id}">Remove</button></div></div>`;
     }
     function renderSetupChecklist(){
+      const queueDetail = setupState.approvalQueue
+        ? "Outreach tasks are available."
+        : leads.length
+          ? "No email-ready outreach is queued yet. Search found prospects; scan or enrich them to discover emails."
+          : "Run Discovery to add prospects, then CallCatch will queue email outreach when emails are found.";
       const items = [
         ["Render Backend", setupState.backend, "Live app is reachable."],
         ["Lead Sources", setupState.leadSources, "Public discovery APIs respond."],
         ["Email Provider", setupState.email, "Resend, Brevo, or SMTP is configured."],
         ["SMS Provider", setupState.sms, "Twilio is configured."],
         ["CRM Sync", setupState.crm, "Leads and queue are synced with Render."],
-        ["Approval Queue", setupState.approvalQueue, "Outreach tasks are available."]
+        ["Approval Queue", setupState.approvalQueue || leads.length > 0, queueDetail]
       ].filter(([label]) => !(mobileEmailFocus() && label === "SMS Provider"));
       $("setupChecklist").innerHTML = items.map(([label, ok, detail])=>`<div class="check-item"><span class="tag ${ok ? "hot" : "bad"}">${ok ? "Ready" : "Needs Setup"}</span><strong>${esc(label)}</strong><p class="hint">${esc(detail)}</p></div>`).join("");
     }
@@ -1247,7 +1255,9 @@
         setupState.email = email.status === "fulfilled" && !!email.value.configured;
         setupState.sms = sms.status === "fulfilled" && !!sms.value.configured;
         setupState.crm = crm.status === "fulfilled";
-        setupState.approvalQueue = queue.length > 0 || (crm.status === "fulfilled" && (crm.value.approvalQueue || []).length > 0);
+        setupState.approvalQueue = queue.length > 0
+          || leads.length > 0
+          || (crm.status === "fulfilled" && ((crm.value.approvalQueue || []).length > 0 || (crm.value.leads || []).length > 0));
         emailReady = setupState.email;
         smsReady = setupState.sms;
         serverSynced = setupState.crm;
@@ -1491,10 +1501,12 @@
         const payload = await api("/api/leads",{method:"POST",body:JSON.stringify({trade:$("trade").value,city:$("city").value,area,state:$("state").value,zip:$("zip").value,radius:$("radius").value,count:$("count").value,deepResearch:true})});
         const added = upsertLeads(payload.leads || []);
         const warning = (payload.errors || []).length ? ` Warning: ${payload.errors[0]}` : "";
-        const skipped = lastImportStats.skippedNoEmail ? ` Skipped ${lastImportStats.skippedNoEmail} without email.` : "";
-        const duplicates = lastImportStats.duplicates ? ` Ignored ${lastImportStats.duplicates} duplicates.` : "";
+        const emailReadyCount = (payload.leads || []).filter(isEmailReachableLead).length;
+        const needsEmailCount = (payload.leads || []).length - emailReadyCount;
+        const skipped = lastImportStats.skippedNoEmail ? ` Skipped ${lastImportStats.skippedNoEmail} unusable records.` : "";
+        const duplicates = lastImportStats.duplicates ? ` Merged ${lastImportStats.duplicates} duplicates.` : "";
         const researched = payload.search?.candidatesResearched ? ` Researched ${payload.search.candidatesResearched} candidates.` : "";
-        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} email-ready CRM records from ${payload.source || "public sources"}.${researched}${skipped}${duplicates}${warning}`;
+        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} CRM prospects from ${payload.source || "public sources"}. Email-ready: ${emailReadyCount}. Needs email: ${needsEmailCount}.${researched}${skipped}${duplicates}${warning}`;
         if ((payload.leads || []).length) switchView("crm");
         toast(`${added} prospects added`);
       } catch(e){ $("finderStatus").textContent=e.message + `. Check ${apiUrl("/api/network-check")} to verify public data access.`; toast("Search failed"); }
