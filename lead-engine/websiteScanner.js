@@ -42,6 +42,8 @@ function mergeSignals(scans) {
     facebook: "",
     instagram: "",
     linkedin: "",
+    publicSocialPages: [],
+    publicSocialPagesScanned: 0,
     businessHours: false,
     emergencyService: false,
     financing: false,
@@ -69,6 +71,8 @@ function mergeSignals(scans) {
     merged.facebook = merged.facebook || scan.facebook;
     merged.instagram = merged.instagram || scan.instagram;
     merged.linkedin = merged.linkedin || scan.linkedin;
+    merged.publicSocialPages.push(...(scan.publicSocialPages || []));
+    merged.publicSocialPagesScanned += Number(scan.publicSocialPagesScanned || 0);
     merged.businessHours = merged.businessHours || scan.businessHours;
     merged.emergencyService = merged.emergencyService || scan.emergencyService;
     merged.financing = merged.financing || scan.financing;
@@ -89,6 +93,7 @@ function mergeSignals(scans) {
   merged.trustSignals = unique(merged.trustSignals).slice(0, 16);
   merged.weakSignals = unique(merged.weakSignals).slice(0, 16);
   merged.ownerMentions = unique(merged.ownerMentions).slice(0, 8);
+  merged.publicSocialPages = unique(merged.publicSocialPages).slice(0, 8);
   merged.bookingSoftware = unique(merged.bookingSoftware);
   return merged;
 }
@@ -103,6 +108,37 @@ function extractLinks(html, baseUrl) {
     } catch {}
   }
   return unique(links);
+}
+
+function isPublicFacebookLink(link) {
+  try {
+    const parsed = new URL(link);
+    const host = parsed.hostname.replace(/^www\./, "").replace(/^m\./, "").replace(/^mbasic\./, "");
+    if (host !== "facebook.com" && host !== "fb.com") return false;
+    const path = parsed.pathname.toLowerCase();
+    if (!path || path === "/") return false;
+    if (/\/(sharer|share|plugins|login|dialog|events|groups|marketplace|privacy|policies|help)\b/.test(path)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function facebookProbeUrls(link) {
+  try {
+    const parsed = new URL(link);
+    parsed.hash = "";
+    parsed.search = "";
+    parsed.hostname = "www.facebook.com";
+    const base = parsed.toString().replace(/\/$/, "");
+    return unique([
+      base,
+      `${base}/about`,
+      `${base}/about_contact_and_basic_info`
+    ]);
+  } catch {
+    return [];
+  }
 }
 
 function detect(html, links) {
@@ -140,6 +176,8 @@ function detect(html, links) {
     facebook: social.facebook,
     instagram: social.instagram,
     linkedin: social.linkedin,
+    publicSocialPages: [social.facebook].filter(Boolean),
+    publicSocialPagesScanned: 0,
     businessHours: /hours|mon(day)?|tue(sday)?|wed(nesday)?|thu(rsday)?|fri(day)?|sat(urday)?|sun(day)?/i.test(html),
     emergencyService: /24\/7|24 hour|emergency|same day|after[-\s]?hours/i.test(html),
     financing: /financing|finance options|payment plan|monthly payment/i.test(html),
@@ -149,6 +187,29 @@ function detect(html, links) {
     noOnlineBooking: !bookingWords.some(word => lower.includes(word)),
     noChatDetected: !chatWords.some(word => lower.includes(word)) && !aiWords.some(word => lower.includes(word))
   };
+}
+
+async function scanPublicFacebookPages(links) {
+  const publicPages = unique(links.filter(isPublicFacebookLink)).slice(0, 3);
+  if (!publicPages.length) return [];
+  const probeUrls = unique(publicPages.flatMap(facebookProbeUrls)).slice(0, 6);
+  const results = await Promise.allSettled(probeUrls.map(async link => {
+    const html = await textFetch(link, {
+      signal: AbortSignal.timeout(6500),
+      headers: {
+        "Accept-Language": "en-US,en;q=0.9"
+      }
+    });
+    const scan = detect(html, extractLinks(html, link));
+    return {
+      ...scan,
+      publicSocialPages: publicPages,
+      publicSocialPagesScanned: 1
+    };
+  }));
+  return results
+    .filter(result => result.status === "fulfilled")
+    .map(result => result.value);
 }
 
 function websiteQualityScore(scan) {
@@ -203,6 +264,11 @@ async function scanWebsite(rawUrl) {
     contactPages.forEach(result => {
       if (result.status === "fulfilled") pageScans.push(result.value);
     });
+    const publicSocialScans = await scanPublicFacebookPages([
+      ...links,
+      rawUrl
+    ].filter(Boolean));
+    pageScans.push(...publicSocialScans);
     const signals = mergeSignals(pageScans);
     const score = websiteQualityScore({ ok: true, ...signals });
     return {

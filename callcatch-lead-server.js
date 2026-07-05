@@ -41,12 +41,13 @@ function emailReadyLead(lead = {}) {
 }
 
 async function enrichLeadForOutreach(lead = {}) {
-  if (!lead.website || (lead.websiteIntelligence && lead.websiteIntelligence.ok !== false)) {
+  const researchUrl = lead.website || lead.facebook || "";
+  if (!researchUrl || (lead.websiteIntelligence && lead.websiteIntelligence.ok !== false)) {
     return lead;
   }
 
   try {
-    const scan = await scanWebsite(lead.website);
+    const scan = await scanWebsite(researchUrl);
     const discoveredEmail = scan.emails && scan.emails[0] ? scan.emails[0] : "";
     const discoveredPhone = scan.phones && scan.phones[0] ? scan.phones[0] : "";
     const enriched = enrichProspect({
@@ -57,7 +58,7 @@ async function enrichLeadForOutreach(lead = {}) {
     await audit("website_scan_for_outreach", {
       leadId: lead.id,
       business: lead.business,
-      website: lead.website,
+      website: researchUrl,
       ok: scan.ok,
       emailFound: !!discoveredEmail
     });
@@ -66,7 +67,7 @@ async function enrichLeadForOutreach(lead = {}) {
     log("warn", "outreach_website_scan_failed", {
       leadId: lead.id,
       business: lead.business,
-      website: lead.website,
+      website: researchUrl,
       error: error.message
     });
     return enrichProspect(lead, {

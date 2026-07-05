@@ -75,6 +75,7 @@ function normalizeElement(element, context) {
   const lat = element.lat || (element.center && element.center.lat) || null;
   const lon = element.lon || (element.center && element.center.lon) || null;
   const website = readTag(tags, ["website", "contact:website", "url"]);
+  const facebook = readTag(tags, ["facebook", "contact:facebook", "brand:facebook", "social:facebook"]);
   const phone = readTag(tags, ["phone", "contact:phone", "mobile", "contact:mobile"]);
   const email = readTag(tags, ["email", "contact:email"]);
   const business = readTag(tags, ["name", "operator", "brand"]);
@@ -88,6 +89,7 @@ function normalizeElement(element, context) {
     address: addressFromTags(tags, context.location.displayName),
     phone,
     website,
+    facebook,
     email,
     latitude: lat,
     longitude: lon,

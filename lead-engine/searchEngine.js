@@ -40,6 +40,10 @@ function websiteStrength(website) {
   return "owned";
 }
 
+function researchUrl(lead) {
+  return lead.website || lead.facebook || "";
+}
+
 function confidenceScore(lead) {
   let score = 35;
   if (lead.business) score += 15;
@@ -97,7 +101,8 @@ function enrichLead(lead) {
     state: lead.state || "",
     area: lead.area || [lead.city, lead.state].filter(Boolean).join(", "),
     phone: lead.phone || "",
-    website: lead.website || "",
+    website: lead.website || lead.facebook || "",
+    facebook: lead.facebook || "",
     email: lead.email || "",
     address: lead.address || lead.area || "",
     latitude: lead.latitude || null,
@@ -127,12 +132,13 @@ async function deepResearchLeads(leads, { count, errors }) {
     .slice(0, Math.max(count * 4, 16));
 
   for (const lead of candidates) {
-    if (!lead.website) {
+    const url = researchUrl(lead);
+    if (!url) {
       if (lead.email) researched.push({ ...lead, researchDepth: "listing-only", deepQualityScore: deepQualityScore(lead) });
       continue;
     }
     try {
-      const scan = await scanWebsite(lead.website);
+      const scan = await scanWebsite(url);
       const email = lead.email || (scan.emails || [])[0] || "";
       const phone = lead.phone || (scan.phones || [])[0] || "";
       const enriched = enrichProspect({ ...lead, email, phone }, scan);
