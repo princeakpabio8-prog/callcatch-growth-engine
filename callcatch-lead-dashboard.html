@@ -257,7 +257,17 @@
     th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; background: rgba(127,127,127,.06); }
     .map-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 14px; }
     .map { min-height: 420px; border: 1px solid var(--line); border-radius: 8px; background: linear-gradient(135deg, var(--soft-blue), var(--soft-green)); position: relative; overflow: hidden; }
-    .pin { position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--red); border: 2px solid #fff; transform: translate(-50%, -50%); }
+    .map::before { content: ""; position: absolute; inset: 14%; border: 1px dashed rgba(64, 85, 100, .22); border-radius: 42% 50% 46% 54%; transform: rotate(-8deg); }
+    .pin { position: absolute; width: 13px; height: 13px; border-radius: 50%; background: var(--red); border: 2px solid #fff; transform: translate(-50%, -50%); box-shadow: 0 8px 20px rgba(20,33,45,.22); cursor: pointer; }
+    .pin.hot { background: var(--green); width: 16px; height: 16px; }
+    .pin.warn { background: var(--amber); }
+    .pin.sent { background: #4f46e5; }
+    .pin.customer { background: #111827; width: 18px; height: 18px; }
+    .map-label { position: absolute; left: 16px; top: 14px; right: 16px; display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; pointer-events: none; }
+    .map-legend { display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; }
+    .market-card { border: 1px solid var(--line); border-radius: 8px; padding: 11px; background: rgba(127,127,127,.04); margin-bottom: 9px; }
+    .market-card strong { display: block; margin-bottom: 5px; }
+    .market-card .meta { margin-top: 7px; }
     .toast { position: fixed; right: 18px; bottom: 18px; background: #17212b; color: #fff; padding: 11px 13px; border-radius: 7px; opacity: 0; transform: translateY(10px); pointer-events: none; transition: .2s ease; }
     .toast.show { opacity: 1; transform: translateY(0); }
     @media (max-width: 1150px) {
@@ -488,7 +498,22 @@
         <div class="queue" id="approvalQueue" style="margin-top:12px;"></div>
       </section>
       <section class="view" id="analytics"><div class="top"><div><h1>Dashboard Analytics</h1><p class="sub">Outbound performance and pipeline health.</p></div></div><div class="stats" id="analyticsStats"></div><div class="panel"><h2>Weekly Snapshot</h2><div class="table-wrap"><table id="analyticsTable"></table></div></div><div class="panel" style="margin-top:14px;"><h2>Recent Sent Emails</h2><div class="table-wrap"><table id="sentEmailTable"></table></div></div></section>
-      <section class="view" id="territory"><div class="top"><div><h1>Territory Intelligence</h1><p class="sub">A lightweight U.S. opportunity map using available prospect coordinates.</p></div></div><div class="map-grid"><div class="map" id="territoryMap"></div><div class="panel"><h2>Markets</h2><div id="marketTable" class="table-wrap"></div></div></div></section>
+      <section class="view" id="territory">
+        <div class="top"><div><h1>Territory Intelligence</h1><p class="sub">Rank markets by email-ready opportunity, pipeline coverage, and revenue potential.</p></div></div>
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="form-grid">
+            <div><label for="territoryTrade">Trade</label><select id="territoryTrade"><option value="">All trades</option></select></div>
+            <div><label for="territoryStage">Pipeline Stage</label><select id="territoryStage"><option value="">All stages</option></select></div>
+            <div><label>Map Signal</label><input id="territorySignal" value="Green = hot fresh leads, purple = contacted, black = customers" disabled></div>
+            <div><label>Action</label><button class="btn primary" id="territoryRefreshBtn" type="button">Refresh Territory</button></div>
+          </div>
+        </div>
+        <div class="stats" id="territoryStats"></div>
+        <div class="map-grid" style="margin-top:14px;">
+          <div class="map" id="territoryMap"></div>
+          <div class="panel"><h2>Market Rankings</h2><p class="hint" id="territoryHint">Markets with email-ready fresh prospects rank highest.</p><div id="marketTable"></div></div>
+        </div>
+      </section>
       <section class="view" id="settings"><div class="top"><div><h1>Settings & Safety</h1><p class="sub">Automation is approval-first by default. Full automation is disabled unless explicitly enabled.</p></div></div><div class="panel"><div class="form-grid"><div><label for="teamMember">Assigned Team Member</label><input id="teamMember" value="Sales Team"></div><div><label for="senderName">Sender Name</label><input id="senderName" value="CallCatch"></div><div><label for="demoLink">Demo Link</label><input id="demoLink" value="https://callcatch.site"></div><div><label for="automationMode">Sending Mode</label><select id="automationMode"><option>Review before sending</option><option>Full automation disabled</option></select></div></div><button class="btn primary" id="saveSettingsBtn" type="button">Save Settings</button><p class="hint">Email, SMS, LinkedIn, calendar, Slack, CRM, and payment integrations are adapter-ready but not connected in this local build. No message is sent from this dashboard.</p></div><div class="panel" style="margin-top:14px;"><h2>Audit Log</h2><div class="table-wrap"><table id="auditTable"></table></div></div></section>
     </main>
   </div>
@@ -1581,12 +1606,84 @@
     function renderAnalytics(){
       $("analyticsTable").innerHTML = `<tr><th>Metric</th><th>Daily</th><th>Weekly</th><th>Monthly</th></tr>${[["Reply Rate","0%","0%","0%"],["Demo Rate","0%","0%","0%"],["Trial Rate","0%","0%","0%"],["Customer Conversion","0%","0%","0%"],["Revenue Won",money(leads.filter(l=>l.stage==="Customer").reduce((s,l)=>s+Number(l.revenueOpportunityEstimate||0),0)),"-","-"]].map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td></tr>`).join("")}`;
     }
+    function territoryFilteredLeads(){
+      const trade = $("territoryTrade")?.value || "";
+      const stage = $("territoryStage")?.value || "";
+      return leads.filter(lead =>
+        (!trade || lead.trade === trade)
+        && (!stage || pipelineStage(lead) === stage)
+      );
+    }
+    function territoryPinClass(lead = {}){
+      const stage = pipelineStage(lead);
+      if (stage === "Customer") return "customer";
+      if (leadHasSentEmail(lead) || ["Contacted","Follow-up","Demo Scheduled","Trial Started"].includes(stage)) return "sent";
+      if (Number(lead.callCatchFitScore || 0) >= 78 && lead.email) return "hot";
+      if (lead.email) return "warn";
+      return "";
+    }
+    function marketName(lead = {}){
+      return [lead.city, lead.state].filter(Boolean).join(", ") || lead.state || lead.area || "Unknown Market";
+    }
+    function marketRecommendation(market = {}){
+      if (market.freshEmailReady > 4) return "Prioritize email outreach here today.";
+      if (market.contacted > market.fresh) return "Work follow-ups and replies in Pipeline.";
+      if (market.emailReady === 0) return "Run deeper website/email research before outreach.";
+      if (market.value > 50000) return "High-value market. Review top prospects manually.";
+      return "Keep building this market with fresh discovery.";
+    }
     function renderTerritory(){
-      const map=$("territoryMap"); map.innerHTML="";
-      leads.filter(l=>l.latitude&&l.longitude).forEach(l=>{ const pin=document.createElement("div"); pin.className="pin"; pin.title=l.business; pin.style.left=((Number(l.longitude)+125)/58*100)+"%"; pin.style.top=((50-Number(l.latitude))/25*100)+"%"; map.appendChild(pin); });
+      const visible = territoryFilteredLeads();
+      const map=$("territoryMap");
+      const contactedIds = new Set(contactedProspects().map(lead=>lead.id));
+      map.innerHTML = `<div class="map-label"><div><strong>U.S. Prospect Coverage</strong><p class="hint">${visible.filter(l=>l.latitude&&l.longitude).length} mapped of ${visible.length} visible prospects</p></div><div class="map-legend"><span class="tag hot">Fresh hot</span><span class="tag warn">Email ready</span><span class="tag">Contacted</span><span class="tag bad">Needs email</span></div></div>`;
+      visible.filter(l=>l.latitude&&l.longitude).forEach(l=>{
+        const pin=document.createElement("button");
+        pin.type = "button";
+        pin.className=`pin ${territoryPinClass(l)}`;
+        pin.title=`${l.business} | ${marketName(l)} | ${pipelineStage(l)} | ${money(l.revenueOpportunityEstimate)}`;
+        pin.setAttribute("aria-label", pin.title);
+        pin.style.left=Math.max(2, Math.min(98, ((Number(l.longitude)+125)/58*100)))+"%";
+        pin.style.top=Math.max(3, Math.min(97, ((50-Number(l.latitude))/25*100)))+"%";
+        pin.onclick=()=>{ selectedId=l.id; switchView("crm"); };
+        map.appendChild(pin);
+      });
       const markets = {};
-      leads.forEach(l=>{ const k=[l.city,l.state].filter(Boolean).join(", ") || "Unknown"; markets[k]=markets[k]||{count:0,value:0}; markets[k].count++; markets[k].value+=Number(l.revenueOpportunityEstimate||0); });
-      $("marketTable").innerHTML = `<table><tr><th>Market</th><th>Prospects</th><th>Opportunity</th></tr>${Object.entries(markets).map(([m,v])=>`<tr><td>${esc(m)}</td><td>${v.count}</td><td>${money(v.value)}</td></tr>`).join("")}</table>`;
+      visible.forEach(lead=>{
+        const key=marketName(lead);
+        const contacted = contactedIds.has(lead.id) || leadHasSentEmail(lead) || !!lead.lastContact;
+        markets[key]=markets[key]||{name:key,count:0,value:0,emailReady:0,fresh:0,freshEmailReady:0,contacted:0,mapped:0,scoreTotal:0,trades:{},topLead:null};
+        const market=markets[key];
+        market.count++;
+        market.value+=Number(lead.revenueOpportunityEstimate||0);
+        market.emailReady+=lead.email ? 1 : 0;
+        market.fresh+=contacted ? 0 : 1;
+        market.freshEmailReady+=(!contacted && lead.email) ? 1 : 0;
+        market.contacted+=contacted ? 1 : 0;
+        market.mapped+=(lead.latitude && lead.longitude) ? 1 : 0;
+        market.scoreTotal+=Number(lead.callCatchFitScore || 0);
+        market.trades[lead.trade || "Home Services"]=(market.trades[lead.trade || "Home Services"]||0)+1;
+        if (!market.topLead || Number(lead.callCatchFitScore || 0) > Number(market.topLead.callCatchFitScore || 0)) market.topLead=lead;
+      });
+      const ranked = Object.values(markets).sort((a,b)=>
+        (b.freshEmailReady*100000 + b.value + b.emailReady*1000 + b.count) - (a.freshEmailReady*100000 + a.value + a.emailReady*1000 + a.count)
+      );
+      const totalValue = visible.reduce((sum,lead)=>sum+Number(lead.revenueOpportunityEstimate||0),0);
+      $("territoryStats").innerHTML = [
+        ["Visible Prospects", visible.length],
+        ["Email Ready", visible.filter(lead=>lead.email).length],
+        ["Fresh Email Leads", visible.filter(lead=>lead.email && !contactedIds.has(lead.id) && !leadHasSentEmail(lead)).length],
+        ["Pipeline Value", money(totalValue)]
+      ].map(([label,value])=>`<div class="stat"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
+      $("territoryHint").textContent = ranked.length
+        ? `${ranked[0].name} is the strongest current market by fresh email-ready opportunity.`
+        : "Run Discovery to build territory intelligence.";
+      $("marketTable").innerHTML = ranked.length ? ranked.slice(0,18).map(market=>{
+        const topTrade = Object.entries(market.trades).sort((a,b)=>b[1]-a[1])[0]?.[0] || "Home Services";
+        const avgScore = market.count ? Math.round(market.scoreTotal / market.count) : 0;
+        return `<div class="market-card"><div class="lead-top"><strong>${esc(market.name)}</strong><span class="tag ${market.freshEmailReady ? "hot" : market.emailReady ? "warn" : "bad"}">${market.freshEmailReady} fresh email</span></div><p class="hint">${esc(topTrade)} | ${market.count} prospects | ${market.contacted} contacted | ${market.mapped} mapped | Avg fit ${avgScore}</p><div class="meta"><span>${money(market.value)} opportunity</span><span>${market.emailReady} email ready</span><span>${market.fresh} fresh</span></div><p class="hint">${esc(marketRecommendation(market))}</p><div class="actions" style="margin-top:8px;"><button class="btn small" data-territory-lead="${market.topLead?.id || ""}">Open Best Prospect</button></div></div>`;
+      }).join("") : `<p class="sub">No territory data yet. Search for prospects first.</p>`;
+      document.querySelectorAll("[data-territory-lead]").forEach(button=>button.onclick=()=>{ if(button.dataset.territoryLead){ selectedId=button.dataset.territoryLead; switchView("crm"); } });
     }
     function renderSettings(){ $("teamMember").value=settings.team; $("senderName").value=settings.sender; $("demoLink").value=settings.demo; $("automationMode").value=settings.mode; }
     function followupRows(){
@@ -1912,8 +2009,8 @@
     function copy(text){ navigator.clipboard.writeText(text).then(()=>toast("Copied")).catch(()=>toast("Copy failed")); }
     function pdfReport(){ const w=window.open("","_blank"); w.document.write(`<h1>CallCatch Prospect Report</h1><pre>${esc(csv())}</pre>`); w.document.close(); w.print(); }
     function init(){
-      TRADES.forEach(t=>{ $("trade").append(new Option(t,t)); $("tradeFilter").append(new Option(t,t)); $("campaignTrade").append(new Option(t,t)); });
-      STAGES.forEach(s=>$("stageFilter").append(new Option(s,s)));
+      TRADES.forEach(t=>{ $("trade").append(new Option(t,t)); $("tradeFilter").append(new Option(t,t)); $("campaignTrade").append(new Option(t,t)); $("territoryTrade").append(new Option(t,t)); });
+      STAGES.forEach(s=>{ $("stageFilter").append(new Option(s,s)); $("territoryStage").append(new Option(s,s)); });
       $("finderStatus").textContent = window.location.protocol === "file:"
         ? `File preview mode: API calls will use ${PRODUCTION_API_BASE}. For best results, open the Render app directly.`
         : "API connected through this app. Search results become CRM records automatically.";
@@ -1922,6 +2019,7 @@
       $("refreshSetupBtn").onclick=()=>runSetupChecks(false);
       $("sendCenterSyncBtn").onclick=()=>syncEverywhere(false);
       $("sendCenterSendAllBtn").onclick=sendApprovedEmails;
+      $("territoryRefreshBtn").onclick=()=>{ renderTerritory(); toast("Territory refreshed"); };
       document.querySelectorAll("[data-send-filter]").forEach(button=>button.onclick=()=>{ sendCenterFilter=button.dataset.sendFilter; renderSendCenter(); });
       $("composerClose").onclick=closeComposer;
       $("composerSave").onclick=()=>{ saveComposer(); toast("Draft saved"); };
@@ -1936,7 +2034,7 @@
       $("exportCsvBtn").onclick=()=>download("callcatch-prospects.csv",csv(),"text/csv"); $("exportExcelBtn").onclick=()=>download("callcatch-prospects.xls",`<table>${rows().map(r=>`<tr>${r.map(c=>`<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</table>`,"application/vnd.ms-excel"); $("exportJsonBtn").onclick=()=>download("callcatch-prospects.json",JSON.stringify(leads,null,2),"application/json"); $("copySelectedBtn").onclick=()=>copy(JSON.stringify(selected()||{},null,2)); $("pdfBtn").onclick=pdfReport;
       $("refreshAssistantBtn").onclick=()=>syncEverywhere(false); $("themeBtn").onclick=()=>{ const dark=document.body.dataset.theme==="dark"; document.body.dataset.theme=dark?"":"dark"; $("themeBtn").textContent=dark?"Dark Mode":"Light Mode"; };
       $("saveSettingsBtn").onclick=()=>{ settings={team:$("teamMember").value,sender:$("senderName").value,demo:$("demoLink").value,mode:$("automationMode").value}; save(); toast("Settings saved"); };
-      ["search","tradeFilter","stageFilter"].forEach(id=>$(id).oninput=render);
+      ["search","tradeFilter","stageFilter","territoryTrade","territoryStage"].forEach(id=>$(id).oninput=render);
       document.addEventListener("visibilitychange", ()=>{ if (!document.hidden) syncEverywhere(true); });
       window.addEventListener("focus", ()=>syncEverywhere(true));
       loadServerCrm().then(()=>Promise.all([checkEmailStatus(true), checkSmsStatus(true), refreshPipelineMemory()])).then(()=>runSetupChecks(true)).then(()=>{ render(); refreshSendingMetrics(); }).catch(()=>render());
