@@ -155,15 +155,38 @@ function isInitialEmail(task = {}) {
 
 function sequenceEmailBody(lead, stepKey) {
   const assets = outreachAssets(lead);
-  const base = String(assets.emailA || assets.email || "").split(/\r?\n/);
+  const profile = assets.weakness || {};
+  const city = [lead.city, lead.state].filter(Boolean).join(", ") || lead.area || "your area";
+  const revenue = Number(lead.revenueOpportunityEstimate || 0);
+  const revenueLine = revenue
+    ? `The reason I thought it was worth flagging is that one recovered missed call every few days could represent roughly $${revenue.toLocaleString()}/month in booked work for a business like yours.`
+    : `The reason I thought it was worth flagging is that even a few recovered missed callers each month can matter.`;
   const subject = stepKey === "followup-1"
-    ? `Subject: Following up on ${lead.business}`
-    : `Subject: Last quick note for ${lead.business}`;
-  const body = base.filter(line => !/^subject:/i.test(line)).join("\n").trim();
+    ? `Subject: Quick follow-up for ${lead.business}`
+    : `Subject: Closing the loop for ${lead.business}`;
   if (stepKey === "followup-1") {
-    return `${subject}\n\nHi ${lead.business} team,\n\nJust following up on my note about missed calls and faster response times.\n\n${body.split("\n\n").slice(2, 4).join("\n\n")}\n\nWould it be worth a quick 10-minute look this week?\n\nBest,\n\nPrince Esien\nFounder, CallCatch\nEmail: hello@callcatch.site\nWeb: https://callcatch.site`;
+    return `${subject}\n\nHi ${lead.business} team,\n\nJust following up on my note after looking at ${lead.business} in ${city}.\n\nThe main opportunity I saw was ${profile.weakness || "missed calls"}: ${profile.pain || "new customers often move on when they cannot reach someone quickly"}.\n\n${revenueLine}\n\nWorth a quick 10-minute walkthrough this week?\n\nBest,\n\nPrince Esien\nFounder, CallCatch\nEmail: hello@callcatch.site\nWeb: https://callcatch.site\n\nHelping home service businesses recover missed revenue.`;
   }
-  return `${subject}\n\nHi ${lead.business} team,\n\nI will close the loop after this.\n\nThe quick idea was simple: when a homeowner calls and nobody answers, CallCatch can text them instantly so they do not move on to another contractor.\n\nIf recovering even a few missed calls each month would help, I am happy to show you how it works in under 10 minutes.\n\nBest,\n\nPrince Esien\nFounder, CallCatch\nEmail: hello@callcatch.site\nWeb: https://callcatch.site`;
+  return `${subject}\n\nHi ${lead.business} team,\n\nI will close the loop after this.\n\nMy quick thought was simple: ${profile.proof || "CallCatch texts missed callers instantly and routes the next step back into the CRM"}.\n\nIf ${profile.weakness || "missed calls"} is already handled, no worries. If not, I can show you how the missed-caller response works in less than 10 minutes.\n\nWould Tuesday or Wednesday be a bad time?\n\nBest,\n\nPrince Esien\nFounder, CallCatch\nEmail: hello@callcatch.site\nWeb: https://callcatch.site\n\nHelping home service businesses recover missed revenue.`;
+}
+
+function followUpPlanFromTask(task = {}, lead = {}, queue = [], now = new Date()) {
+  const hasReply = hasLeadReply(lead);
+  const firstDueAt = task.sentAt ? addDaysIso(task.sentAt, SEQUENCE_STEPS[0].waitDays) : "";
+  const firstSent = queue.find(item => item.leadId === lead.id && item.sequenceStep === "followup-1" && item.status === "Sent" && item.sentAt);
+  const finalDueAt = firstSent?.sentAt ? addDaysIso(firstSent.sentAt, SEQUENCE_STEPS[1].waitDays) : "";
+  const nextDueAt = hasReply ? "" : (firstSent ? finalDueAt : firstDueAt);
+  const due = nextDueAt ? new Date(nextDueAt) <= now : false;
+  return {
+    active: !!task.sentAt && !hasReply,
+    stopped: hasReply,
+    initialSentAt: task.sentAt || "",
+    firstFollowUpDueAt: firstDueAt,
+    finalFollowUpDueAt: finalDueAt,
+    nextDueAt,
+    due,
+    nextStep: hasReply ? "Stopped - reply received" : firstSent ? "Final follow-up" : "Follow-up #1"
+  };
 }
 
 function addDaysIso(dateValue, days) {
@@ -260,6 +283,23 @@ async function sendTaskNow(state, taskId) {
     task.nextFollowUpAt = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
     lead.stage = lead.stage === "New" ? "Contacted" : lead.stage;
     lead.lastContact = result.sentAt.slice(0, 10);
+    if (task.channel === "email") {
+      if (task.sequenceStep === "final-followup") {
+        lead.nextFollowUp = "";
+        lead.followUpStatus = "Sequence complete";
+      } else {
+        const waitDays = task.sequenceStep === "followup-1" ? SEQUENCE_STEPS[1].waitDays : SEQUENCE_STEPS[0].waitDays;
+        const nextDue = addDaysIso(result.sentAt, waitDays);
+        lead.nextFollowUp = nextDue.slice(0, 10);
+        lead.followUpStatus = task.sequenceStep === "followup-1" ? "Final follow-up scheduled" : "Follow-up #1 scheduled";
+        lead.followUpPlan = {
+          nextStep: task.sequenceStep === "followup-1" ? "Final follow-up" : "Follow-up #1",
+          nextDueAt: nextDue,
+          lastSentTaskId: task.id,
+          lastSentAt: result.sentAt
+        };
+      }
+    }
     addTimeline(lead, `Sent ${task.channel === "sms" ? "SMS" : "email"}: ${task.title || "Outbound message"}`, result.sentAt);
     recordSendCount(state);
     recordVariantSent(state, lead, task);
@@ -366,6 +406,9 @@ function generateFollowUps(state, { autoPilot = false, now = new Date() } = {}) 
       };
       queue.unshift(follow);
       existingSteps.add(`${lead.id}|followup-1`);
+      lead.nextFollowUp = firstDue.toISOString().slice(0, 10);
+      lead.followUpStatus = "Follow-up #1 ready for approval";
+      lead.followUpPlan = { nextStep: "Follow-up #1", nextDueAt: firstDue.toISOString(), taskId: follow.id };
       addTimeline(lead, "Generated Follow-up #1 after 3 days with no reply");
       generated.push(follow);
     }
@@ -391,6 +434,9 @@ function generateFollowUps(state, { autoPilot = false, now = new Date() } = {}) 
       };
       queue.unshift(final);
       existingSteps.add(`${lead.id}|final-followup`);
+      lead.nextFollowUp = finalDue.toISOString().slice(0, 10);
+      lead.followUpStatus = "Final follow-up ready for approval";
+      lead.followUpPlan = { nextStep: "Final follow-up", nextDueAt: finalDue.toISOString(), taskId: final.id };
       addTimeline(lead, "Generated Final Follow-up after 4 more days with no reply");
       generated.push(final);
     }
@@ -472,6 +518,9 @@ function recordReply(state, { leadId, taskId, from, body }) {
       item.status = "Stopped - reply received";
     }
   }
+  lead.nextFollowUp = "";
+  lead.followUpStatus = meetingIntent ? "Stopped - meeting intent" : "Stopped - reply received";
+  lead.followUpPlan = { nextStep: "Reply response", stoppedAt: at, replyId: reply.id };
   const metrics = sendingState(state).metrics;
   metrics.replies += 1;
   if (meetingIntent) metrics.meetingsBooked += 1;
@@ -496,7 +545,8 @@ function metrics(state) {
     estimatedRevenuePipeline: leads.reduce((sum, lead) => sum + Number(lead.revenueOpportunityEstimate || 0), 0),
     limits: sending.limits,
     variantStats: sending.variantStats,
-    remaining: canSendMore(state)
+    remaining: canSendMore(state),
+    followUpPlans: emailTasks.filter(isInitialEmail).map(task => followUpPlanFromTask(task, findLead(state, task), emailTasks)).filter(plan => plan.active)
   };
 }
 

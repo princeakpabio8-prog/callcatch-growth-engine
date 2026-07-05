@@ -445,6 +445,7 @@
         <div class="panel" style="margin-top:12px;"><h2>Email Adapter</h2><div class="form-grid"><div><label for="testEmail">Test Recipient</label><input id="testEmail" placeholder="you@example.com"></div><div><label>Status</label><input id="emailStatus" value="Not checked" disabled></div><div><label>Provider</label><input id="emailProvider" value="-" disabled></div><div><label>Action</label><button class="btn primary" id="sendTestBtn" type="button">Send Email Test</button></div></div><p class="hint">Email API keys and SMTP credentials stay in Render environment variables. The browser never stores your sending secrets.</p></div>
         <div class="panel mobile-non-email" style="margin-top:12px;"><h2>SMS Adapter</h2><div class="form-grid"><div><label for="testSms">Test Phone</label><input id="testSms" placeholder="+15551234567"></div><div><label>Status</label><input id="smsStatus" value="Not checked" disabled></div><div><label>Provider</label><input id="smsProvider" value="-" disabled></div><div><label>Action</label><button class="btn primary" id="sendSmsTestBtn" type="button">Send SMS Test</button></div></div><p class="hint">Twilio credentials stay in Render. Use E.164 phone format, for example +12145550123.</p></div>
         <div class="panel" style="margin-top:12px;"><h2>Smart Sending</h2><div class="stats" id="sendingStats"></div><div class="form-grid"><div><label for="maxHour">Max Emails / Hour</label><input id="maxHour" type="number" value="20"></div><div><label for="maxDay">Max Emails / Day</label><input id="maxDay" type="number" value="100"></div><div><label for="minDelay">Min Delay Seconds</label><input id="minDelay" type="number" value="45"></div><div><label for="maxDelay">Max Delay Seconds</label><input id="maxDelay" type="number" value="180"></div></div><div class="actions"><button class="btn" id="saveSendingBtn" type="button">Save Limits</button><button class="btn" id="runDueBtn" type="button">Run Due Scheduled</button><button class="btn" id="followupBtn" type="button">Run Follow-up Sequence</button></div><p class="hint" id="sendProgress">Sequence: Email #1, wait 3 days, Follow-up #1, wait 4 more days, Final Follow-up. Replies stop the remaining sequence.</p></div>
+        <div class="panel" style="margin-top:12px;"><h2>Follow-up Command Center</h2><p class="hint">Email follow-ups are generated only when they are due. Replies stop the sequence automatically.</p><div class="queue" id="followupCenter"></div></div>
         <div class="panel" style="margin-top:12px;"><h2>Reply Tracking</h2><div class="form-grid"><div><label for="replyLead">Lead ID</label><input id="replyLead" placeholder="lead id"></div><div><label for="replyTask">Task ID</label><input id="replyTask" placeholder="optional task id"></div><div><label for="replyFrom">From</label><input id="replyFrom" placeholder="reply@example.com"></div><div><label>Action</label><button class="btn primary" id="recordReplyBtn" type="button">Record Reply</button></div></div><textarea id="replyBody" placeholder="Paste reply text here"></textarea></div>
         <div class="panel" style="margin-top:12px;"><h2>Reply Inbox</h2><div class="queue" id="replyInbox"></div></div>
         <div class="queue" id="approvalQueue" style="margin-top:12px;"></div>
@@ -749,11 +750,14 @@
     function renderTodayWork(){
       const readyEmails = sortTasksForAction(queue.filter(q=>q.channel==="email" && /^approved/i.test(q.status||""))).slice(0,5);
       const callTasks = queue.filter(q=>q.channel==="call" && q.status !== "Sent").slice(0,5);
+      const followupTasks = sortTasksForAction(queue.filter(q=>q.channel==="email" && (q.sequenceStep || /follow/i.test(q.title || "")) && !/sent|stopped/i.test(q.status || ""))).slice(0,5);
       const followups = sortLeadsForAction(leads.filter(l=>dueToday(l.nextFollowUp) || ["Contacted","Follow-up"].includes(l.stage))).slice(0,5);
       const replies = inboxItems().slice(0,5);
       $("workEmails").innerHTML = readyEmails.length ? readyEmails.map(item=>renderWorkItem(item.business, item.to || item.recipient || "Needs recipient", "Review", `data-work-compose="${item.id}"`)).join("") : `<p class="sub">No approved emails ready.</p>`;
       $("workCalls").innerHTML = callTasks.length ? callTasks.map(item=>renderWorkItem(item.business, item.title || "Call task", "Open Lead", `data-work-lead="${item.leadId}"`)).join("") : `<p class="sub">No call tasks queued.</p>`;
-      $("workFollowups").innerHTML = followups.length ? followups.map(lead=>renderWorkItem(lead.business, `${lead.stage} | ${lead.nextFollowUp || "Follow up due"}`, "Open Lead", `data-work-lead="${lead.id}"`)).join("") : `<p class="sub">No follow-ups due.</p>`;
+      $("workFollowups").innerHTML = followupTasks.length
+        ? followupTasks.map(item=>renderWorkItem(item.business, `${item.title || "Follow-up"} | ${item.status || "Needs Approval"}`, "Review", `data-work-compose="${item.id}"`)).join("")
+        : followups.length ? followups.map(lead=>renderWorkItem(lead.business, `${lead.followUpStatus || lead.stage} | ${lead.nextFollowUp || "Follow up due"}`, "Open Lead", `data-work-lead="${lead.id}"`)).join("") : `<p class="sub">No follow-ups due.</p>`;
       $("workReplies").innerHTML = replies.length ? replies.map(({lead,reply})=>renderWorkItem(lead.business, reply.body || "Reply received", "Review Reply", `data-work-reply="${reply.id}" data-work-lead="${lead.id}"`)).join("") : `<p class="sub">No replies waiting.</p>`;
       document.querySelectorAll("[data-work-compose]").forEach(b=>b.onclick=()=>openComposer(b.dataset.workCompose));
       document.querySelectorAll("[data-work-lead]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.workLead; switchView("crm"); });
@@ -962,7 +966,7 @@
       const l = selected();
       if(!l){ $("leadDetail").innerHTML = `<h2>No prospects yet</h2><p class="sub">Go to Discovery, search a trade and market, then prospects will appear here.</p>`; return; }
       $("leadDetail").innerHTML = `<div class="lead-top"><div><h2>${esc(l.business)}</h2><p class="sub">${esc(l.trade)} | ${esc(l.phone || "No phone")} | ${esc(l.email || "No email")} | ${esc(l.website || l.mapsUrl || "")}</p></div><span class="tag ${tagClass(l.callCatchFitScore)}">${esc(l.aiOpportunityLevel)}</span></div>
-      <div class="detail-grid"><div class="mini"><span>Fit Score</span><strong>${l.callCatchFitScore}</strong></div><div class="mini"><span>Revenue Opp.</span><strong>${money(l.revenueOpportunityEstimate)}</strong></div><div class="mini"><span>Website</span><strong>${l.websiteQualityScore||0}</strong></div><div class="mini"><span>Priority</span><strong>${esc(l.responsePriority)}</strong></div></div>
+      <div class="detail-grid"><div class="mini"><span>Fit Score</span><strong>${l.callCatchFitScore}</strong></div><div class="mini"><span>Revenue Opp.</span><strong>${money(l.revenueOpportunityEstimate)}</strong></div><div class="mini"><span>Website</span><strong>${l.websiteQualityScore||0}</strong></div><div class="mini"><span>Follow-up</span><strong>${esc(l.followUpStatus || l.responsePriority || "Not started")}</strong></div></div>
       <div class="insights">${(l.aiInsights||[]).map(i=>`<span class="tag">${esc(i)}</span>`).join("") || `<span class="tag">No scan insights yet</span>`}</div>
       <p class="sub">${esc(l.recommendedSalesAngle || "")}</p>
       <div class="form-grid"><div><label>Stage</label><select id="detailStage">${STAGES.map(s=>`<option ${s===l.stage?"selected":""}>${s}</option>`).join("")}</select></div><div><label>Owner</label><input id="owner" value="${esc(l.owner||"")}"></div><div><label>Next Follow-up</label><input id="nextFollow" type="date" value="${esc(l.nextFollowUp||"")}"></div><div><label>Assigned</label><input id="assigned" value="${esc(l.assignedTeamMember||settings.team)}"></div></div>
@@ -1061,6 +1065,36 @@
       $("marketTable").innerHTML = `<table><tr><th>Market</th><th>Prospects</th><th>Opportunity</th></tr>${Object.entries(markets).map(([m,v])=>`<tr><td>${esc(m)}</td><td>${v.count}</td><td>${money(v.value)}</td></tr>`).join("")}</table>`;
     }
     function renderSettings(){ $("teamMember").value=settings.team; $("senderName").value=settings.sender; $("demoLink").value=settings.demo; $("automationMode").value=settings.mode; }
+    function followupRows(){
+      const emailTasks = queue.filter(task => task.channel === "email");
+      const followTasks = emailTasks
+        .filter(task => task.sequenceStep || /follow/i.test(task.title || ""))
+        .filter(task => !/stopped/i.test(task.status || ""))
+        .sort((a,b)=>new Date(a.dueAt || a.createdAt || 0)-new Date(b.dueAt || b.createdAt || 0));
+      const waiting = emailTasks
+        .filter(task => task.status === "Sent" && !task.sequenceStep)
+        .map(task => {
+          const lead = leads.find(item => item.id === task.leadId) || {};
+          const replied = (lead.replies || []).length > 0;
+          const existingFollow = emailTasks.some(item => item.leadId === task.leadId && item.sequenceStep === "followup-1");
+          return { task, lead, replied, existingFollow, dueAt: task.nextFollowUpAt || lead.followUpPlan?.nextDueAt || lead.nextFollowUp };
+        })
+        .filter(item => !item.replied && !item.existingFollow && item.dueAt)
+        .sort((a,b)=>new Date(a.dueAt)-new Date(b.dueAt));
+      return { followTasks, waiting };
+    }
+    function renderFollowupCenter(){
+      const el = $("followupCenter");
+      if (!el) return;
+      const { followTasks, waiting } = followupRows();
+      const ready = followTasks.filter(task => sendCategory(task) === "ready" || /^approved/i.test(task.status || ""));
+      const needsApproval = followTasks.filter(task => /^needs approval/i.test(task.status || ""));
+      const waitingHtml = waiting.slice(0,4).map(({task,lead,dueAt})=>`<div class="queue-item"><div class="lead-top"><strong>${esc(lead.business || task.business)} - Waiting</strong><span class="tag ${dueToday(dueAt) ? "warn" : ""}">${dueToday(dueAt) ? "Due now" : "Scheduled"}</span></div><p class="hint">Next: Follow-up #1 | Due: ${esc(dueAt ? new Date(dueAt).toLocaleString() : "Not set")}</p><div class="actions" style="margin-top:8px;"><button class="btn small" data-work-lead="${task.leadId}">Open Lead</button></div></div>`).join("");
+      const taskHtml = followTasks.slice(0,8).map(task=>`<div class="queue-item"><div class="lead-top"><strong>${esc(task.business)} - ${esc(task.title || "Follow-up")}</strong><span class="tag ${sendCategory(task)==="ready" ? "hot" : "warn"}">${esc(task.status || "Needs Approval")}</span></div><p class="hint">Due: ${esc(task.dueAt ? new Date(task.dueAt).toLocaleString() : "Now")} | ${esc(task.sequenceStep || "follow-up")}</p><button class="message-preview" data-compose="${task.id}" type="button" style="width:100%;text-align:left;cursor:pointer;"><strong>${esc(messageSubject(task.body))}</strong><p class="hint">${esc(messagePreview(task.body))}</p></button><div class="actions" style="margin-top:8px;"><button class="btn primary small" data-compose="${task.id}">Review</button><button class="btn small" data-approve-send="${task.id}">Approve & Send</button><button class="btn small" data-copy="${task.id}">Copy</button><button class="btn small" data-open-lead="${task.leadId || ""}">Open Lead</button></div></div>`).join("");
+      el.innerHTML = `<div class="stats"><div class="stat"><span>Ready Follow-ups</span><strong>${ready.length}</strong></div><div class="stat"><span>Needs Approval</span><strong>${needsApproval.length}</strong></div><div class="stat"><span>Waiting</span><strong>${waiting.length}</strong></div></div>${taskHtml || waitingHtml || `<p class="sub">No email follow-ups due right now.</p>`}`;
+      bindQueueActions();
+      document.querySelectorAll("[data-work-lead]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.workLead; switchView("crm"); });
+    }
     function renderSendingStats(){
       const emailsWaiting = queue.filter(q=>q.channel==="email" && /^approved/i.test(q.status||"")).length;
       const sentToday = queue.filter(q=>q.channel==="email" && q.status==="Sent" && (q.sentAt||"").slice(0,10)===new Date().toISOString().slice(0,10)).length;
@@ -1080,7 +1114,7 @@
       $("auditTable").innerHTML = auditLog.length ? `<tr><th>Time</th><th>Action</th><th>Details</th></tr>${auditLog.slice(0,40).map(row=>`<tr><td>${new Date(row.at).toLocaleString()}</td><td>${esc(row.action)}</td><td>${esc(JSON.stringify(row.details || {}))}</td></tr>`).join("")}` : `<tr><td>No server audit entries loaded yet.</td></tr>`;
     }
     function render(){
-      renderStats(); renderAssistant(); renderTodayWork(); renderSendCenter(); renderList(); renderDetail(); renderPipeline(); renderQueue(); renderInbox(); renderAnalytics(); renderTerritory(); renderSettings(); renderAudit(); renderSendingStats();
+      renderStats(); renderAssistant(); renderTodayWork(); renderSendCenter(); renderList(); renderDetail(); renderPipeline(); renderQueue(); renderInbox(); renderAnalytics(); renderTerritory(); renderSettings(); renderAudit(); renderSendingStats(); renderFollowupCenter();
     }
     async function search(){
       if($("source").value!=="Free Public Sources"){ $("finderStatus").textContent="That provider is a future adapter slot."; return; }
