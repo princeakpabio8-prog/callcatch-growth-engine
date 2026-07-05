@@ -114,6 +114,30 @@
     .work-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
     .work-list { display: grid; gap: 8px; }
     .work-item { border: 1px solid var(--line); border-radius: 7px; padding: 10px; background: rgba(127,127,127,.04); min-width: 0; }
+    .playbook { display: grid; grid-template-columns: 1.1fr .9fr; gap: 12px; align-items: start; }
+    .steps { display: grid; gap: 8px; }
+    .step {
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: rgba(127,127,127,.04);
+    }
+    .step-num {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-weight: 900;
+      background: var(--soft-green);
+      color: var(--green);
+    }
+    .step strong { display: block; }
+    .step p { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
     .panel { padding: 15px; min-width: 0; }
     .toolbar { display: grid; grid-template-columns: 1fr 150px 150px; gap: 8px; margin-bottom: 12px; }
     input, select, textarea {
@@ -287,7 +311,7 @@
       }
       .btn.small { min-height: 38px; }
       .stats, #sendingStats, #analyticsStats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .work-grid, .form-grid, .toolbar, .detail-grid { grid-template-columns: 1fr; }
+      .work-grid, .form-grid, .toolbar, .detail-grid, .playbook { grid-template-columns: 1fr; }
       .mobile-non-email { display: none !important; }
       .checklist { grid-template-columns: 1fr; }
       .panel { padding: 12px; }
@@ -298,6 +322,8 @@
         display: grid;
         gap: 8px;
       }
+      .step { grid-template-columns: 28px minmax(0, 1fr); }
+      .step .btn { grid-column: 1 / -1; }
       .lead-top .tag { justify-self: start; }
       .tag { white-space: normal; line-height: 1.25; }
       .meta { gap: 6px; }
@@ -378,6 +404,16 @@
             <div><label for="growthSending">Sending</label><select id="growthSending"><option>Queue for Approval</option><option>Send only when integration is connected</option></select></div>
           </div>
           <p class="hint" id="growthStatus">Manual: you control each step. Assisted: AI prepares everything for approval. Auto Pilot: runs the workflow, but sending remains adapter-gated until email/SMS integrations are connected.</p>
+        </div>
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="playbook">
+            <div>
+              <h2>Today's Playbook</h2>
+              <p class="sub">Start here. CallCatch will point you to the next useful sales action.</p>
+              <div class="steps" id="actionGuide"></div>
+            </div>
+            <div class="script" id="quickBrief" style="min-height:180px;"></div>
+          </div>
         </div>
         <div class="stats" id="stats"></div>
         <div class="work-grid">
@@ -755,6 +791,41 @@
       $("bestProspects").innerHTML = best.length ? best.map(leadRowHtml).join("") : `<p class="sub">No prospects yet. Run Discovery to build your list.</p>`;
       $("assistantNotes").textContent = lastGrowthRun ? `Today's Opportunities\n\nNew Businesses: ${lastGrowthRun.newBusinesses}\nQualified: ${lastGrowthRun.qualified}\nEmails Ready: ${lastGrowthRun.emailsReady}\nLinkedIn Messages Ready: ${lastGrowthRun.linkedinReady}\nFollow-ups Due: ${lastGrowthRun.followUpsDue}\nReplies Yesterday: ${lastGrowthRun.repliesYesterday}\nDemo Requests: ${lastGrowthRun.demoRequests}\nRevenue Pipeline: ${money(lastGrowthRun.revenuePipeline)}\n\nSending status: ${lastGrowthRun.capabilities?.sendingStatus || "approval-first"}`
         : leads.length ? `Focus today:\n\n1. Work ${best[0]?.business || "your highest-fit prospect"} first.\n2. Review ${queue.length} queued messages before sending anything.\n3. Move contacted leads to Follow-up with a next action date.\n4. Scan websites for high-fit prospects with weak online presence.` : "Click Start Daily Growth or run Discovery. The assistant will find, research, score, and queue outreach.";
+    }
+    function actionGuideSteps(){
+      const readyEmails = queue.filter(item => item.channel === "email" && sendReady(item)).length;
+      const needsApproval = queue.filter(item => item.channel === "email" && /^needs approval/i.test(item.status || "")).length;
+      const needsEmail = queue.filter(item => item.channel === "email" && sendCategory(item) === "missing").length;
+      const followups = queue.filter(item => item.channel === "email" && (item.sequenceStep || /follow/i.test(item.title || "")) && !/sent|stopped/i.test(item.status || "")).length;
+      const replies = inboxItems().length;
+      const steps = [];
+      if (!leads.length) {
+        steps.push(["Find email-ready prospects", "Run deep discovery for one trade and one city first.", "Open Discovery", "finder"]);
+      } else if (readyEmails) {
+        steps.push(["Send ready emails", `${readyEmails} approved email${readyEmails === 1 ? "" : "s"} can go out now.`, "Open Send Center", "sendcenter"]);
+      } else if (needsApproval) {
+        steps.push(["Review drafted emails", `${needsApproval} email${needsApproval === 1 ? "" : "s"} need approval before sending.`, "Review Queue", "sendcenter"]);
+      } else if (replies) {
+        steps.push(["Handle replies", `${replies} repl${replies === 1 ? "y" : "ies"} need a response.`, "Open Replies", "automation"]);
+      } else if (followups) {
+        steps.push(["Work follow-ups", `${followups} follow-up email${followups === 1 ? "" : "s"} need attention.`, "Open Follow-ups", "automation"]);
+      } else {
+        steps.push(["Add more prospects", "Run another city or trade to keep the pipeline moving.", "Open Discovery", "finder"]);
+      }
+      steps.push(["Check setup", emailReady ? "Email sending is connected." : "Confirm email provider before sending.", "Open Send Center", "sendcenter"]);
+      steps.push(["Use one clean flow", "Discover, review, send, then let follow-ups appear when due.", "Start Here", steps[0][3]]);
+      return steps;
+    }
+    function renderActionGuide(){
+      const guide = $("actionGuide");
+      const brief = $("quickBrief");
+      if (!guide || !brief) return;
+      const steps = actionGuideSteps();
+      guide.innerHTML = steps.map((step, index)=>`<div class="step"><div class="step-num">${index + 1}</div><div><strong>${esc(step[0])}</strong><p>${esc(step[1])}</p></div><button class="btn small" data-guide-view="${esc(step[3])}" type="button">${esc(step[2])}</button></div>`).join("");
+      const emailsReady = queue.filter(item => item.channel === "email" && sendReady(item)).length;
+      const waiting = queue.filter(item => item.channel === "email" && /^needs approval/i.test(item.status || "")).length;
+      brief.textContent = `Quick brief\n\nProspects: ${leads.length}\nEmail drafts waiting: ${waiting}\nReady to send: ${emailsReady}\nReplies needing response: ${inboxItems().length}\n\nBest move: ${steps[0][0]}.`;
+      document.querySelectorAll("[data-guide-view]").forEach(button=>button.onclick=()=>switchView(button.dataset.guideView));
     }
     function inboxItems(){
       return leads.flatMap(lead => (lead.replies || []).map(reply => ({ lead, reply })))
@@ -1142,7 +1213,7 @@
       $("auditTable").innerHTML = auditLog.length ? `<tr><th>Time</th><th>Action</th><th>Details</th></tr>${auditLog.slice(0,40).map(row=>`<tr><td>${new Date(row.at).toLocaleString()}</td><td>${esc(row.action)}</td><td>${esc(JSON.stringify(row.details || {}))}</td></tr>`).join("")}` : `<tr><td>No server audit entries loaded yet.</td></tr>`;
     }
     function render(){
-      renderStats(); renderAssistant(); renderTodayWork(); renderSendCenter(); renderList(); renderDetail(); renderPipeline(); renderQueue(); renderInbox(); renderAnalytics(); renderTerritory(); renderSettings(); renderAudit(); renderSendingStats(); renderFollowupCenter();
+      renderStats(); renderAssistant(); renderActionGuide(); renderTodayWork(); renderSendCenter(); renderList(); renderDetail(); renderPipeline(); renderQueue(); renderInbox(); renderAnalytics(); renderTerritory(); renderSettings(); renderAudit(); renderSendingStats(); renderFollowupCenter();
     }
     async function search(){
       if($("source").value!=="Free Public Sources"){ $("finderStatus").textContent="That provider is a future adapter slot."; return; }
