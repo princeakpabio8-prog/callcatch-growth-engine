@@ -10,6 +10,7 @@ const { audit, mutateStore, newId, readStore } = require("./lead-engine/dataStor
 const { buildCampaign, buildSequenceTasks } = require("./lead-engine/campaigns");
 const { DEFAULT_DAILY_GROWTH, automationCapabilities, mergeConfig, runDailyGrowth } = require("./lead-engine/dailyGrowth");
 const { activeProvider, configured: emailConfigured, emailConfig, parseEmail, sendEmail } = require("./lead-engine/emailAdapter");
+const { configured: smsConfigured, normalizePhone, sendSms, smsConfig } = require("./lead-engine/smsAdapter");
 const {
   generateFollowUps,
   metrics: sendingMetrics,
@@ -104,6 +105,11 @@ const server = http.createServer(async (req, res) => {
         configured: emailConfigured(),
         provider: activeProvider(emailConfig()),
         source: emailConfig().source
+      },
+      sms: {
+        configured: smsConfigured(),
+        provider: smsConfig().provider,
+        source: smsConfig().source
       },
       requiresApiKey: false,
       cache: "memory"
@@ -246,11 +252,12 @@ const server = http.createServer(async (req, res) => {
         state.leads = [...existing.values()];
         const leadById = new Map(state.leads.map(lead => [lead.id, lead]));
         for (const task of state.approvalQueue || []) {
-          if (task.channel === "email" && !task.to && !task.recipient) {
+          if (["email", "sms"].includes(task.channel) && !task.to && !task.recipient) {
             const lead = leadById.get(task.leadId);
-            if (lead && lead.email) {
-              task.to = lead.email;
-              task.recipient = lead.email;
+            const recipient = task.channel === "sms" ? lead?.phone : lead?.email;
+            if (recipient) {
+              task.to = recipient;
+              task.recipient = recipient;
             }
           }
         }
@@ -384,6 +391,31 @@ const server = http.createServer(async (req, res) => {
         body: body.body || "This is a CallCatch email delivery test."
       });
       await audit("email_test_sent", { to: result.to, messageId: result.messageId });
+      return send(res, 200, result);
+    } catch (error) {
+      return send(res, 400, { error: error.message });
+    }
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/sms/status") {
+    const config = smsConfig();
+    return send(res, 200, {
+      configured: smsConfigured(config),
+      provider: config.provider,
+      from: config.fromNumber || "",
+      account: config.accountSid ? `${config.accountSid.slice(0, 6)}...${config.accountSid.slice(-4)}` : "",
+      source: config.source
+    });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/sms/send-test") {
+    try {
+      const body = await readJson(req);
+      const result = await sendSms({
+        to: body.to,
+        body: body.body || "CallCatch SMS delivery test."
+      });
+      await audit("sms_test_sent", { to: result.to, messageId: result.messageId });
       return send(res, 200, result);
     } catch (error) {
       return send(res, 400, { error: error.message });

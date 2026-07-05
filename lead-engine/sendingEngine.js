@@ -1,4 +1,5 @@
 const { sendEmail, parseEmail } = require("./emailAdapter");
+const { normalizePhone, sendSms } = require("./smsAdapter");
 const { outreachAssets } = require("./prospectIntelligence");
 const { scanWebsite } = require("./websiteScanner");
 const { newId } = require("./dataStore");
@@ -131,8 +132,8 @@ function parseSchedule(label) {
   return date;
 }
 
-function approvedEmailTasks(state) {
-  return (state.approvalQueue || []).filter(task => task.channel === "email" && /^approved/i.test(task.status || ""));
+function approvedSendableTasks(state) {
+  return (state.approvalQueue || []).filter(task => ["email", "sms"].includes(task.channel) && /^approved/i.test(task.status || ""));
 }
 
 function findLead(state, task) {
@@ -142,8 +143,8 @@ function findLead(state, task) {
 async function sendTaskNow(state, taskId) {
   const task = (state.approvalQueue || []).find(item => item.id === taskId);
   if (!task) throw new Error("Task not found");
-  if (task.channel !== "email") throw new Error("Only email tasks can be sent by the email adapter");
-  if (!/^approved/i.test(task.status || "")) throw new Error("Email must be approved before sending");
+  if (!["email", "sms"].includes(task.channel)) throw new Error("Only email and SMS tasks can be sent");
+  if (!/^approved/i.test(task.status || "")) throw new Error("Task must be approved before sending");
 
   const limit = canSendMore(state);
   if (!limit.allowed) {
@@ -153,8 +154,10 @@ async function sendTaskNow(state, taskId) {
   }
 
   const lead = findLead(state, task);
-  let to = parseEmail(task.to || task.recipient || lead.email);
-  if (!to && lead.website) {
+  let to = task.channel === "sms"
+    ? normalizePhone(task.to || task.recipient || lead.phone)
+    : parseEmail(task.to || task.recipient || lead.email);
+  if (task.channel === "email" && !to && lead.website) {
     try {
       const scan = await scanWebsite(lead.website);
       const discovered = parseEmail((scan.emails || [])[0]);
@@ -173,15 +176,17 @@ async function sendTaskNow(state, taskId) {
     } catch {}
   }
   if (!to) {
-    task.status = "Needs Email";
-    addTimeline(lead, "Email send blocked: no public recipient email found");
-    return { sent: false, failed: true, error: "No recipient email found", task };
+    task.status = task.channel === "sms" ? "Needs Phone" : "Needs Email";
+    addTimeline(lead, `${task.channel === "sms" ? "SMS" : "Email"} send blocked: no recipient ${task.channel === "sms" ? "phone number" : "email"} found`);
+    return { sent: false, failed: true, error: `No recipient ${task.channel === "sms" ? "phone number" : "email"} found`, task };
   }
 
   try {
     task.status = "Sending";
     task.startedAt = nowIso();
-    const result = await sendEmail({ to, task, lead });
+    const result = task.channel === "sms"
+      ? await sendSms({ to, task, lead })
+      : await sendEmail({ to, task, lead });
     task.status = "Sent";
     task.sentAt = result.sentAt;
     task.messageId = result.messageId;
@@ -189,22 +194,22 @@ async function sendTaskNow(state, taskId) {
     task.nextFollowUpAt = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
     lead.stage = lead.stage === "New" ? "Contacted" : lead.stage;
     lead.lastContact = result.sentAt.slice(0, 10);
-    addTimeline(lead, `Sent email: ${task.title || "Outbound email"}`, result.sentAt);
+    addTimeline(lead, `Sent ${task.channel === "sms" ? "SMS" : "email"}: ${task.title || "Outbound message"}`, result.sentAt);
     recordSendCount(state);
     recordVariantSent(state, lead, task);
-    state.auditLog.unshift({ id: newId("audit"), at: result.sentAt, action: "email_sent", details: { taskId: task.id, leadId: lead.id, to } });
+    state.auditLog.unshift({ id: newId("audit"), at: result.sentAt, action: `${task.channel}_sent`, details: { taskId: task.id, leadId: lead.id, to } });
     return { sent: true, task, result };
   } catch (error) {
     task.status = "Send Failed";
     task.error = error.message;
     sendingState(state).metrics.failed += 1;
-    state.auditLog.unshift({ id: newId("audit"), at: nowIso(), action: "email_send_failed", details: { taskId: task.id, error: error.message } });
+    state.auditLog.unshift({ id: newId("audit"), at: nowIso(), action: `${task.channel}_send_failed`, details: { taskId: task.id, error: error.message } });
     return { sent: false, failed: true, error: error.message, task };
   }
 }
 
 async function sendApprovedBatch(state, { limit } = {}) {
-  const tasks = approvedEmailTasks(state).slice(0, Number(limit) || 500);
+  const tasks = approvedSendableTasks(state).slice(0, Number(limit) || 500);
   const total = tasks.length;
   const sent = [];
   const failed = [];

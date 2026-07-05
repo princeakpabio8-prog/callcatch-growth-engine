@@ -91,6 +91,18 @@ SMTP_REPLY_TO=
 SMTP_TIMEOUT_MS=15000
 ```
 
+Twilio SMS setup:
+
+```env
+SMS_PROVIDER=twilio
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_FROM_NUMBER=
+TWILIO_TIMEOUT_MS=15000
+```
+
+SMS sending uses the same approval queue as email. A text message is not sent until the task is approved and the user clicks `Send Now` or `Send All Approved`.
+
 On Render, add these in the service Environment tab.
 
 ## Render Deployment
