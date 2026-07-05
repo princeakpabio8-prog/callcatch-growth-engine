@@ -8,6 +8,7 @@ Internal outbound sales platform for CallCatch. It discovers prospects, scores t
 - CRM records with stages, notes, timeline, follow-up date, and assigned team member.
 - CallCatch Fit Score, revenue opportunity estimate, website quality score, digital presence score, and response priority.
 - Website scanner for public emails, phone numbers, contact forms, booking/chat signals, social links, emergency messaging, and financing language.
+- Optional Serper website finder to discover official business websites before email scanning.
 - Campaign approval queue.
 - Smart sending engine with send-now, send-all-approved, scheduled sends, rate limits, follow-up generation, reply tracking, and meeting-intent detection.
 - SMTP email adapter.
@@ -160,6 +161,14 @@ This local build stores CRM data in `data/callcatch-crm.json`. Render disks are 
 Copy `.env.example` into your Render environment variables. Do not commit real values.
 
 No Google Cloud or paid lead API key is required for the public-source discovery engine.
+
+Optional lead enrichment:
+
+```env
+SERPER_API_KEY=
+```
+
+When `SERPER_API_KEY` is set, CallCatch uses Serper to find official business websites and then scans those sites for public emails.
 
 ## GitHub Push Commands
 

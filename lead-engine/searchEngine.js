@@ -1,6 +1,8 @@
 const { MemoryCache } = require("./cache");
 const { geocodeArea } = require("./providers/nominatim");
 const { searchOpenStreetMap } = require("./providers/openstreetmap");
+const { configured: braveConfigured, enrichWithBraveWebsites, searchBrave } = require("./providers/braveSearch");
+const { configured: serperConfigured, enrichWithSerperWebsites, searchSerper } = require("./providers/serperSearch");
 const { enrichProspect } = require("./prospectIntelligence");
 const { scanWebsite } = require("./websiteScanner");
 const { fallbackLocation } = require("./usLocations");
@@ -210,6 +212,20 @@ async function runProviders(params) {
       count: params.count
     })
   ];
+  if (braveConfigured()) {
+    providers.push(searchBrave({
+      trade: params.trade,
+      location,
+      count: params.count
+    }));
+  }
+  if (serperConfigured()) {
+    providers.push(searchSerper({
+      trade: params.trade,
+      location,
+      count: params.count
+    }));
+  }
 
   const settled = await Promise.allSettled(providers);
   const leads = [];
@@ -288,6 +304,13 @@ async function searchLeads(input = {}) {
   let leads = applyFilters(dedupe(providerResult.leads).map(enrichLead), input)
     .sort((a, b) => b.aiLeadQualityScore - a.aiLeadQualityScore)
     .slice(0, Math.max(count * 4, count));
+  if (serperConfigured()) {
+    leads = await enrichWithSerperWebsites(leads, { limit: Math.min(16, Math.max(count * 2, 8)) });
+    leads = dedupe(leads).map(enrichLead);
+  } else if (braveConfigured()) {
+    leads = await enrichWithBraveWebsites(leads, { limit: Math.min(12, Math.max(count * 2, 8)) });
+    leads = dedupe(leads).map(enrichLead);
+  }
   const beforeDeepResearch = leads.length;
   leads = input.deepResearch === false
     ? leads.sort((a, b) => (b.email ? 1 : 0) - (a.email ? 1 : 0) || b.aiLeadQualityScore - a.aiLeadQualityScore).slice(0, count)
@@ -295,7 +318,11 @@ async function searchLeads(input = {}) {
   if (!leads.length && beforeDeepResearch) {
     providerResult.errors.push(`Deep research checked ${beforeDeepResearch} candidate businesses but could not keep usable prospects. Try a nearby city, a larger radius, or another trade.`);
   }
-  let source = "OpenStreetMap + Nominatim";
+  let source = serperConfigured()
+    ? "OpenStreetMap + Nominatim + Serper"
+    : braveConfigured()
+      ? "OpenStreetMap + Nominatim + Brave Search"
+      : "OpenStreetMap + Nominatim";
   if (!leads.length && providerResult.errors.length) {
     leads = await savedCrmFallback({ ...input, trade, area }, count, providerResult.errors);
     if (leads.length) source = "Saved CRM fallback";
@@ -314,6 +341,8 @@ async function searchLeads(input = {}) {
       city: providerResult.location.city,
       state: providerResult.location.state,
       deepResearch: input.deepResearch !== false,
+      serperEnabled: serperConfigured(),
+      braveEnabled: braveConfigured(),
       candidatesResearched: beforeDeepResearch,
       emailReadyOnly: false,
       emailReady: leads.filter(lead => lead.email).length,

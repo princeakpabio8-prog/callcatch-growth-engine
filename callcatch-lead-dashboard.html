@@ -533,6 +533,8 @@
     let setupState = {
       backend: false,
       leadSources: false,
+      serper: false,
+      brave: false,
       email: false,
       sms: false,
       crm: false,
@@ -1165,6 +1167,7 @@
       const items = [
         ["Render Backend", setupState.backend, "Live app is reachable."],
         ["Lead Sources", setupState.leadSources, "Public discovery APIs respond."],
+        ["Serper Search", setupState.serper, setupState.serper ? "Website finder is active." : "Recommended: add SERPER_API_KEY to find more official websites."],
         ["Email Provider", setupState.email, "Resend, Brevo, or SMTP is configured."],
         ["SMS Provider", setupState.sms, "Twilio is configured."],
         ["CRM Sync", setupState.crm, "Leads and queue are synced with Render."],
@@ -1252,6 +1255,8 @@
         ]);
         setupState.backend = health.status === "fulfilled" && !!health.value.ok;
         setupState.leadSources = network.status === "fulfilled" && (network.value.checks || []).some(check => check.ok);
+        setupState.serper = health.status === "fulfilled" && (health.value.providers || []).includes("serper");
+        setupState.brave = health.status === "fulfilled" && (health.value.providers || []).includes("brave-search");
         setupState.email = email.status === "fulfilled" && !!email.value.configured;
         setupState.sms = sms.status === "fulfilled" && !!sms.value.configured;
         setupState.crm = crm.status === "fulfilled";

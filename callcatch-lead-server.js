@@ -3,6 +3,8 @@ const fs = require("fs/promises");
 const path = require("path");
 const { URL } = require("url");
 const { searchLeads } = require("./lead-engine/searchEngine");
+const { configured: braveConfigured } = require("./lead-engine/providers/braveSearch");
+const { configured: serperConfigured } = require("./lead-engine/providers/serperSearch");
 const { fetchJson } = require("./lead-engine/httpClient");
 const { scanWebsite } = require("./lead-engine/websiteScanner");
 const { enrichProspect, outreachAssets } = require("./lead-engine/prospectIntelligence");
@@ -636,7 +638,12 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, {
       ok: true,
       providerEngine: "free-public-sources",
-      providers: ["nominatim", "openstreetmap"],
+      providers: [
+        "nominatim",
+        "openstreetmap",
+        ...(serperConfigured() ? ["serper"] : []),
+        ...(braveConfigured() ? ["brave-search"] : [])
+      ],
       modules: ["prospect-intelligence", "website-scanner", "approval-queue"],
       automation: ["daily-growth", "campaign-sequences", "approval-first-autopilot"],
       sendingEngine: ["send-now", "bulk-send", "scheduled-send", "rate-limits", "reply-tracking"],
