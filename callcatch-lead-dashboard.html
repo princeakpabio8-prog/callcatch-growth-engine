@@ -1133,7 +1133,7 @@
       if (reviews >= 100 && rating) return `I saw that your company has built a strong local reputation with more than ${reviews.toLocaleString()} reviews.`;
       if ((scan.trustSignals || []).length) return `I noticed your site highlights ${scan.trustSignals[0]}, which usually means trust matters in the first customer interaction.`;
       if (scan.noOnlineBooking) return "I was looking through your website and did not see a clear online booking path for urgent requests.";
-      return `I came across your company while researching ${lead.trade || "home service"} businesses in the ${city} area.`;
+      return `I came across your company while researching local ${lead.trade || "home service"} businesses.`;
     }
     function localProblem(lead, profile){
       const scan = lead.websiteIntelligence || {};
@@ -1175,7 +1175,7 @@
       if (city && city !== "your area") {
         const cityPattern = new RegExp(city.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g");
         let seen = 0;
-        cleaned = cleaned.replace(cityPattern, match => (++seen <= 1 ? match : "your area"));
+        cleaned = cleaned.replace(cityPattern, match => (++seen <= 0 ? match : "your area"));
       }
       const words = cleaned.split(/\s+/);
       if (words.length > 170) {

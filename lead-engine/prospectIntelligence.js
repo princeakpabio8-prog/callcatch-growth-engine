@@ -165,8 +165,8 @@ function realObservation(lead) {
   if (reviews >= 100 && rating) return `I saw that your company has built a strong local reputation with more than ${reviews.toLocaleString()} reviews.`;
   if ((scan.trustSignals || []).length) return `I noticed your site highlights ${scan.trustSignals[0]}, which usually means trust matters in the first customer interaction.`;
   if (scan.noOnlineBooking) return `I was looking through your website and did not see a clear online booking path for urgent requests.`;
-  if (lead.website) return `I came across your company while researching ${lead.trade || "home service"} businesses in the ${city} area.`;
-  return `I came across your company while researching ${lead.trade || "home service"} businesses in the ${city} area.`;
+  if (lead.website) return `I came across your company while researching local ${lead.trade || "home service"} businesses.`;
+  return `I came across your company while researching local ${lead.trade || "home service"} businesses.`;
 }
 
 function problemSentence(lead, profile) {
@@ -226,7 +226,7 @@ function cleanEmailText(text, lead) {
   const cityPattern = city && city !== "your area" ? new RegExp(city.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g") : null;
   if (cityPattern) {
     let seen = 0;
-    cleaned = cleaned.replace(cityPattern, match => (++seen <= 1 ? match : "your area"));
+    cleaned = cleaned.replace(cityPattern, match => (++seen <= 0 ? match : "your area"));
   }
 
   const words = cleaned.split(/\s+/);
