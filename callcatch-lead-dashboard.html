@@ -971,10 +971,11 @@
     }
     function cleanupStaleQueue(){
       const before = queue.length;
+      const upgraded = upgradeLegacyQueueDrafts();
       queue = compactEmailDuplicates(queue);
       queue = queue.filter(item => /^sent$/i.test(item.status || "") || followupTask(item) || freshCampaignTask(item));
       const removed = before - queue.length;
-      if (removed > 0) save();
+      if (removed > 0 || upgraded > 0) save();
       return removed;
     }
     function followupTask(item = {}){
@@ -1184,6 +1185,39 @@
         cleaned = `${cleaned.replace(sig, "").trim().split(/\s+/).slice(0, keep).join(" ")}\n\n${sig}`;
       }
       return cleaned;
+    }
+    function legacyEmailDraft(item = {}){
+      const body = String(item.body || "");
+      if (item.channel !== "email" || /^sent$/i.test(item.status || "") || item.editedAt) return false;
+      return /in\s+[A-Z][A-Za-z\s.-]+,\s*[A-Z]{2}\.?\s+team,|while reviewing .*companies serving|possible missed .* opportunity|\$[\d,]+\/month|Founder,\s*CallCatch|Email:\s*hello@|Web:\s*https|quick 10-minute walkthrough/i.test(body);
+    }
+    function upgradeLegacyDraft(item = {}){
+      const existing = leadForTask(item);
+      const lead = normalizeLead({
+        ...existing,
+        business: existing.business || item.business || "your company",
+        trade: existing.trade || item.trade || "Home Services",
+        city: existing.city || item.city || "",
+        state: existing.state || item.state || "",
+        email: existing.email || item.to || item.recipient || "",
+        website: existing.website || item.website || "",
+        revenueOpportunityEstimate: existing.revenueOpportunityEstimate || item.revenueOpportunityEstimate || 0
+      });
+      const assets = outreach(lead);
+      item.body = item.emailVariant === "B" ? assets.emailB : assets.emailA;
+      item.upgradedAt = now();
+      item.title = item.title || "Cold Email";
+      return item;
+    }
+    function upgradeLegacyQueueDrafts(){
+      let upgraded = 0;
+      queue.forEach(item => {
+        if (legacyEmailDraft(item)) {
+          upgradeLegacyDraft(item);
+          upgraded += 1;
+        }
+      });
+      return upgraded;
     }
     function outreach(lead){
       const profile = weaknessProfile(lead);
@@ -1723,7 +1757,7 @@
         }
       });
       const visibleQueue = mobileVisibleTasks(queue.filter(freshCampaignTask));
-      $("approvalQueue").innerHTML = visibleQueue.length ? visibleQueue.map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag warn">${esc(item.status)}</span></div><p class="hint">Task ID: ${esc(item.id)} | Lead ID: ${esc(item.leadId || "")}</p>${["email","sms"].includes(item.channel) ? `<div class="insights">${sendChecklist(item).map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${item.channel === "sms" ? "Recipient Phone" : "Recipient Email"}</label><input data-to="${item.id}" value="${esc(item.to || item.recipient || "")}" placeholder="${item.channel === "sms" ? "Auto-filled from business phone when available" : "Auto-filled when a public email is found"}"></div>` : ""}<div class="script" style="margin-top:8px;">${esc(item.body)}</div><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-approve="${item.id}">Mark Approved</button>${["email","sms"].includes(item.channel)?`<button class="btn small" data-sendnow="${item.id}">Send Now</button><button class="btn small" data-schedule="${item.id}" data-when="today 2 pm">Today 2 PM</button><button class="btn small" data-schedule="${item.id}" data-when="tomorrow 9 am">Tomorrow 9 AM</button><button class="btn small" data-schedule="${item.id}" data-when="next monday 8 am">Next Monday 8 AM</button>`:""}<button class="btn small" data-remove="${item.id}">Remove</button></div></div>`).join("") : `<p class="sub">${mobileEmailFocus() ? "No email outreach waiting for approval." : "No generated outreach waiting for approval."}</p>`;
+      $("approvalQueue").innerHTML = visibleQueue.length ? visibleQueue.map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag warn">${esc(item.status)}</span></div><p class="hint">Task ID: ${esc(item.id)} | Lead ID: ${esc(item.leadId || "")}${item.upgradedAt ? " | Clean email refreshed" : ""}</p>${["email","sms"].includes(item.channel) ? `<div class="insights">${sendChecklist(item).map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${item.channel === "sms" ? "Recipient Phone" : "Recipient Email"}</label><input data-to="${item.id}" value="${esc(item.to || item.recipient || "")}" placeholder="${item.channel === "sms" ? "Auto-filled from business phone when available" : "Auto-filled when a public email is found"}"></div>` : ""}<div class="script" style="margin-top:8px;">${esc(item.body)}</div><div class="actions" style="margin-top:8px;">${item.channel === "email" ? `<button class="btn primary small" data-compose="${item.id}">Edit Email</button>` : ""}<button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-approve="${item.id}">Mark Approved</button>${["email","sms"].includes(item.channel)?`<button class="btn small" data-sendnow="${item.id}">Send Now</button><button class="btn small" data-schedule="${item.id}" data-when="today 2 pm">Today 2 PM</button><button class="btn small" data-schedule="${item.id}" data-when="tomorrow 9 am">Tomorrow 9 AM</button><button class="btn small" data-schedule="${item.id}" data-when="next monday 8 am">Next Monday 8 AM</button>`:""}<button class="btn small" data-remove="${item.id}">Remove</button></div></div>`).join("") : `<p class="sub">${mobileEmailFocus() ? "No email outreach waiting for approval." : "No generated outreach waiting for approval."}</p>`;
       bindQueueActions();
     }
     function bindQueueActions(){
