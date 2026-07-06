@@ -8,12 +8,18 @@ const DEFAULT_DAILY_GROWTH = {
   enabled: false,
   runTime: "08:00",
   automationLevel: "Assisted",
-  states: ["TX", "FL", "AZ", "IL"],
+  states: ["TX", "FL", "CA:ON", "GB", "EU:IE"],
   citiesByState: {
     TX: ["Dallas", "Houston", "Austin"],
     FL: ["Miami", "Orlando", "Tampa"],
     AZ: ["Phoenix", "Tucson", "Mesa"],
-    IL: ["Chicago", "Aurora", "Naperville"]
+    IL: ["Chicago", "Aurora", "Naperville"],
+    "CA:ON": ["Toronto", "Ottawa", "Mississauga"],
+    "CA:BC": ["Vancouver", "Burnaby", "Surrey"],
+    GB: ["London", "Manchester", "Birmingham"],
+    "EU:IE": ["Dublin", "Cork", "Galway"],
+    "EU:NL": ["Amsterdam", "Rotterdam", "Utrecht"],
+    "EU:DE": ["Berlin", "Munich", "Hamburg"]
   },
   trades: ["HVAC", "Plumbing", "Electrical", "Roofing"],
   scoreThreshold: 75,
@@ -60,13 +66,27 @@ function hasEmail(lead) {
   return !!String(lead.email || "").trim();
 }
 
+function marketForKey(key = "") {
+  const value = String(key || "").trim();
+  if (value.startsWith("CA:")) return { country: "CA", state: value.split(":")[1] || "" };
+  if (value === "GB" || value.startsWith("GB:")) return { country: "GB", state: value.split(":")[1] || "" };
+  if (value.startsWith("EU:")) {
+    const map = { IE: "Ireland", NL: "Netherlands", DE: "Germany", FR: "France", ES: "Spain" };
+    const code = value.split(":")[1] || "";
+    return { country: "EU", state: map[code] || code };
+  }
+  return { country: "US", state: value };
+}
+
 function buildSearchPlan(config) {
   const searches = [];
-  for (const state of config.states) {
-    const cities = config.citiesByState[state] || [];
+  for (const stateKey of config.states) {
+    const market = marketForKey(stateKey);
+    const cities = config.citiesByState[stateKey] || [];
     for (const city of cities) {
       for (const trade of config.trades) {
-        searches.push({ trade, city, state, area: `${city}, ${state}`, radius: config.radius, count: config.countPerSearch });
+        const area = [city, market.state].filter(Boolean).join(", ");
+        searches.push({ trade, country: market.country, city, state: market.state, area, radius: config.radius, count: config.countPerSearch });
       }
     }
   }

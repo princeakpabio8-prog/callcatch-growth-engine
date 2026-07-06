@@ -85,6 +85,8 @@ function normalizeElement(element, context) {
     trade: context.trade,
     city: cityFromTags(tags, context.location),
     state: stateFromTags(tags, context.location),
+    country: context.location.country || "",
+    countryCode: context.location.countryCode || "",
     area: addressFromTags(tags, context.location.displayName),
     address: addressFromTags(tags, context.location.displayName),
     phone,

@@ -44,9 +44,26 @@ function cleanTitle(value = "") {
     .trim();
 }
 
-async function serperSearch(query, { num = 10 } = {}) {
+function glForLocation(location = {}) {
+  const value = String(location.countryCode || location.country || "").toLowerCase();
+  if (value.includes("ca") || value.includes("canada")) return "ca";
+  if (value.includes("gb") || value.includes("uk") || value.includes("united kingdom")) return "gb";
+  if (value.includes("eu") || value.includes("europe")) return "gb";
+  return "us";
+}
+
+function marketText(location = {}) {
+  const country = location.country && !/united states/i.test(location.country) ? location.country : "";
+  return [location.city || "", location.state || "", country || location.displayName || ""]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function serperSearch(query, { num = 10, gl = "us" } = {}) {
   if (!configured()) return null;
-  const key = `serper:${query}:${num}`;
+  const key = `serper:${gl}:${query}:${num}`;
   const cached = cache.get(key);
   if (cached) return cached;
 
@@ -59,7 +76,7 @@ async function serperSearch(query, { num = 10 } = {}) {
       },
       body: JSON.stringify({
         q: query,
-        gl: "us",
+        gl,
         hl: "en",
         num: Math.max(1, Math.min(Number(num) || 10, 20))
       }),
@@ -82,6 +99,8 @@ function resultToLead(result = {}, context = {}) {
     trade: context.trade,
     city: context.location?.city || "",
     state: context.location?.state || "",
+    country: context.location?.country || "",
+    countryCode: context.location?.countryCode || "",
     area: context.location?.displayName || "",
     address: context.location?.displayName || "",
     phone: "",
@@ -101,8 +120,9 @@ function resultToLead(result = {}, context = {}) {
 
 async function searchSerper({ trade, location, count }) {
   if (!configured()) return { leads: [], cached: false, disabled: true };
-  const query = `${trade} companies in ${location.city || location.displayName} ${location.state || ""}`;
-  const payload = await serperSearch(query, { num: Math.min(Number(count) || 10, 20) });
+  const gl = glForLocation(location);
+  const query = `${trade} companies in ${marketText(location) || location.displayName || "local area"}`;
+  const payload = await serperSearch(query, { num: Math.min(Number(count) || 10, 20), gl });
   const organic = payload?.organic || [];
   const places = payload?.places || [];
   const organicLeads = organic.map(result => resultToLead(result, { trade, location }));
@@ -111,6 +131,8 @@ async function searchSerper({ trade, location, count }) {
     trade,
     city: location.city || "",
     state: location.state || "",
+    country: location.country || "",
+    countryCode: location.countryCode || "",
     area: place.address || location.displayName || "",
     address: place.address || location.displayName || "",
     phone: place.phoneNumber || place.phone || "",
@@ -135,9 +157,9 @@ async function searchSerper({ trade, location, count }) {
 
 async function findOfficialWebsite(lead = {}) {
   if (!configured() || !lead.business) return lead;
-  const cityState = [lead.city, lead.state].filter(Boolean).join(" ");
+  const cityState = [lead.city, lead.state, lead.country && !/united states/i.test(lead.country) ? lead.country : ""].filter(Boolean).join(" ");
   const query = `"${lead.business}" ${cityState} official website ${lead.trade || ""}`;
-  const payload = await serperSearch(query, { num: 8 });
+  const payload = await serperSearch(query, { num: 8, gl: glForLocation(lead) });
   const results = payload?.organic || [];
   const official = results.find(result => result.link && !isDirectoryUrl(result.link));
   const facebook = results.find(result => /facebook\.com/i.test(result.link || ""));

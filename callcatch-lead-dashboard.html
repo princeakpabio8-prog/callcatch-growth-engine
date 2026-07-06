@@ -152,6 +152,19 @@
     textarea { min-height: 115px; resize: vertical; }
     label { display: block; font-size: 13px; font-weight: 900; color: var(--muted); margin-bottom: 5px; }
     .form-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 11px; }
+    .market-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+    .market-card {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: rgba(127,127,127,.04);
+      padding: 10px;
+      text-align: left;
+      color: var(--ink);
+      cursor: pointer;
+      min-height: 84px;
+    }
+    .market-card strong { display: block; margin-bottom: 5px; }
+    .market-card span { display: block; color: var(--muted); font-size: 13px; }
     .lead-list { display: grid; gap: 9px; }
     .lead-row { padding: 12px; border-left: 5px solid transparent; cursor: pointer; }
     .lead-row.active { border-left-color: var(--green); }
@@ -294,7 +307,7 @@
       }
       .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .grid, .map-grid, .send-center-grid { grid-template-columns: 1fr; }
-      .work-grid, .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .work-grid, .form-grid, .market-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .checklist { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 760px) {
@@ -321,7 +334,7 @@
       }
       .btn.small { min-height: 38px; }
       .stats, #sendingStats, #analyticsStats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .work-grid, .form-grid, .toolbar, .detail-grid, .playbook { grid-template-columns: 1fr; }
+      .work-grid, .form-grid, .toolbar, .detail-grid, .playbook, .market-grid { grid-template-columns: 1fr; }
       .mobile-non-email { display: none !important; }
       .checklist { grid-template-columns: 1fr; }
       .panel { padding: 12px; }
@@ -408,7 +421,7 @@
             <div><label for="growthCount">Leads Per Search</label><input id="growthCount" type="number" value="8" min="1" max="50"></div>
           </div>
           <div class="form-grid">
-            <div><label for="growthStates">States</label><input id="growthStates" value="TX, FL, AZ, IL"></div>
+            <div><label for="growthStates">States / Markets</label><input id="growthStates" value="TX, FL, CA:ON, GB, EU:IE"></div>
             <div><label for="growthTrades">Trades</label><input id="growthTrades" value="HVAC, Plumbing, Electrical, Roofing"></div>
             <div><label for="growthMax">Max Searches Per Run</label><input id="growthMax" type="number" value="8" min="1" max="50"></div>
             <div><label for="growthSending">Sending</label><select id="growthSending"><option>Queue for Approval</option><option>Send only when integration is connected</option></select></div>
@@ -460,22 +473,26 @@
       </section>
 
       <section class="view" id="finder">
-        <div class="top"><div><h1>Prospect Discovery Engine</h1><p class="sub">Search free public sources by service industry, city/state/ZIP, radius, and lead count.</p></div><div class="actions"><button class="btn" id="saveSearchBtn" type="button">Save Search</button><button class="btn primary" id="searchBtn" type="button">Search</button></div></div>
+        <div class="top"><div><h1>Prospect Discovery Engine</h1><p class="sub">Search free public sources by service industry, city/state/postcode, radius, and lead count across the U.S., Canada, U.K., and Europe.</p></div><div class="actions"><button class="btn" id="saveSearchBtn" type="button">Save Search</button><button class="btn primary" id="searchBtn" type="button">Search</button></div></div>
         <div class="panel">
           <div class="form-grid">
             <div><label for="trade">Trade</label><select id="trade"></select></div>
+            <div><label for="country">Country / Region</label><select id="country"><option value="US">United States</option><option value="CA">Canada</option><option value="GB">United Kingdom</option><option value="EU">Europe</option></select></div>
             <div><label for="city">City</label><input id="city" value="Dallas"></div>
             <div><label for="state">State</label><input id="state" value="TX"></div>
-            <div><label for="zip">ZIP Code</label><input id="zip" placeholder="optional"></div>
           </div>
           <div class="form-grid">
+            <div><label for="zip">ZIP / Postcode</label><input id="zip" placeholder="optional"></div>
             <div><label for="radius">Radius</label><input id="radius" type="number" value="25" min="1" max="100"></div>
             <div><label for="count">Lead Count</label><input id="count" type="number" value="10" min="1" max="50"></div>
             <div><label for="minFit">Auto-queue Fit Score</label><input id="minFit" type="number" value="68" min="0" max="100"></div>
+          </div>
+          <div class="form-grid">
             <div><label for="source">Source</label><select id="source"><option>Free Public Sources</option><option>Future Provider Adapter</option><option>CSV Import</option></select></div>
           </div>
           <p class="hint" id="finderStatus">API connected through this app. Search results become CRM records automatically.</p>
         </div>
+        <div class="panel" style="margin-top:14px;"><div class="lead-top"><div><h2>AI Market Suggestions</h2><p class="sub">Use these when a city is dry or you want the next best place to search.</p></div><span class="tag hot">Broaden reach</span></div><div class="market-grid" id="marketSuggestions"></div></div>
         <div class="panel" style="margin-top:14px;"><h2>Import Leads</h2><p class="sub">Paste CSV: business, trade, city/state, phone, website, rating, reviews, email.</p><textarea id="csvInput" placeholder="Business Name,Trade,City State,Phone,Website,Rating,Reviews,Email"></textarea><div class="actions" style="margin-top:10px;"><button class="btn primary" id="importBtn" type="button">Import CSV</button></div></div>
       </section>
 
@@ -558,6 +575,12 @@
   <script>
     const STAGES = ["New", "Researching", "Contacted", "Follow-up", "Demo Scheduled", "Trial Started", "Customer", "Lost"];
     const TRADES = ["HVAC","Plumbing","Electrical","Roofing","Garage Doors","Landscaping","Pest Control","Cleaning","Painting","Locksmith","Appliance Repair","Tree Service","Flooring","Solar","Pool Services","Junk Removal"];
+    const MARKET_SUGGESTIONS = {
+      US: [["Houston","TX"],["Phoenix","AZ"],["Miami","FL"],["Atlanta","GA"],["Charlotte","NC"],["Tampa","FL"],["Orlando","FL"],["Nashville","TN"],["Denver","CO"],["Chicago","IL"]],
+      CA: [["Toronto","ON"],["Vancouver","BC"],["Calgary","AB"],["Edmonton","AB"],["Ottawa","ON"],["Mississauga","ON"]],
+      GB: [["London",""],["Manchester",""],["Birmingham",""],["Leeds",""],["Bristol",""],["Glasgow",""]],
+      EU: [["Dublin","Ireland"],["Amsterdam","Netherlands"],["Berlin","Germany"],["Munich","Germany"],["Paris","France"],["Madrid","Spain"],["Barcelona","Spain"],["Stockholm","Sweden"]]
+    };
     const defaults = { sender: "CallCatch", demo: "https://callcatch.site", team: "Sales Team", mode: "Review before sending" };
     let settings = JSON.parse(localStorage.getItem("ccSettingsV2") || "null") || defaults;
     let leads = JSON.parse(localStorage.getItem("ccProspectsV2") || "[]");
@@ -653,6 +676,35 @@
     function toast(text){ const t=$("toast"); t.textContent=text; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),1500); }
     function esc(v){ return String(v ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;"); }
     function money(v){ return Number(v || 0).toLocaleString("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}); }
+    function selectedCountry(){ return $("country")?.value || "US"; }
+    function countryName(code = "US"){
+      return { US:"United States", CA:"Canada", GB:"United Kingdom", EU:"Europe" }[code] || "United States";
+    }
+    function marketSuggestions(items){
+      const country = selectedCountry();
+      const trade = $("trade")?.value || "Home Services";
+      return (items && items.length ? items : (MARKET_SUGGESTIONS[country] || MARKET_SUGGESTIONS.US).map(([city,state]) => ({
+        city,
+        state,
+        country,
+        reason: `${trade} demand and missed-call opportunity are usually strong here.`
+      }))).slice(0, 8);
+    }
+    function renderMarketSuggestions(items){
+      const target = $("marketSuggestions");
+      if (!target) return;
+      const suggestions = marketSuggestions(items);
+      target.innerHTML = suggestions.map(item => `<button class="market-card" type="button" data-market-city="${esc(item.city)}" data-market-state="${esc(item.state || "")}" data-market-country="${esc(item.country || selectedCountry())}"><strong>${esc([item.city,item.state].filter(Boolean).join(", "))}</strong><span>${esc(item.reason || `Try ${countryName(item.country || selectedCountry())} for a broader pool.`)}</span></button>`).join("");
+      target.querySelectorAll("[data-market-city]").forEach(button => button.onclick = () => {
+        $("city").value = button.dataset.marketCity || "";
+        $("state").value = button.dataset.marketState || "";
+        $("country").value = button.dataset.marketCountry || selectedCountry();
+        $("zip").value = "";
+        $("radius").value = Math.max(Number($("radius").value) || 25, 35);
+        renderMarketSuggestions();
+        $("finderStatus").textContent = `Ready to search ${$("trade").value} in ${[$("city").value,$("state").value].filter(Boolean).join(", ")}.`;
+      });
+    }
     function formatDateTime(value){
       if (!value) return "";
       const parsed = new Date(value);
@@ -1973,14 +2025,15 @@
     }
     function render(){
       cleanupStaleQueue();
-      renderStats(); renderAssistant(); renderActionGuide(); renderTodayWork(); renderSendCenter(); renderList(); renderDetail(); renderPipeline(); renderQueue(); renderInbox(); renderSentHistory(); renderAnalytics(); renderTerritory(); renderSettings(); renderAudit(); renderSendingStats(); renderFollowupCenter();
+      renderStats(); renderAssistant(); renderActionGuide(); renderTodayWork(); renderSendCenter(); renderMarketSuggestions(); renderList(); renderDetail(); renderPipeline(); renderQueue(); renderInbox(); renderSentHistory(); renderAnalytics(); renderTerritory(); renderSettings(); renderAudit(); renderSendingStats(); renderFollowupCenter();
     }
     async function search(){
       if($("source").value!=="Free Public Sources"){ $("finderStatus").textContent="That provider is a future adapter slot."; return; }
       $("finderStatus").textContent="Deep researching prospects: finding businesses, scanning websites, and keeping email-ready leads...";
       const area = [$("city").value, $("state").value].filter(Boolean).join(", ");
       try {
-        const payload = await api("/api/leads",{method:"POST",body:JSON.stringify({trade:$("trade").value,city:$("city").value,area,state:$("state").value,zip:$("zip").value,radius:$("radius").value,count:$("count").value,deepResearch:true})});
+        const payload = await api("/api/leads",{method:"POST",body:JSON.stringify({trade:$("trade").value,country:selectedCountry(),city:$("city").value,area,state:$("state").value,zip:$("zip").value,radius:$("radius").value,count:$("count").value,deepResearch:true})});
+        renderMarketSuggestions(payload.search?.suggestions || []);
         const added = upsertLeads(payload.leads || []);
         const warning = (payload.errors || []).length ? ` Warning: ${payload.errors[0]}` : "";
         const emailReadyCount = (payload.leads || []).filter(isEmailReachableLead).length;
@@ -1988,7 +2041,8 @@
         const skipped = lastImportStats.skippedNoEmail ? ` Skipped ${lastImportStats.skippedNoEmail} unusable records.` : "";
         const duplicates = lastImportStats.duplicates ? ` Merged ${lastImportStats.duplicates} duplicates.` : "";
         const researched = payload.search?.candidatesResearched ? ` Researched ${payload.search.candidatesResearched} candidates.` : "";
-        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} CRM prospects from ${payload.source || "public sources"}. Email-ready: ${emailReadyCount}. Needs email: ${needsEmailCount}.${researched}${skipped}${duplicates}${warning}`;
+        const guidance = payload.leads.length ? "" : " Try one of the suggested markets below or broaden the radius.";
+        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} CRM prospects from ${payload.source || "public sources"}. Email-ready: ${emailReadyCount}. Needs email: ${needsEmailCount}.${researched}${skipped}${duplicates}${warning}${guidance}`;
         if ((payload.leads || []).length) switchView("crm");
         toast(`${added} prospects added`);
       } catch(e){ $("finderStatus").textContent=e.message + `. Check ${apiUrl("/api/network-check")} to verify public data access.`; toast("Search failed"); }
@@ -2008,7 +2062,7 @@
     }
     async function saveSearch(){
       try {
-        const payload = { trade:$("trade").value, city:$("city").value, state:$("state").value, zip:$("zip").value, radius:$("radius").value, count:$("count").value };
+        const payload = { trade:$("trade").value, country:selectedCountry(), city:$("city").value, state:$("state").value, zip:$("zip").value, radius:$("radius").value, count:$("count").value };
         await api("/api/saved-searches", { method:"POST", body: JSON.stringify(payload) });
         const audit = await api("/api/audit-log"); auditLog = audit.auditLog || [];
         renderAudit(); toast("Search saved");
@@ -2252,6 +2306,15 @@
       $("finderStatus").textContent = window.location.protocol === "file:"
         ? `File preview mode: API calls will use ${PRODUCTION_API_BASE}. For best results, open the Render app directly.`
         : "API connected through this app. Search results become CRM records automatically.";
+      $("country").onchange = () => {
+        const country = selectedCountry();
+        const first = (MARKET_SUGGESTIONS[country] || MARKET_SUGGESTIONS.US)[0];
+        $("city").value = first[0];
+        $("state").value = first[1] || "";
+        $("zip").value = "";
+        renderMarketSuggestions();
+      };
+      $("trade").onchange = () => renderMarketSuggestions();
       document.querySelectorAll(".nav-btn").forEach(b=>b.onclick=()=>switchView(b.dataset.view));
       $("searchBtn").onclick=search; $("saveSearchBtn").onclick=saveSearch; $("importBtn").onclick=importCsv; $("generateQueueBtn").onclick=enrollCampaign; $("syncBtn").onclick=()=>syncEverywhere(false); $("refreshDraftsBtn").onclick=refreshEmailDrafts; $("startGrowthBtn").onclick=startDailyGrowth; $("emailStatusBtn").onclick=()=>checkEmailStatus(false); $("sendTestBtn").onclick=sendTestEmail; $("sendSmsTestBtn").onclick=sendTestSms; $("sendApprovedBtn").onclick=sendApprovedEmails; $("saveSendingBtn").onclick=saveSendingLimits; $("runDueBtn").onclick=runDueScheduled; $("followupBtn").onclick=generateFollowups; $("recordReplyBtn").onclick=recordReply; $("recoverPipelineBtn").onclick=()=>syncEverywhere(false); $("restoreResendBtn").onclick=restoreFromResend;
       $("refreshSetupBtn").onclick=()=>runSetupChecks(false);

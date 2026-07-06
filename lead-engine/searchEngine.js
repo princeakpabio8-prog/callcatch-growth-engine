@@ -93,6 +93,61 @@ function deepQualityScore(lead) {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
+function normalizeCountry(value = "") {
+  const key = String(value || "").trim().toLowerCase();
+  if (["ca", "canada"].includes(key)) return "CA";
+  if (["uk", "gb", "united kingdom"].includes(key)) return "GB";
+  if (["eu", "europe"].includes(key)) return "EU";
+  return "US";
+}
+
+function countryLabel(code = "US") {
+  const labels = {
+    US: "United States",
+    CA: "Canada",
+    GB: "United Kingdom",
+    EU: "Europe"
+  };
+  return labels[normalizeCountry(code)] || "United States";
+}
+
+function isUnitedStates(country = "US") {
+  return normalizeCountry(country) === "US";
+}
+
+function suggestedMarkets({ country = "US", trade = "HVAC" } = {}) {
+  const markets = {
+    US: [
+      ["Houston", "TX"], ["Phoenix", "AZ"], ["Miami", "FL"], ["Atlanta", "GA"], ["Charlotte", "NC"], ["Tampa", "FL"],
+      ["Orlando", "FL"], ["Nashville", "TN"], ["Denver", "CO"], ["Chicago", "IL"], ["Dallas", "TX"], ["Los Angeles", "CA"]
+    ],
+    CA: [
+      ["Toronto", "ON"], ["Vancouver", "BC"], ["Calgary", "AB"], ["Edmonton", "AB"], ["Ottawa", "ON"], ["Mississauga", "ON"]
+    ],
+    GB: [
+      ["London", ""], ["Manchester", ""], ["Birmingham", ""], ["Leeds", ""], ["Bristol", ""], ["Glasgow", ""]
+    ],
+    EU: [
+      ["Dublin", "Ireland"], ["Amsterdam", "Netherlands"], ["Berlin", "Germany"], ["Munich", "Germany"], ["Paris", "France"], ["Madrid", "Spain"], ["Barcelona", "Spain"], ["Stockholm", "Sweden"]
+    ]
+  };
+  return (markets[normalizeCountry(country)] || markets.US).map(([city, state]) => ({
+    city,
+    state,
+    country: normalizeCountry(country),
+    reason: `${trade} demand and service-call volume are usually strong in this market.`
+  }));
+}
+
+async function mapInBatches(items, batchSize, mapper) {
+  const output = [];
+  for (let index = 0; index < items.length; index += batchSize) {
+    const batch = items.slice(index, index + batchSize);
+    output.push(...await Promise.all(batch.map(mapper)));
+  }
+  return output;
+}
+
 function enrichLead(lead) {
   const confidence = confidenceScore(lead);
   const opportunity = opportunityScore(lead);
@@ -101,6 +156,8 @@ function enrichLead(lead) {
     trade: lead.trade || "Home Services",
     city: lead.city || "",
     state: lead.state || "",
+    country: lead.country || "",
+    countryCode: lead.countryCode || "",
     area: lead.area || [lead.city, lead.state].filter(Boolean).join(", "),
     phone: lead.phone || "",
     website: lead.website || lead.facebook || "",
@@ -122,7 +179,6 @@ function enrichLead(lead) {
 }
 
 async function deepResearchLeads(leads, { count, errors }) {
-  const researched = [];
   const candidates = [...leads]
     .sort((a, b) => {
       const aHasEmail = a.email ? 1 : 0;
@@ -131,20 +187,19 @@ async function deepResearchLeads(leads, { count, errors }) {
       const bHasWebsite = b.website ? 1 : 0;
       return (bHasEmail - aHasEmail) || (bHasWebsite - aHasWebsite) || (b.aiLeadQualityScore - a.aiLeadQualityScore);
     })
-    .slice(0, Math.max(count * 4, 16));
+    .slice(0, Math.max(count * 3, 12));
 
-  for (const lead of candidates) {
+  const researched = await mapInBatches(candidates, 4, async lead => {
     const url = researchUrl(lead);
     if (!url) {
-      researched.push({ ...lead, researchDepth: "listing-only", deepQualityScore: deepQualityScore(lead) });
-      continue;
+      return { ...lead, researchDepth: "listing-only", deepQualityScore: deepQualityScore(lead) };
     }
     try {
       const scan = await scanWebsite(url);
       const email = lead.email || (scan.emails || [])[0] || "";
       const phone = lead.phone || (scan.phones || [])[0] || "";
       const enriched = enrichProspect({ ...lead, email, phone }, scan);
-      researched.push({
+      return {
         ...enriched,
         owner: enriched.owner || (scan.ownerMentions || [])[0] || "",
         researchDepth: scan.researchDepth || "standard",
@@ -155,12 +210,12 @@ async function deepResearchLeads(leads, { count, errors }) {
           scan.researchDepth ? `${scan.researchDepth} website research` : "",
           ...(scan.leadQualitySignals || []).slice(0, 5)
         ].filter(Boolean).join("; ")
-      });
+      };
     } catch (error) {
       errors.push(`Website research failed for ${lead.business}: ${error.message}`);
-      researched.push({ ...lead, researchDepth: "listing-only", deepQualityScore: deepQualityScore(lead) });
+      return { ...lead, researchDepth: "listing-only", deepQualityScore: deepQualityScore(lead) };
     }
-  }
+  });
 
   const emailReady = researched.filter(lead => lead.email);
   const needsEmail = researched.filter(lead => !lead.email);
@@ -184,12 +239,13 @@ function applyFilters(leads, { minRating, maxReviews }) {
 async function runProviders(params) {
   let location;
   const errors = [];
+  const country = normalizeCountry(params.country);
   try {
-    location = await geocodeArea(params.area);
+    location = await geocodeArea(params.area, { country });
   } catch (error) {
-    const fallback = fallbackLocation({ area: params.area, city: params.city, state: params.state });
+    const fallback = isUnitedStates(country) ? fallbackLocation({ area: params.area, city: params.city, state: params.state }) : null;
     if (!fallback) {
-      errors.push(`Nominatim unavailable and no local fallback matched "${params.area}": ${error.message}`);
+      errors.push(`Location lookup failed for "${params.area}" in ${countryLabel(country)}: ${error.message}`);
       return {
         leads: [],
         errors,
@@ -198,6 +254,8 @@ async function runProviders(params) {
           city: params.city || "",
           state: params.state || "",
           displayName: params.area,
+          country: countryLabel(country),
+          countryCode: country,
           source: "unresolved"
         }
       };
@@ -257,7 +315,7 @@ function buildArea(input) {
   const zip = String(input.zip || "").trim();
   if (zip) return [zip, state].filter(Boolean).join(", ");
   if (city) return [city, state].filter(Boolean).join(", ");
-  return String(input.area || "").trim() || "United States";
+  return String(input.area || "").trim() || countryLabel(input.country || input.countryCode || "US");
 }
 
 async function savedCrmFallback(input, count, errors = []) {
@@ -284,11 +342,13 @@ async function savedCrmFallback(input, count, errors = []) {
 
 async function searchLeads(input = {}) {
   const trade = input.trade || "HVAC";
+  const country = normalizeCountry(input.country || input.countryCode || "US");
   const radius = Number(input.radius || 25);
   const area = buildArea(input);
   const count = Math.max(1, Math.min(Number(input.count) || 10, 50));
   const key = JSON.stringify({
     trade,
+    country,
     area: area.toLowerCase(),
     radius,
     count,
@@ -300,7 +360,7 @@ async function searchLeads(input = {}) {
   const cached = cache.get(key);
   if (cached) return { ...cached, cached: true };
 
-  const providerResult = await runProviders({ trade, area, state: input.state, city: input.city, count: Math.min(count * 4, 80) });
+  const providerResult = await runProviders({ trade, area, state: input.state, city: input.city, country, count: Math.min(count * 3, 60) });
   let leads = applyFilters(dedupe(providerResult.leads).map(enrichLead), input)
     .sort((a, b) => b.aiLeadQualityScore - a.aiLeadQualityScore)
     .slice(0, Math.max(count * 4, count));
@@ -340,6 +400,8 @@ async function searchLeads(input = {}) {
       radius,
       city: providerResult.location.city,
       state: providerResult.location.state,
+      country,
+      countryLabel: countryLabel(country),
       deepResearch: input.deepResearch !== false,
       serperEnabled: serperConfigured(),
       braveEnabled: braveConfigured(),
@@ -347,7 +409,8 @@ async function searchLeads(input = {}) {
       emailReadyOnly: false,
       emailReady: leads.filter(lead => lead.email).length,
       needsEmail: leads.filter(lead => !lead.email).length,
-      quality: leads.length >= count ? "strong" : leads.length > 0 ? "partial" : "no-results"
+      quality: leads.length >= count ? "strong" : leads.length > 0 ? "partial" : "no-results",
+      suggestions: suggestedMarkets({ country, trade }).slice(0, 6)
     }
   };
 
