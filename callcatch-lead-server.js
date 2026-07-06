@@ -979,8 +979,9 @@ const server = http.createServer(async (req, res) => {
         state.leads = (state.leads || []).map(existing => enrichedCandidates.find(lead => lead.id && lead.id === existing.id) || existing);
         state.approvalQueue.unshift(...tasks);
         state.approvalQueue = compactApprovalQueue(state.approvalQueue || [], state.leads || []);
-        state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "campaign_enrolled", details: { campaign: campaign.name, leads: enrichedCandidates.length, tasks: tasks.length, enriched: true } });
-        return { leads: enrichedCandidates.length, enrichedLeads: enrichedCandidates, tasks };
+        const savedTasks = tasks.filter(task => state.approvalQueue.some(item => item.id === task.id));
+        state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "campaign_enrolled", details: { campaign: campaign.name, leads: enrichedCandidates.length, tasks: savedTasks.length, skippedWorked: tasks.length - savedTasks.length, enriched: true } });
+        return { leads: enrichedCandidates.length, enrichedLeads: enrichedCandidates, tasks: savedTasks, skippedWorked: tasks.length - savedTasks.length };
       });
       return send(res, 200, result);
     } catch (error) {
@@ -994,7 +995,11 @@ const server = http.createServer(async (req, res) => {
       const saved = await mutateStore(state => {
         const items = Array.isArray(body.items) ? body.items : [];
         state.approvalQueue = state.approvalQueue || [];
-        if (items.length === 0) return state.approvalQueue;
+        hydrateSentEmailHistory(state);
+        if (items.length === 0) {
+          state.approvalQueue = compactApprovalQueue(state.approvalQueue, state.leads || []);
+          return state.approvalQueue;
+        }
         const normalized = items.map(item => ({ id: item.id || newId("task"), createdAt: item.createdAt || new Date().toISOString(), status: item.status || "Needs Approval", ...item }));
         const incomingIds = new Set(normalized.map(item => item.id));
         const existing = new Map(state.approvalQueue.map(item => [item.id, item]));

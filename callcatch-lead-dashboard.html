@@ -785,15 +785,23 @@
     function belongsInPipeline(lead = {}){
       return contactedProspects().some(item => item.id === lead.id);
     }
+    function workedProspect(lead = {}){
+      return !!(
+        leadHasSentEmail(lead)
+        || lead.lastContact
+        || (lead.replies || []).length
+        || ["Contacted","Follow-up","Demo Scheduled","Trial Started","Customer","Lost"].includes(pipelineStage(lead))
+      );
+    }
+    function leadForTask(item = {}){
+      return leads.find(candidate => candidate.id === item.leadId) || {};
+    }
     function campaignEligibleLeads(campaign = {}){
       const minFit = Number(campaign.minFitScore || 68);
       return leads.filter(lead =>
         Number(lead.callCatchFitScore || 0) >= minFit
         && (!campaign.trade || lead.trade === campaign.trade)
-        && !belongsInPipeline(lead)
-        && !leadHasSentEmail(lead)
-        && !lead.lastContact
-        && !(lead.replies || []).length
+        && !workedProspect(lead)
       );
     }
     function sentTaskToLead(task = {}){
@@ -889,8 +897,16 @@
       return String(value || "").toLowerCase().match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/)?.[0] || "";
     }
     function taskRecipient(item = {}){
-      const lead = leads.find(candidate => candidate.id === item.leadId) || {};
+      const lead = leadForTask(item);
       return emailIdentity(item.to || item.recipient || lead.email || "");
+    }
+    function leadMatchesWorkedRecipient(item = {}){
+      const recipient = taskRecipient(item);
+      if (!recipient) return false;
+      return leads.some(lead => workedProspect(lead) && [
+        emailIdentity(lead.email),
+        ...(lead.sentEmails || []).map(sent => emailIdentity(sent.to || sent.recipient || ""))
+      ].filter(Boolean).includes(recipient));
     }
     function sentEmailKeys(){
       const keys = new Set();
@@ -932,7 +948,8 @@
         || (recipient && sentKeys.has(`email:${recipient}`))
         || (lead.id && sentKeys.has(`lead:${lead.id}`))
         || (lead.id && leadHasSentEmail(lead))
-        || (lead.id && ["Contacted","Demo Scheduled","Trial Started","Customer"].includes(pipelineStage(lead)))
+        || (lead.id && workedProspect(lead))
+        || leadMatchesWorkedRecipient(item)
       );
     }
     function compactEmailDuplicates(items = queue){
@@ -955,9 +972,25 @@
     function cleanupStaleQueue(){
       const before = queue.length;
       queue = compactEmailDuplicates(queue);
+      queue = queue.filter(item => /^sent$/i.test(item.status || "") || followupTask(item) || freshCampaignTask(item));
       const removed = before - queue.length;
       if (removed > 0) save();
       return removed;
+    }
+    function followupTask(item = {}){
+      const step = taskStepKey(item);
+      const title = String(item.title || "").toLowerCase();
+      return !!item.sequenceStep || step.includes("follow") || step.includes("final") || title.includes("follow") || title.includes("closing the loop");
+    }
+    function freshCampaignTask(item = {}){
+      if (item.channel === "email") {
+        if (staleCampaignEmailTask(item)) return false;
+        if (followupTask(item)) return false;
+      }
+      const lead = leadForTask(item);
+      if (lead.id && workedProspect(lead) && !followupTask(item)) return false;
+      if (leadMatchesWorkedRecipient(item) && !followupTask(item)) return false;
+      return !/^sent$/i.test(item.status || "");
     }
     function contactScore(lead = {}){
       let score = 0;
@@ -1025,10 +1058,12 @@
       let added = 0;
       let skippedNoEmail = 0;
       let duplicates = 0;
+      let skippedWorked = 0;
       const keyToLead = new Map(leads.map(l => [companyKey(l), l]));
       batch.map(normalizeLead).forEach(lead => {
         const key = companyKey(lead);
         if (!isStorableProspect(lead)) { skippedNoEmail += 1; return; }
+        if (leadMatchesWorkedRecipient({ channel:"email", to:lead.email, business:lead.business, website:lead.website, city:lead.city, state:lead.state })) { skippedWorked += 1; return; }
         if (keyToLead.has(key)) {
           const existing = keyToLead.get(key);
           const merged = mergeLeadRecord(existing, lead);
@@ -1039,7 +1074,7 @@
         leads.unshift(lead); keyToLead.set(key, lead); added += 1;
         if (isEmailReachableLead(lead) && lead.callCatchFitScore >= Number($("minFit")?.value || 68)) queueOutreach(lead, false);
       });
-      lastImportStats = { added, skippedNoEmail, duplicates };
+      lastImportStats = { added, skippedNoEmail, duplicates, skippedWorked };
       if (!selectedId && leads[0]) selectedId = leads[0].id;
       save(); syncCrm(true); render(); return added;
     }
@@ -1048,7 +1083,8 @@
       const stage = $("stageFilter")?.value || "";
       return sortLeadsForAction(leads.filter(l => !q || [l.business,l.trade,l.city,l.state,l.phone,l.website,l.email,l.tags?.join(" ")].join(" ").toLowerCase().includes(q))
         .filter(l => !$("tradeFilter")?.value || l.trade === $("tradeFilter").value)
-        .filter(l => stage ? l.stage === stage : !belongsInPipeline(l)));
+        .filter(l => !workedProspect(l))
+        .filter(l => stage ? l.stage === stage : true));
     }
     function weaknessProfile(lead){
       const insights = lead.aiInsights || [];
@@ -1086,6 +1122,10 @@
       };
     }
     async function queueOutreach(lead, notify=true){
+      if (workedProspect(lead) || leadMatchesWorkedRecipient({ channel:"email", to:lead.email, business:lead.business, website:lead.website, city:lead.city, state:lead.state })) {
+        if (notify) toast("Already contacted. Use Pipeline for follow-up.");
+        return;
+      }
       let assets = outreach(lead);
       try {
         if (!notify) throw new Error("Use instant local generation for background queues");
@@ -1125,26 +1165,29 @@
       save(); syncCrm(true); if(notify){ sendCenterFilter="approval"; switchView("sendcenter"); toast("Personalized outreach queued"); }
     }
     function statData(){
-      const newCount = leads.filter(l=>l.stage==="New").length;
+      const freshLeads = leads.filter(lead => !workedProspect(lead));
+      const activeEmailQueue = queue.filter(item => item.channel === "email" && freshCampaignTask(item));
+      const newCount = freshLeads.filter(l=>l.stage==="New").length;
       const demos = leads.filter(l=>l.stage==="Demo Scheduled").length;
       const customers = leads.filter(l=>l.stage==="Customer").length;
       const pipeline = leads.reduce((s,l)=>s+Number(l.revenueOpportunityEstimate||0),0);
       return [
-        ["Total Leads", leads.length], ["New Leads", newCount], ["Emails Queued", queue.filter(q=>q.channel==="email").length],
+        ["Fresh Leads", freshLeads.length], ["New Leads", newCount], ["Emails Queued", activeEmailQueue.length],
         ["Follow-ups Due", leads.filter(l=>["Contacted","Follow-up"].includes(l.stage)).length], ["Customers Won", customers], ["Pipeline Value", money(pipeline)]
       ];
     }
     function renderStats(){ $("stats").innerHTML = statData().map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join(""); $("analyticsStats").innerHTML = statData().map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join(""); }
     function renderAssistant(){
-      const best = sortLeadsForAction(leads).slice(0,5);
+      const best = sortLeadsForAction(leads.filter(lead => !workedProspect(lead))).slice(0,5);
       $("bestProspects").innerHTML = best.length ? best.map(leadRowHtml).join("") : `<p class="sub">No prospects yet. Run Discovery to build your list.</p>`;
       $("assistantNotes").textContent = lastGrowthRun ? `Today's Opportunities\n\nNew Businesses: ${lastGrowthRun.newBusinesses}\nQualified: ${lastGrowthRun.qualified}\nEmails Ready: ${lastGrowthRun.emailsReady}\nLinkedIn Messages Ready: ${lastGrowthRun.linkedinReady}\nFollow-ups Due: ${lastGrowthRun.followUpsDue}\nReplies Yesterday: ${lastGrowthRun.repliesYesterday}\nDemo Requests: ${lastGrowthRun.demoRequests}\nRevenue Pipeline: ${money(lastGrowthRun.revenuePipeline)}\n\nSending status: ${lastGrowthRun.capabilities?.sendingStatus || "approval-first"}`
-        : leads.length ? `Focus today:\n\n1. Work ${best[0]?.business || "your highest-fit prospect"} first.\n2. Review ${queue.length} queued messages before sending anything.\n3. Move contacted leads to Follow-up with a next action date.\n4. Scan websites for high-fit prospects with weak online presence.` : "Click Start Daily Growth or run Discovery. The assistant will find, research, score, and queue outreach.";
+        : leads.length ? `Focus today:\n\n1. Work ${best[0]?.business || "your highest-fit fresh prospect"} first.\n2. Review ${queue.filter(item => freshCampaignTask(item)).length} fresh outreach messages before sending anything.\n3. Handle already-contacted companies from Pipeline and Follow-ups only.\n4. Move to the next city when Fresh Leads reaches zero.` : "Click Start Daily Growth or run Discovery. The assistant will find, research, score, and queue outreach.";
     }
     function actionGuideSteps(){
-      const readyEmails = queue.filter(item => item.channel === "email" && sendReady(item)).length;
-      const needsApproval = queue.filter(item => item.channel === "email" && /^needs approval/i.test(item.status || "")).length;
-      const needsEmail = queue.filter(item => item.channel === "email" && sendCategory(item) === "missing").length;
+      const activeInitialEmails = queue.filter(item => item.channel === "email" && freshCampaignTask(item));
+      const readyEmails = activeInitialEmails.filter(item => sendReady(item)).length;
+      const needsApproval = activeInitialEmails.filter(item => /^needs approval/i.test(item.status || "")).length;
+      const needsEmail = activeInitialEmails.filter(item => sendCategory(item) === "missing").length;
       const followups = queue.filter(item => item.channel === "email" && (item.sequenceStep || /follow/i.test(item.title || "")) && !/sent|stopped/i.test(item.status || "")).length;
       const replies = inboxItems().length;
       const steps = [];
@@ -1195,7 +1238,7 @@
       return mobileEmailFocus() ? items.filter(item => item.channel === "email") : items;
     }
     function renderTodayWork(){
-      const readyEmails = sortTasksForAction(queue.filter(q=>q.channel==="email" && /^approved/i.test(q.status||""))).slice(0,5);
+      const readyEmails = sortTasksForAction(queue.filter(q=>q.channel==="email" && freshCampaignTask(q) && /^approved/i.test(q.status||""))).slice(0,5);
       const callTasks = queue.filter(q=>q.channel==="call" && q.status !== "Sent").slice(0,5);
       const followupTasks = sortTasksForAction(queue.filter(q=>q.channel==="email" && (q.sequenceStep || /follow/i.test(q.title || "")) && !/sent|stopped/i.test(q.status || ""))).slice(0,5);
       const followups = sortLeadsForAction(leads.filter(l=>dueToday(l.nextFollowUp) || ["Contacted","Follow-up"].includes(l.stage))).slice(0,5);
@@ -1211,7 +1254,11 @@
       document.querySelectorAll("[data-work-reply]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.workLead; switchView("automation"); });
     }
     function sendableTasks(){
-      return sortTasksForAction(mobileVisibleTasks(queue.filter(item => ["email","sms"].includes(item.channel))));
+      return sortTasksForAction(mobileVisibleTasks(queue.filter(item =>
+        ["email","sms"].includes(item.channel)
+        && !/^sent$/i.test(item.status || "")
+        && (freshCampaignTask(item) || followupTask(item))
+      )));
     }
     function sendMissingInfo(item){
       const lead = leads.find(candidate => candidate.id === item.leadId) || {};
@@ -1498,9 +1545,10 @@
       const visible = filtered();
       const pipelineCount = contactedProspects().length;
       const stage = $("stageFilter")?.value || "";
+      if (selectedId && !visible.some(lead => lead.id === selectedId)) selectedId = visible[0]?.id || "";
       if ($("crmInboxHint")) {
         $("crmInboxHint").textContent = stage
-          ? `Showing ${stage} records. Contacted prospects normally live in Pipeline.`
+          ? `Showing fresh ${stage} records only. Contacted prospects live in Pipeline.`
           : `${pipelineCount} contacted prospect${pipelineCount === 1 ? "" : "s"} moved to Pipeline. CRM Inbox shows uncontacted prospects only.`;
       }
       $("leadList").innerHTML = visible.map(leadRowHtml).join("") || (stage
@@ -1510,7 +1558,7 @@
     }
     function renderDetail(){
       const l = selected();
-      if(!l){ $("leadDetail").innerHTML = `<h2>No prospects yet</h2><p class="sub">Go to Discovery, search a trade and market, then prospects will appear here.</p>`; return; }
+      if(!l || workedProspect(l)){ $("leadDetail").innerHTML = `<h2>No fresh CRM prospect selected</h2><p class="sub">Go to Discovery for new prospects. Already emailed companies are kept in Pipeline, Follow-ups, and Sent History.</p>`; return; }
       const sentEmails = leadSentEmails(l);
       const conversation = leadConversation(l);
       $("leadDetail").innerHTML = `<div class="lead-top"><div><h2>${esc(l.business)}</h2><p class="sub">${esc(l.trade)} | ${esc(l.phone || "No phone")} | ${esc(l.email || "No email")} | ${esc(l.website || l.mapsUrl || "")}</p></div><span class="tag ${tagClass(l.callCatchFitScore)}">${esc(l.aiOpportunityLevel)}</span></div>
@@ -1590,7 +1638,7 @@
           }
         }
       });
-      const visibleQueue = mobileVisibleTasks(queue);
+      const visibleQueue = mobileVisibleTasks(queue.filter(freshCampaignTask));
       $("approvalQueue").innerHTML = visibleQueue.length ? visibleQueue.map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag warn">${esc(item.status)}</span></div><p class="hint">Task ID: ${esc(item.id)} | Lead ID: ${esc(item.leadId || "")}</p>${["email","sms"].includes(item.channel) ? `<div class="insights">${sendChecklist(item).map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${item.channel === "sms" ? "Recipient Phone" : "Recipient Email"}</label><input data-to="${item.id}" value="${esc(item.to || item.recipient || "")}" placeholder="${item.channel === "sms" ? "Auto-filled from business phone when available" : "Auto-filled when a public email is found"}"></div>` : ""}<div class="script" style="margin-top:8px;">${esc(item.body)}</div><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-approve="${item.id}">Mark Approved</button>${["email","sms"].includes(item.channel)?`<button class="btn small" data-sendnow="${item.id}">Send Now</button><button class="btn small" data-schedule="${item.id}" data-when="today 2 pm">Today 2 PM</button><button class="btn small" data-schedule="${item.id}" data-when="tomorrow 9 am">Tomorrow 9 AM</button><button class="btn small" data-schedule="${item.id}" data-when="next monday 8 am">Next Monday 8 AM</button>`:""}<button class="btn small" data-remove="${item.id}">Remove</button></div></div>`).join("") : `<p class="sub">${mobileEmailFocus() ? "No email outreach waiting for approval." : "No generated outreach waiting for approval."}</p>`;
       bindQueueActions();
     }
