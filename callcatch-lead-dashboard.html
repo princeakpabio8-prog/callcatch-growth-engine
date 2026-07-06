@@ -486,7 +486,7 @@
 
       <section class="view" id="pipeline"><div class="top"><div><h1>Pipeline</h1><p class="sub">Every emailed or contacted prospect appears here on mobile and desktop.</p></div><div class="actions"><button class="btn" id="recoverPipelineBtn" type="button">Refresh Contacted</button><button class="btn primary" id="restoreResendBtn" type="button">Restore from Resend</button></div></div><div class="panel" style="margin-bottom:14px;"><div class="lead-top"><div><h2>Pipeline Memory</h2><p class="sub" id="pipelineMemoryText">Checking saved contacted history...</p></div><span class="tag" id="pipelineMemoryStorage">Storage</span></div><div class="stats" id="pipelineMemoryStats"></div></div><div class="panel" style="margin-bottom:14px;"><div class="lead-top"><div><h2>Already Contacted</h2><p class="sub">Prospects with sent emails, replies, or last contact history.</p></div><span class="tag hot" id="contactedCount">0</span></div><div class="queue" id="contactedPipelineList"></div></div><div class="pipeline" id="pipelineBoard"></div></section>
       <section class="view" id="automation">
-        <div class="top"><div><h1>Campaigns & Approval Queue</h1><p class="sub">Create multi-step campaigns. Emails send only after approval and SMTP setup.</p></div><div class="actions"><button class="btn" id="syncBtn" type="button">Sync All</button><button class="btn" id="emailStatusBtn" type="button">Check Email</button><button class="btn" id="sendApprovedBtn" type="button">Send All Approved</button><button class="btn primary" id="generateQueueBtn" type="button">Enroll Qualified Leads</button></div></div>
+        <div class="top"><div><h1>Campaigns & Approval Queue</h1><p class="sub">Create multi-step campaigns. Emails send only after approval and SMTP setup.</p></div><div class="actions"><button class="btn" id="syncBtn" type="button">Sync All</button><button class="btn" id="refreshDraftsBtn" type="button">Refresh Email Drafts</button><button class="btn" id="emailStatusBtn" type="button">Check Email</button><button class="btn" id="sendApprovedBtn" type="button">Send All Approved</button><button class="btn primary" id="generateQueueBtn" type="button">Enroll Qualified Leads</button></div></div>
         <div class="panel"><div class="form-grid"><div><label for="campaignName">Campaign Name</label><input id="campaignName" value="Default Outbound Sequence"></div><div><label for="campaignFit">Minimum Fit Score</label><input id="campaignFit" type="number" value="68"></div><div><label for="campaignTrade">Trade Filter</label><select id="campaignTrade"><option value="">All trades</option></select></div><div><label>Safety</label><input value="Review before sending" disabled></div></div><p class="hint">Sequence: Day 1 email, Day 3 LinkedIn, Day 5 follow-up email, Day 7 phone reminder, Day 10 final email.</p></div>
         <div class="panel" style="margin-top:12px;"><h2>Email Adapter</h2><div class="form-grid"><div><label for="testEmail">Test Recipient</label><input id="testEmail" placeholder="you@example.com"></div><div><label>Status</label><input id="emailStatus" value="Not checked" disabled></div><div><label>Provider</label><input id="emailProvider" value="-" disabled></div><div><label>Action</label><button class="btn primary" id="sendTestBtn" type="button">Send Email Test</button></div></div><p class="hint">Email API keys and SMTP credentials stay in Render environment variables. The browser never stores your sending secrets.</p></div>
         <div class="panel mobile-non-email" style="margin-top:12px;"><h2>SMS Adapter</h2><div class="form-grid"><div><label for="testSms">Test Phone</label><input id="testSms" placeholder="+15551234567"></div><div><label>Status</label><input id="smsStatus" value="Not checked" disabled></div><div><label>Provider</label><input id="smsProvider" value="-" disabled></div><div><label>Action</label><button class="btn primary" id="sendSmsTestBtn" type="button">Send SMS Test</button></div></div><p class="hint">Twilio credentials stay in Render. Use E.164 phone format, for example +12145550123.</p></div>
@@ -1209,15 +1209,27 @@
       item.title = item.title || "Cold Email";
       return item;
     }
-    function upgradeLegacyQueueDrafts(){
+    function upgradeLegacyQueueDrafts(force = false){
       let upgraded = 0;
       queue.forEach(item => {
-        if (legacyEmailDraft(item)) {
+        if (legacyEmailDraft(item) || (force && item.channel === "email" && !/^sent$/i.test(item.status || "") && !item.editedAt && (freshCampaignTask(item) || followupTask(item)))) {
           upgradeLegacyDraft(item);
+          if (/^approved/i.test(item.status || "")) item.status = "Needs Approval";
           upgraded += 1;
         }
       });
       return upgraded;
+    }
+    function refreshEmailDrafts(){
+      const upgraded = upgradeLegacyQueueDrafts(true);
+      if (upgraded) {
+        save();
+        syncCrm(true).then(render);
+        toast(`${upgraded} email draft${upgraded === 1 ? "" : "s"} refreshed`);
+      } else {
+        toast("No unedited email drafts to refresh");
+      }
+      render();
     }
     function outreach(lead){
       const profile = weaknessProfile(lead);
@@ -2241,7 +2253,7 @@
         ? `File preview mode: API calls will use ${PRODUCTION_API_BASE}. For best results, open the Render app directly.`
         : "API connected through this app. Search results become CRM records automatically.";
       document.querySelectorAll(".nav-btn").forEach(b=>b.onclick=()=>switchView(b.dataset.view));
-      $("searchBtn").onclick=search; $("saveSearchBtn").onclick=saveSearch; $("importBtn").onclick=importCsv; $("generateQueueBtn").onclick=enrollCampaign; $("syncBtn").onclick=()=>syncEverywhere(false); $("startGrowthBtn").onclick=startDailyGrowth; $("emailStatusBtn").onclick=()=>checkEmailStatus(false); $("sendTestBtn").onclick=sendTestEmail; $("sendSmsTestBtn").onclick=sendTestSms; $("sendApprovedBtn").onclick=sendApprovedEmails; $("saveSendingBtn").onclick=saveSendingLimits; $("runDueBtn").onclick=runDueScheduled; $("followupBtn").onclick=generateFollowups; $("recordReplyBtn").onclick=recordReply; $("recoverPipelineBtn").onclick=()=>syncEverywhere(false); $("restoreResendBtn").onclick=restoreFromResend;
+      $("searchBtn").onclick=search; $("saveSearchBtn").onclick=saveSearch; $("importBtn").onclick=importCsv; $("generateQueueBtn").onclick=enrollCampaign; $("syncBtn").onclick=()=>syncEverywhere(false); $("refreshDraftsBtn").onclick=refreshEmailDrafts; $("startGrowthBtn").onclick=startDailyGrowth; $("emailStatusBtn").onclick=()=>checkEmailStatus(false); $("sendTestBtn").onclick=sendTestEmail; $("sendSmsTestBtn").onclick=sendTestSms; $("sendApprovedBtn").onclick=sendApprovedEmails; $("saveSendingBtn").onclick=saveSendingLimits; $("runDueBtn").onclick=runDueScheduled; $("followupBtn").onclick=generateFollowups; $("recordReplyBtn").onclick=recordReply; $("recoverPipelineBtn").onclick=()=>syncEverywhere(false); $("restoreResendBtn").onclick=restoreFromResend;
       $("refreshSetupBtn").onclick=()=>runSetupChecks(false);
       $("sendCenterSyncBtn").onclick=()=>syncEverywhere(false);
       $("sendCenterSendAllBtn").onclick=sendApprovedEmails;
