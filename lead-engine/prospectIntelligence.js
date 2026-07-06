@@ -132,109 +132,128 @@ function cityState(lead) {
 }
 
 function subjectLine(lead, profile, variant) {
-  const shortSubjects = [
-    `Quick idea for ${lead.business}`,
-    `Possible missed calls at ${lead.business}`,
-    `Question about ${lead.business}`,
-    `Thought this might help ${lead.business}`
+  const subjects = [
+    `Quick question for ${lead.business}`,
+    `A missed-call idea for ${lead.business}`,
+    `Thought this may help ${lead.business}`,
+    `Question about your service calls`,
+    `One idea for your office team`,
+    `A quick thought on missed calls`
   ];
-  const longSubjects = [
-    `Helping ${lead.business} capture more ${emergencyTrade(lead.trade) ? "emergency jobs" : "service calls"}`,
-    `One idea for your dispatch team`,
-    `Potential revenue ${lead.business} may be missing`
-  ];
-  return pick(variant === "B" ? longSubjects : shortSubjects, `${lead.id || lead.business}:${variant}:${Date.now()}`);
+  return pick(subjects, `${lead.id || lead.business}:${profile.weakness}:${variant}:${Date.now()}`);
 }
 
 function greeting(lead) {
   return pick([
     `Hi ${businessTeam(lead)},`,
-    `Good morning ${businessTeam(lead)},`
-  ], lead.business);
+    `Hi there,`,
+    `Good morning ${businessTeam(lead)},`,
+    `Good afternoon ${businessTeam(lead)},`
+  ], `${lead.business}:${Date.now()}`);
 }
 
-function researchedOpening(lead, profile) {
+function realObservation(lead) {
   const city = cityState(lead);
   const scan = lead.websiteIntelligence || {};
   const reviews = Number(lead.reviews || 0);
-  if (scan.emergencyService || emergencyTrade(lead.trade)) return `I came across ${lead.business} while researching ${lead.trade || "home service"} companies in ${city} and noticed emergency work appears to be important for your team.`;
-  if (scan.noOnlineBooking) return `While looking through ${lead.business}, I noticed customers may not have a clear online booking path when they need help quickly.`;
-  if (scan.financing) return `I noticed ${lead.business} mentions financing, which usually means a missed call can mean a higher-value job is at risk.`;
-  if (reviews >= 100) return `I saw ${lead.business} has built a strong review base in ${city}, which tells me homeowners already trust the company.`;
-  if ((scan.trustSignals || []).length) return `While looking through ${lead.business}, I noticed trust signals like ${(scan.trustSignals || []).slice(0, 2).join(" and ")}, which usually means inbound calls are valuable.`;
-  if ((scan.serviceKeywords || []).length) return `I came across ${lead.business} while reviewing ${lead.trade || "home service"} companies in ${city} and noticed you mention ${(scan.serviceKeywords || []).slice(0, 2).join(" and ")}.`;
-  if (lead.website) return `I came across ${lead.business} while reviewing ${lead.trade || "home service"} companies serving ${city}.`;
-  return `I came across ${lead.business} while researching ${lead.trade || "home service"} companies in ${city}.`;
+  const rating = Number(lead.rating || 0);
+  if (scan.emergencyService) return `I was looking through your website and noticed you advertise emergency service.`;
+  if (scan.financing) return `I was looking through your website and saw that you mention financing options.`;
+  if ((scan.bookingSoftware || []).length) return `I noticed online scheduling appears to be available on your site.`;
+  if (scan.liveChat || scan.aiChatbot) return `I noticed your website already gives visitors a way to start a conversation quickly.`;
+  if ((scan.serviceKeywords || []).some(item => /same day|24|emergency|repair/i.test(item))) return `I noticed your website focuses on urgent service requests.`;
+  if (reviews >= 100 && rating) return `I saw that your company has built a strong local reputation with more than ${reviews.toLocaleString()} reviews.`;
+  if ((scan.trustSignals || []).length) return `I noticed your site highlights ${scan.trustSignals[0]}, which usually means trust matters in the first customer interaction.`;
+  if (scan.noOnlineBooking) return `I was looking through your website and did not see a clear online booking path for urgent requests.`;
+  if (lead.website) return `I came across your company while researching ${lead.trade || "home service"} businesses in the ${city} area.`;
+  return `I came across your company while researching ${lead.trade || "home service"} businesses in the ${city} area.`;
 }
 
-function valueProposition(lead, profile) {
+function problemSentence(lead, profile) {
   const scan = lead.websiteIntelligence || {};
-  if (scan.emergencyService || emergencyTrade(lead.trade)) return `For emergency calls, speed matters. CallCatch texts missed callers right away so they do not call the next contractor while your team is busy.`;
-  if (scan.financing) return `For financed jobs, one missed call can be expensive. CallCatch helps protect those opportunities by keeping the customer engaged until your team can respond.`;
-  if (/commercial/i.test([lead.googleDescription, lead.description, lead.notes, lead.area].join(" "))) return `For commercial requests, timing can decide whether the job stays with you or moves to another provider. CallCatch keeps the conversation alive after a missed call.`;
-  return `For homeowners, response speed matters. CallCatch gives missed callers an instant reply and a simple next step instead of leaving them waiting.`;
+  if (scan.emergencyService || emergencyTrade(lead.trade)) {
+    return `When someone has an urgent service issue, they rarely wait long or leave a voicemail. Most simply call the next contractor who answers.`;
+  }
+  if (scan.financing) {
+    return `For higher-value jobs, one missed call can quietly turn into a lost opportunity before anyone on the team has a chance to call back.`;
+  }
+  if (/commercial/i.test([lead.googleDescription, lead.description, lead.notes, lead.area].join(" "))) {
+    return `Commercial and homeowner calls can both move fast, especially when the customer is comparing several providers at once.`;
+  }
+  if (profile.weakness === "small team") {
+    return `Busy service companies often lose opportunities simply because technicians are in the field and nobody can answer immediately.`;
+  }
+  return `The hard part is that callers do not usually wait around anymore. If nobody answers, they often keep searching within minutes.`;
+}
+
+function callCatchIntro() {
+  return `That is exactly why I built CallCatch. It automatically responds to missed callers by text within seconds, helping keep potential customers engaged until someone can call them back.`;
 }
 
 function revenueSentence(lead) {
   const value = Number(lead.revenueOpportunityEstimate || 0);
   if (!value) return `Even a few recovered missed callers each month can make a real difference.`;
-  return `Based on businesses similar to yours, even recovering one additional missed ${emergencyTrade(lead.trade) ? "emergency " : ""}call every few days could represent roughly $${value.toLocaleString()}/month in additional booked work.`;
-}
-
-function socialProof() {
-  return pick([
-    `Most homeowners call the next contractor within minutes when they cannot reach someone.`,
-    `Callers rarely leave voicemail anymore, especially when the job feels urgent.`,
-    `A fast first response often decides whether the customer waits or keeps searching.`
-  ], String(Date.now()));
+  return `Based on businesses similar to yours, recovering just one additional missed ${emergencyTrade(lead.trade) ? "emergency " : ""}call every few days could represent roughly $${value.toLocaleString()} in additional booked work each month.`;
 }
 
 function cta(variant) {
-  const shortCtas = [
-    `Would you be open to a quick 10-minute walkthrough next week?`,
-    `Would Tuesday or Wednesday work for a short walkthrough?`,
-    `Happy to show you how it works in less than 10 minutes.`
+  const ctas = [
+    `Would you be open to a quick 10-minute demo sometime next week?`,
+    `Happy to show you how it works if you are curious.`,
+    `If it sounds useful, I would be glad to walk you through it.`,
+    `No pressure. I just thought it might be worth sharing.`
   ];
-  const longCtas = [
-    `No pressure. I thought it might be useful to see how it would work for your team.`,
-    `If it looks useful, we can map it around your current call flow.`,
-    `Worth taking a quick look next week?`
-  ];
-  return pick(variant === "B" ? longCtas : shortCtas, variant);
+  return pick(ctas, `${variant}:${Date.now()}`);
 }
 
 function signature() {
-  return `Best,\n\nPrince Esien\nFounder, CallCatch\nEmail: hello@callcatch.site\nWeb: https://callcatch.site\n\nHelping home service businesses recover missed revenue.`;
+  return `Best,\n\nPrince Esien\nFounder | CallCatch\nhello@callcatch.site\nhttps://callcatch.site\n\nHelping home service businesses recover missed revenue.`;
+}
+
+function cleanEmailText(text, lead) {
+  let cleaned = String(text || "")
+    .replace(/\bFREE\b/gi, "no-cost")
+    .replace(/\bLIMITED OFFER\b/gi, "short note")
+    .replace(/\bBUY NOW\b/gi, "take a look")
+    .replace(/\bACT NOW\b/gi, "take a look")
+    .replace(/\bGUARANTEED\b/gi, "designed")
+    .replace(/\bBEST EVER\b/gi, "useful")
+    .replace(/!{2,}/g, ".")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  const city = cityState(lead);
+  const cityPattern = city && city !== "your area" ? new RegExp(city.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g") : null;
+  if (cityPattern) {
+    let seen = 0;
+    cleaned = cleaned.replace(cityPattern, match => (++seen <= 1 ? match : "your area"));
+  }
+
+  const words = cleaned.split(/\s+/);
+  if (words.length > 170) {
+    const signatureText = signature();
+    const body = cleaned.replace(signatureText, "").trim().split(/\s+/).slice(0, Math.max(80, 170 - signatureText.split(/\s+/).length)).join(" ");
+    cleaned = `${body}\n\n${signatureText}`;
+  }
+  return cleaned;
 }
 
 function emailBody(lead, variant) {
   const profile = weaknessProfile(lead);
-  const opening = researchedOpening(lead, profile);
-  const value = valueProposition(lead, profile);
+  const observation = realObservation(lead);
+  const problem = problemSentence(lead, profile);
+  const intro = callCatchIntro();
   const revenue = revenueSentence(lead);
-  const proof = socialProof();
   const subject = subjectLine(lead, profile, variant);
-  const parts = variant === "A"
-    ? [
-        `Subject: ${subject}`,
-        greeting(lead),
-        opening,
-        `${value} ${revenue}`,
-        cta(variant),
-        signature()
-      ]
-    : [
-        `Subject: ${subject}`,
-        greeting(lead),
-        opening,
-        `The reason I am reaching out is ${profile.pain}.`,
-        value,
-        revenue,
-        proof,
-        cta(variant),
-        signature()
-      ];
-  return parts.join("\n\n");
+  const parts = [
+    `Subject: ${subject}`,
+    greeting(lead),
+    `${observation} ${problem}`,
+    `${intro} ${revenue}`,
+    cta(variant),
+    signature()
+  ];
+  return cleanEmailText(parts.join("\n\n"), lead);
 }
 
 function estimateRevenue(lead, scan = {}) {
