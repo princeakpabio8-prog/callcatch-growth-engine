@@ -2092,10 +2092,10 @@
     }
     async function search(){
       if($("source").value!=="Free Public Sources"){ $("finderStatus").textContent="That provider is a future adapter slot."; return; }
-      $("finderStatus").textContent="Deep researching prospects: finding businesses, scanning websites, and keeping email-ready leads...";
+      $("finderStatus").textContent="Finding prospects fast. Deeper website research runs when you open a lead, draft outreach, or send.";
       const area = [$("city").value, $("state").value].filter(Boolean).join(", ");
       try {
-        const payload = await api("/api/leads",{method:"POST",body:JSON.stringify({trade:$("trade").value,country:selectedCountry(),city:$("city").value,area,state:$("state").value,zip:$("zip").value,radius:$("radius").value,count:$("count").value,deepResearch:true})});
+        const payload = await api("/api/leads",{method:"POST",body:JSON.stringify({trade:$("trade").value,country:selectedCountry(),city:$("city").value,area,state:$("state").value,zip:$("zip").value,radius:$("radius").value,count:$("count").value,deepResearch:false})});
         renderMarketSuggestions(payload.search?.suggestions || []);
         const added = upsertLeads(payload.leads || []);
         const warning = (payload.errors || []).length ? ` Warning: ${payload.errors[0]}` : "";
@@ -2103,10 +2103,10 @@
         const needsEmailCount = (payload.leads || []).length - emailReadyCount;
         const skipped = lastImportStats.skippedNoEmail ? ` Skipped ${lastImportStats.skippedNoEmail} unusable records.` : "";
         const duplicates = lastImportStats.duplicates ? ` Merged ${lastImportStats.duplicates} duplicates.` : "";
-        const researched = payload.search?.candidatesResearched ? ` Researched ${payload.search.candidatesResearched} candidates.` : "";
+        const researched = payload.search?.candidatesResearched ? ` Checked ${payload.search.candidatesResearched} candidates.` : "";
         const guidance = payload.leads.length ? "" : " Try one of the suggested markets below or broaden the radius.";
         const sourceTip = payload.search?.serperEnabled ? "" : " Deep web search is off; add SERPER_API_KEY on Render for more websites and emails.";
-        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} CRM prospects from ${payload.source || "public sources"}. Email-ready: ${emailReadyCount}. Needs email: ${needsEmailCount}.${researched}${skipped}${duplicates}${warning}${guidance}${sourceTip}`;
+        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} CRM prospects from ${payload.source || "public sources"}. Email-ready: ${emailReadyCount}. Needs email: ${needsEmailCount}.${researched}${skipped}${duplicates}${warning}${guidance}${sourceTip} Open a lead and use Research + Draft for deeper scanning.`;
         if ((payload.leads || []).length) switchView("crm");
         toast(`${added} prospects added`);
       } catch(e){ $("finderStatus").textContent=e.message + `. Check ${apiUrl("/api/network-check")} to verify public data access.`; toast("Search failed"); }

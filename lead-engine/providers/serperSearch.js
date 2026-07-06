@@ -185,19 +185,17 @@ async function findOfficialWebsite(lead = {}) {
 
 async function enrichWithSerperWebsites(leads = [], { limit = 12 } = {}) {
   if (!configured()) return leads;
-  const output = [];
   let enriched = 0;
-  for (const lead of leads) {
+  const jobs = leads.map(async lead => {
     if (enriched < limit && (!lead.website || isDirectoryUrl(lead.website))) {
+      enriched += 1;
       try {
-        output.push(await findOfficialWebsite(lead));
-        enriched += 1;
-        continue;
+        return await findOfficialWebsite(lead);
       } catch {}
     }
-    output.push(lead);
-  }
-  return output;
+    return lead;
+  });
+  return Promise.all(jobs);
 }
 
 module.exports = {

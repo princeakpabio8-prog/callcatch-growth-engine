@@ -194,15 +194,15 @@ async function deepResearchLeads(leads, { count, errors }) {
       const bHasWebsite = b.website ? 1 : 0;
       return (bHasEmail - aHasEmail) || (bHasWebsite - aHasWebsite) || (b.aiLeadQualityScore - a.aiLeadQualityScore);
     })
-    .slice(0, Math.max(count * 3, 12));
+    .slice(0, Math.min(Math.max(count * 2, 8), 12));
 
-  const researched = await mapInBatches(candidates, 4, async lead => {
+  const researched = await mapInBatches(candidates, 5, async lead => {
     const url = researchUrl(lead);
     if (!url) {
       return { ...lead, researchDepth: "listing-only", deepQualityScore: deepQualityScore(lead) };
     }
     try {
-      const scan = await withTimeout(scanWebsite(url), 18000, `Website research for ${lead.business}`);
+      const scan = await withTimeout(scanWebsite(url), 9000, `Website research for ${lead.business}`);
       const email = lead.email || (scan.emails || [])[0] || "";
       const phone = lead.phone || (scan.phones || [])[0] || "";
       const enriched = enrichProspect({ ...lead, email, phone }, scan);
@@ -352,6 +352,7 @@ async function searchLeads(input = {}) {
   const radius = Number(input.radius || 25);
   const area = buildArea(input);
   const count = Math.max(1, Math.min(Number(input.count) || 10, 50));
+  const wantsDeepResearch = input.deepResearch === true;
   const key = JSON.stringify({
     trade,
     country,
@@ -360,7 +361,7 @@ async function searchLeads(input = {}) {
     count,
     minRating: input.minRating || 0,
     maxReviews: input.maxReviews || 0,
-    deepResearch: input.deepResearch !== false
+    deepResearch: wantsDeepResearch
   });
 
   const cached = cache.get(key);
@@ -371,14 +372,21 @@ async function searchLeads(input = {}) {
     .sort((a, b) => b.aiLeadQualityScore - a.aiLeadQualityScore)
     .slice(0, Math.max(count * 4, count));
   if (serperConfigured()) {
-    leads = await enrichWithSerperWebsites(leads, { limit: Math.min(16, Math.max(count * 2, 8)) });
+    leads = await withTimeout(
+      enrichWithSerperWebsites(leads, { limit: Math.min(8, Math.max(count, 4)) }),
+      12000,
+      "Serper website enrichment"
+    ).catch(error => {
+      providerResult.errors.push(error.message);
+      return leads;
+    });
     leads = dedupe(leads).map(enrichLead);
   } else if (braveConfigured()) {
     leads = await enrichWithBraveWebsites(leads, { limit: Math.min(12, Math.max(count * 2, 8)) });
     leads = dedupe(leads).map(enrichLead);
   }
   const beforeDeepResearch = leads.length;
-  leads = input.deepResearch === false
+  leads = !wantsDeepResearch
     ? leads.sort((a, b) => (b.email ? 1 : 0) - (a.email ? 1 : 0) || b.aiLeadQualityScore - a.aiLeadQualityScore).slice(0, count)
     : await deepResearchLeads(leads, { count, errors: providerResult.errors });
   if (!leads.length && beforeDeepResearch) {
@@ -408,7 +416,7 @@ async function searchLeads(input = {}) {
       state: providerResult.location.state,
       country,
       countryLabel: countryLabel(country),
-      deepResearch: input.deepResearch !== false,
+      deepResearch: wantsDeepResearch,
       serperEnabled: serperConfigured(),
       braveEnabled: braveConfigured(),
       candidatesResearched: beforeDeepResearch,
