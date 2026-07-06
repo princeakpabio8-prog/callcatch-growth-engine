@@ -246,30 +246,29 @@ async function runProviders(params) {
     const fallback = isUnitedStates(country) ? fallbackLocation({ area: params.area, city: params.city, state: params.state }) : null;
     if (!fallback) {
       errors.push(`Location lookup failed for "${params.area}" in ${countryLabel(country)}: ${error.message}`);
-      return {
-        leads: [],
-        errors,
-        cached: false,
-        location: {
-          city: params.city || "",
-          state: params.state || "",
-          displayName: params.area,
-          country: countryLabel(country),
-          countryCode: country,
-          source: "unresolved"
-        }
+      location = {
+        city: params.city || "",
+        state: params.state || "",
+        displayName: params.area,
+        country: countryLabel(country),
+        countryCode: country,
+        source: "unresolved"
       };
+    } else {
+      location = fallback;
+      errors.push(`Nominatim unavailable, used local fallback for ${fallback.city}, ${fallback.state}: ${error.message}`);
     }
-    location = fallback;
-    errors.push(`Nominatim unavailable, used local fallback for ${fallback.city}, ${fallback.state}: ${error.message}`);
   }
-  const providers = [
-    searchOpenStreetMap({
+  const providers = [];
+  if (location.bbox) {
+    providers.push(searchOpenStreetMap({
       trade: params.trade,
       location,
       count: params.count
-    })
-  ];
+    }));
+  } else {
+    errors.push("Map search skipped because the market could not be geocoded; web search providers will still run.");
+  }
   if (braveConfigured()) {
     providers.push(searchBrave({
       trade: params.trade,
@@ -294,7 +293,7 @@ async function runProviders(params) {
       cached = cached || Boolean(result.value.cached);
       leads.push(...result.value.leads);
     } else {
-      errors.push(`OpenStreetMap provider failed: ${result.reason.message}`);
+      errors.push(`Lead provider failed: ${result.reason.message}`);
     }
   }
 

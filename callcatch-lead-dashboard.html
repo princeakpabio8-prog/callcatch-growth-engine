@@ -705,6 +705,11 @@
         $("finderStatus").textContent = `Ready to search ${$("trade").value} in ${[$("city").value,$("state").value].filter(Boolean).join(", ")}.`;
       });
     }
+    function nextFreshAction(lead = {}){
+      if (lead.email) return { label:"Research + Draft", tone:"primary", title:"Scan the website, refresh the email, and queue outreach." };
+      if (lead.website || lead.facebook) return { label:"Find Email + Draft", tone:"primary", title:"Scan the website and public pages for an email, then draft outreach if found." };
+      return { label:"Research Lead", tone:"", title:"Open the lead and add a website or email before sending." };
+    }
     function formatDateTime(value){
       if (!value) return "";
       const parsed = new Date(value);
@@ -1303,15 +1308,15 @@
         call: `Opening: I help ${lead.trade} companies fix ${profile.weakness}.\nObservation: ${profile.pain}.\nDiscovery: When do you miss the most calls: after hours, on jobs, while driving, or during peak demand?\nClose: Want to see what the missed caller receives in the first 30 seconds?`
       };
     }
-    async function queueOutreach(lead, notify=true){
+    async function queueOutreach(lead, notify=true, options = {}){
       if (workedProspect(lead) || leadMatchesWorkedRecipient({ channel:"email", to:lead.email, business:lead.business, website:lead.website, city:lead.city, state:lead.state })) {
         if (notify) toast("Already contacted. Use Pipeline for follow-up.");
-        return;
+        return [];
       }
       let assets = outreach(lead);
       try {
-        if (!notify) throw new Error("Use instant local generation for background queues");
-        toast(lead.website && !lead.websiteIntelligence ? "Scanning website, then writing outreach..." : "Writing personalized outreach...");
+        if (!notify && !options.scan) throw new Error("Use instant local generation for background queues");
+        if (notify) toast(lead.website && !lead.websiteIntelligence ? "Scanning website, then writing outreach..." : "Writing personalized outreach...");
         const generated = await api("/api/outreach/generate", { method:"POST", body: JSON.stringify({ lead, scan: true }) });
         if (generated.lead) {
           Object.assign(lead, normalizeLead(generated.lead));
@@ -1335,16 +1340,70 @@
         { channel:"linkedin", title:"LinkedIn Message", body:assets.linkedin },
         { channel:"call", title:"Cold Call Script", body:assets.call }
       ].filter(item => !mobileEmailFocus() || item.channel === "email");
+      const createdDrafts = [];
       outreachItems.forEach(item => {
         const recipient = item.channel === "email" ? (lead.email || "") : item.channel === "sms" ? (lead.phone || "") : "";
         const draft = { id:id(), leadId:lead.id, business:lead.business, ...item, to: recipient, recipient, status:"Needs Approval", createdAt:now() };
         const fp = sendFingerprint(draft);
         const exists = queue.some(existing => existing.leadId === lead.id && existing.channel === draft.channel && (existing.sendFingerprint || sendFingerprint(existing)) === fp && existing.status !== "Sent");
-        if (!exists) queue.unshift({ ...draft, sendFingerprint: fp });
+        if (!exists) {
+          const savedDraft = { ...draft, sendFingerprint: fp };
+          queue.unshift(savedDraft);
+          createdDrafts.push(savedDraft);
+        }
       });
       queue = compactEmailDuplicates(queue);
       addTimeline(lead, "Email outreach draft generated and queued for approval");
-      save(); syncCrm(true); if(notify){ sendCenterFilter="approval"; switchView("sendcenter"); toast("Personalized outreach queued"); }
+      save(); syncCrm(true);
+      if(notify){
+        sendCenterFilter="approval";
+        if (options.openQueue !== false) switchView("sendcenter");
+        toast("Personalized outreach queued");
+      }
+      return createdDrafts;
+    }
+    async function researchDraftAndMaybeSend(leadId, sendImmediately = false){
+      const lead = leads.find(item => item.id === leadId);
+      if (!lead) { toast("Lead not found"); return false; }
+      if (workedProspect(lead)) { toast("Already contacted. Use Pipeline for follow-up."); return false; }
+      selectedId = lead.id;
+      const label = sendImmediately ? "Researching, approving, and sending..." : "Researching and drafting...";
+      toast(label);
+      const existingIds = new Set(queue.map(item => item.id));
+      const drafts = await queueOutreach(lead, false, { scan: true });
+      const emailDraft = (drafts || []).find(item => item.channel === "email")
+        || queue.find(item => item.leadId === lead.id && item.channel === "email" && !existingIds.has(item.id))
+        || queue.find(item => item.leadId === lead.id && item.channel === "email" && !/^sent$/i.test(item.status || ""));
+      if (!emailDraft) {
+        render();
+        toast("No email draft created yet. Add an email or website, then try again.");
+        return false;
+      }
+      if (!emailDraft.to && !emailDraft.recipient && lead.email) {
+        emailDraft.to = lead.email;
+        emailDraft.recipient = lead.email;
+      }
+      if (!emailDraft.to && !emailDraft.recipient) {
+        sendCenterFilter = "missing";
+        save();
+        render();
+        toast("Research finished, but no email was found yet.");
+        return false;
+      }
+      emailDraft.status = "Needs Approval";
+      save();
+      if (sendImmediately) {
+        emailDraft.status = "Approved - not sent";
+        emailDraft.approvedAt = now();
+        save();
+        sendCenterFilter = "ready";
+        render();
+        return sendNow(emailDraft.id);
+      }
+      sendCenterFilter = "approval";
+      render();
+      toast("Draft ready for approval");
+      return true;
     }
     function statData(){
       const freshLeads = leads.filter(lead => !workedProspect(lead));
@@ -1721,7 +1780,8 @@
     }
     function leadRowHtml(l){
       const emailStatus = leadEmailStatus(l);
-      return `<div class="lead-row ${l.id===selectedId?"active":""}" data-id="${l.id}"><div class="lead-top"><div class="lead-name">${esc(l.business)}</div><span class="tag ${tagClass(l.deepQualityScore || l.callCatchFitScore)}">${l.deepQualityScore || l.callCatchFitScore}</span></div><div class="meta"><span>${esc(l.trade)}</span><span>${esc([l.city,l.state].filter(Boolean).join(", ") || l.area || "")}</span><span>${esc(l.stage)}</span><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}${emailStatus.detail ? ` ${esc(emailStatus.detail)}` : ""}</span>${l.email ? `<span class="tag hot">Email Ready</span>` : `<span class="tag bad">Needs Email</span>`}${l.researchDepth ? `<span class="tag">Research: ${esc(l.researchDepth)}</span>` : ""}${l.phone ? `<span class="tag">Phone</span>` : ""}</div></div>`;
+      const action = nextFreshAction(l);
+      return `<div class="lead-row ${l.id===selectedId?"active":""}" data-id="${l.id}"><div class="lead-top"><div class="lead-name">${esc(l.business)}</div><span class="tag ${tagClass(l.deepQualityScore || l.callCatchFitScore)}">${l.deepQualityScore || l.callCatchFitScore}</span></div><div class="meta"><span>${esc(l.trade)}</span><span>${esc([l.city,l.state].filter(Boolean).join(", ") || l.area || "")}</span><span>${esc(l.stage)}</span><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}${emailStatus.detail ? ` ${esc(emailStatus.detail)}` : ""}</span>${l.email ? `<span class="tag hot">Email Ready</span>` : `<span class="tag bad">Needs Email</span>`}${l.researchDepth ? `<span class="tag">Research: ${esc(l.researchDepth)}</span>` : ""}${l.phone ? `<span class="tag">Phone</span>` : ""}</div><div class="actions" style="margin-top:10px;"><button class="btn ${action.tone} small" data-smart-outreach="${l.id}" title="${esc(action.title)}">${esc(action.label)}</button><button class="btn small" data-open-fresh="${l.id}">Open</button></div></div>`;
     }
     function renderList(){
       const visible = filtered();
@@ -1736,7 +1796,9 @@
       $("leadList").innerHTML = visible.map(leadRowHtml).join("") || (stage
         ? `<p class="sub">No ${esc(stage)} prospects found here.</p>`
         : `<p class="sub">No uncontacted CRM prospects. Run Discovery for new prospects, or open Pipeline for contacted companies.</p>`);
-      document.querySelectorAll(".lead-row").forEach(row=>row.onclick=()=>{selectedId=row.dataset.id; render();});
+      document.querySelectorAll(".lead-row").forEach(row=>row.onclick=event=>{ if (!event.target.closest("button")) { selectedId=row.dataset.id; render(); } });
+      document.querySelectorAll("[data-open-fresh]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); selectedId=button.dataset.openFresh; render(); });
+      document.querySelectorAll("[data-smart-outreach]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); researchDraftAndMaybeSend(button.dataset.smartOutreach); });
     }
     function renderDetail(){
       const l = selected();
@@ -1749,14 +1811,15 @@
       <p class="sub">${esc(l.recommendedSalesAngle || "")}</p>
       <div class="form-grid"><div><label>Stage</label><select id="detailStage">${STAGES.map(s=>`<option ${s===l.stage?"selected":""}>${s}</option>`).join("")}</select></div><div><label>Owner</label><input id="owner" value="${esc(l.owner||"")}"></div><div><label>Next Follow-up</label><input id="nextFollow" type="date" value="${esc(l.nextFollowUp||"")}"></div><div><label>Assigned</label><input id="assigned" value="${esc(l.assignedTeamMember||settings.team)}"></div></div>
       <label>Notes</label><textarea id="notes">${esc(l.notes||"")}</textarea>
-      <div class="actions" style="margin-top:10px;"><button class="btn primary small" id="saveLeadBtn">Save Lead</button><button class="btn small" id="scanBtn">Scan Website</button><button class="btn small" id="queueBtn">Generate Outreach</button><button class="btn small" id="copyEmailBtn">Copy Email</button></div>
+      <div class="actions" style="margin-top:10px;"><button class="btn primary small" id="smartSendBtn">Research + Approve & Send</button><button class="btn small" id="queueBtn">Research + Draft</button><button class="btn small" id="scanBtn">Scan Website</button><button class="btn small" id="saveLeadBtn">Save Lead</button><button class="btn small" id="copyEmailBtn">Copy Email</button></div>
       <h3 style="margin-top:14px;">Conversation</h3><div class="queue">${conversation.length ? conversation.slice(0,6).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.title)}</strong><span class="tag ${item.tone}">${esc(item.type)}</span></div><p class="hint">${new Date(item.at).toLocaleString()}</p><div class="script" style="min-height:64px;">${esc(item.body || "")}</div></div>`).join("") : `<p class="sub">No sent emails or replies yet.</p>`}</div>
       <h3 style="margin-top:14px;">Sent Emails</h3><div class="queue">${sentEmails.length ? sentEmails.slice(0,5).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.subject || item.title || "Sent email")}</strong><span class="tag hot">Sent</span></div><p class="hint">${esc(item.to || "")} | ${item.sentAt ? new Date(item.sentAt).toLocaleString() : ""}</p><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy-sent="${esc(item.taskId || item.id || "")}">Copy Email</button></div></div>`).join("") : `<p class="sub">No sent emails yet.</p>`}</div>
       <h3 style="margin-top:14px;">Timeline</h3><div class="script">${(l.timeline||[]).map(t=>`${new Date(t.at).toLocaleString()} - ${t.text}`).join("\n")}</div>`;
       $("detailStage").onchange=e=>{ l.stage=e.target.value; addTimeline(l,`Moved to ${l.stage}`); save(); render(); syncCrm(true).then(render); };
       $("saveLeadBtn").onclick=()=>{ Object.assign(l,{owner:$("owner").value,nextFollowUp:$("nextFollow").value,assignedTeamMember:$("assigned").value,notes:$("notes").value}); addTimeline(l,"Lead profile updated"); save(); render(); syncEverywhere(true); toast("Lead saved and synced"); };
       $("scanBtn").onclick=()=>scanSelected(l);
-      $("queueBtn").onclick=()=>queueOutreach(l);
+      $("queueBtn").onclick=()=>researchDraftAndMaybeSend(l.id, false);
+      $("smartSendBtn").onclick=()=>researchDraftAndMaybeSend(l.id, true);
       $("copyEmailBtn").onclick=()=>copy(outreach(l).emailA);
       document.querySelectorAll("[data-copy-sent]").forEach(button=>button.onclick=()=>{ const item = sentEmails.find(email => String(email.taskId || email.id || "") === button.dataset.copySent); copy(item?.body || item?.subject || ""); });
     }
@@ -2042,7 +2105,8 @@
         const duplicates = lastImportStats.duplicates ? ` Merged ${lastImportStats.duplicates} duplicates.` : "";
         const researched = payload.search?.candidatesResearched ? ` Researched ${payload.search.candidatesResearched} candidates.` : "";
         const guidance = payload.leads.length ? "" : " Try one of the suggested markets below or broaden the radius.";
-        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} CRM prospects from ${payload.source || "public sources"}. Email-ready: ${emailReadyCount}. Needs email: ${needsEmailCount}.${researched}${skipped}${duplicates}${warning}${guidance}`;
+        const sourceTip = payload.search?.serperEnabled ? "" : " Deep web search is off; add SERPER_API_KEY on Render for more websites and emails.";
+        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} CRM prospects from ${payload.source || "public sources"}. Email-ready: ${emailReadyCount}. Needs email: ${needsEmailCount}.${researched}${skipped}${duplicates}${warning}${guidance}${sourceTip}`;
         if ((payload.leads || []).length) switchView("crm");
         toast(`${added} prospects added`);
       } catch(e){ $("finderStatus").textContent=e.message + `. Check ${apiUrl("/api/network-check")} to verify public data access.`; toast("Search failed"); }

@@ -1,5 +1,6 @@
 const { MemoryCache } = require("../cache");
 const { RateLimiter } = require("../rateLimiter");
+const { getTradeConfig } = require("../trades");
 
 const cache = new MemoryCache(1000 * 60 * 60 * 12);
 const limiter = new RateLimiter({ intervalMs: 900, concurrency: 2 });
@@ -121,10 +122,16 @@ function resultToLead(result = {}, context = {}) {
 async function searchSerper({ trade, location, count }) {
   if (!configured()) return { leads: [], cached: false, disabled: true };
   const gl = glForLocation(location);
-  const query = `${trade} companies in ${marketText(location) || location.displayName || "local area"}`;
-  const payload = await serperSearch(query, { num: Math.min(Number(count) || 10, 20), gl });
-  const organic = payload?.organic || [];
-  const places = payload?.places || [];
+  const market = marketText(location) || location.displayName || "local area";
+  const terms = [trade, ...(getTradeConfig(trade).searchTerms || [])]
+    .filter(Boolean)
+    .filter((term, index, arr) => arr.findIndex(other => other.toLowerCase() === term.toLowerCase()) === index)
+    .slice(0, 3);
+  const payloads = await Promise.all(terms.map(term =>
+    serperSearch(`${term} companies in ${market}`, { num: Math.min(Number(count) || 10, 20), gl }).catch(error => ({ error: error.message }))
+  ));
+  const organic = payloads.flatMap(payload => payload?.organic || []);
+  const places = payloads.flatMap(payload => payload?.places || []);
   const organicLeads = organic.map(result => resultToLead(result, { trade, location }));
   const placeLeads = places.map(place => ({
     business: cleanTitle(place.title || place.name),
