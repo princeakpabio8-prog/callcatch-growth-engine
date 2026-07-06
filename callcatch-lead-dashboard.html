@@ -2103,10 +2103,11 @@
         const needsEmailCount = (payload.leads || []).length - emailReadyCount;
         const skipped = lastImportStats.skippedNoEmail ? ` Skipped ${lastImportStats.skippedNoEmail} unusable records.` : "";
         const duplicates = lastImportStats.duplicates ? ` Merged ${lastImportStats.duplicates} duplicates.` : "";
+        const skippedWorked = (payload.search?.skippedExisting || payload.search?.skippedContacted || lastImportStats.skippedWorked) ? ` Skipped ${payload.search?.skippedExisting || payload.search?.skippedContacted || lastImportStats.skippedWorked} already in CRM/Pipeline.` : "";
         const researched = payload.search?.candidatesResearched ? ` Checked ${payload.search.candidatesResearched} candidates.` : "";
         const guidance = payload.leads.length ? "" : " Try one of the suggested markets below or broaden the radius.";
         const sourceTip = payload.search?.serperEnabled ? "" : " Deep web search is off; add SERPER_API_KEY on Render for more websites and emails.";
-        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} CRM prospects from ${payload.source || "public sources"}. Email-ready: ${emailReadyCount}. Needs email: ${needsEmailCount}.${researched}${skipped}${duplicates}${warning}${guidance}${sourceTip} Open a lead and use Research + Draft for deeper scanning.`;
+        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} CRM prospects from ${payload.source || "public sources"}. Email-ready: ${emailReadyCount}. Needs email: ${needsEmailCount}.${researched}${skipped}${duplicates}${skippedWorked}${warning}${guidance}${sourceTip} Open a lead and use Research + Draft for deeper scanning.`;
         if ((payload.leads || []).length) switchView("crm");
         toast(`${added} prospects added`);
       } catch(e){ $("finderStatus").textContent=e.message + `. Check ${apiUrl("/api/network-check")} to verify public data access.`; toast("Search failed"); }

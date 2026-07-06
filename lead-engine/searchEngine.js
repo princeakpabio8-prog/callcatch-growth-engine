@@ -1,4 +1,5 @@
 const { MemoryCache } = require("./cache");
+const crypto = require("crypto");
 const { geocodeArea } = require("./providers/nominatim");
 const { searchOpenStreetMap } = require("./providers/openstreetmap");
 const { configured: braveConfigured, enrichWithBraveWebsites, searchBrave } = require("./providers/braveSearch");
@@ -20,6 +21,75 @@ function leadKey(lead) {
   const website = normalizeText(lead.website).replace(/^https? www /, "");
   const city = normalizeText(lead.city || lead.area);
   return phone || website || `${name}|${city}`;
+}
+
+function emailIdentity(value = "") {
+  return String(value || "").trim().toLowerCase();
+}
+
+function websiteIdentity(value = "") {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/\/$/, "");
+}
+
+function companyIdentity(lead = {}) {
+  return normalizeText(lead.business || "")
+    ? `${normalizeText(lead.business)}|${normalizeText(lead.city || lead.area)}`
+    : "";
+}
+
+function contactedLead(lead = {}) {
+  return Boolean(
+    (lead.sentEmails || []).length
+    || lead.lastContact
+    || (lead.replies || []).length
+    || ["Contacted", "Follow-up", "Demo Scheduled", "Trial Started", "Customer", "Lost"].includes(lead.stage || "")
+  );
+}
+
+async function existingProspectIndex() {
+  try {
+    const state = await readStore();
+    const emails = new Set();
+    const websites = new Set();
+    const companies = new Set();
+    for (const lead of state.leads || []) {
+      if (lead.email) emails.add(emailIdentity(lead.email));
+      if (lead.website) websites.add(websiteIdentity(lead.website));
+      const company = companyIdentity(lead);
+      if (company) companies.add(company);
+      for (const sent of lead.sentEmails || []) {
+        const sentEmail = emailIdentity(sent.to || sent.recipient || "");
+        if (sentEmail) emails.add(sentEmail);
+      }
+    }
+    return { emails, websites, companies };
+  } catch {
+    return { emails: new Set(), websites: new Set(), companies: new Set() };
+  }
+}
+
+function matchesExistingProspect(lead = {}, index) {
+  const email = emailIdentity(lead.email);
+  const website = websiteIdentity(lead.website);
+  const company = companyIdentity(lead);
+  return Boolean(
+    (email && index.emails.has(email))
+    || (website && index.websites.has(website))
+    || (company && index.companies.has(company))
+  );
+}
+
+function existingProspectFingerprint(index) {
+  const hash = crypto.createHash("sha1");
+  hash.update([...index.emails].sort().join("|"));
+  hash.update([...index.websites].sort().join("|"));
+  hash.update([...index.companies].sort().join("|"));
+  return hash.digest("hex").slice(0, 12);
 }
 
 function dedupe(leads) {
@@ -353,6 +423,7 @@ async function searchLeads(input = {}) {
   const area = buildArea(input);
   const count = Math.max(1, Math.min(Number(input.count) || 10, 50));
   const wantsDeepResearch = input.deepResearch === true;
+  const existingProspects = await existingProspectIndex();
   const key = JSON.stringify({
     trade,
     country,
@@ -361,16 +432,27 @@ async function searchLeads(input = {}) {
     count,
     minRating: input.minRating || 0,
     maxReviews: input.maxReviews || 0,
-    deepResearch: wantsDeepResearch
+    deepResearch: wantsDeepResearch,
+    existingProspects: existingProspectFingerprint(existingProspects)
   });
 
   const cached = cache.get(key);
   if (cached) return { ...cached, cached: true };
 
   const providerResult = await runProviders({ trade, area, state: input.state, city: input.city, country, count: Math.min(count * 3, 60) });
-  let leads = applyFilters(dedupe(providerResult.leads).map(enrichLead), input)
+  const rawLeads = dedupe(providerResult.leads).map(enrichLead);
+  let skippedExisting = 0;
+  let leads = applyFilters(rawLeads, input)
+    .filter(lead => {
+      if (!matchesExistingProspect(lead, existingProspects)) return true;
+      skippedExisting += 1;
+      return false;
+    })
     .sort((a, b) => b.aiLeadQualityScore - a.aiLeadQualityScore)
     .slice(0, Math.max(count * 4, count));
+  if (!leads.length && rawLeads.length && skippedExisting) {
+    providerResult.errors.push(`Skipped ${skippedExisting} prospect${skippedExisting === 1 ? "" : "s"} already in CRM or Pipeline for this market. Try the suggested markets or another nearby city.`);
+  }
   if (serperConfigured()) {
     leads = await withTimeout(
       enrichWithSerperWebsites(leads, { limit: Math.min(8, Math.max(count, 4)) }),
@@ -423,6 +505,8 @@ async function searchLeads(input = {}) {
       emailReadyOnly: false,
       emailReady: leads.filter(lead => lead.email).length,
       needsEmail: leads.filter(lead => !lead.email).length,
+      skippedContacted: skippedExisting,
+      skippedExisting,
       quality: leads.length >= count ? "strong" : leads.length > 0 ? "partial" : "no-results",
       suggestions: suggestedMarkets({ country, trade }).slice(0, 6)
     }
