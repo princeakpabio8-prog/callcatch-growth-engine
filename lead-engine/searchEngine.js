@@ -148,6 +148,13 @@ async function mapInBatches(items, batchSize, mapper) {
   return output;
 }
 
+function withTimeout(promise, ms, label = "Operation") {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out`)), ms))
+  ]);
+}
+
 function enrichLead(lead) {
   const confidence = confidenceScore(lead);
   const opportunity = opportunityScore(lead);
@@ -195,7 +202,7 @@ async function deepResearchLeads(leads, { count, errors }) {
       return { ...lead, researchDepth: "listing-only", deepQualityScore: deepQualityScore(lead) };
     }
     try {
-      const scan = await scanWebsite(url);
+      const scan = await withTimeout(scanWebsite(url), 18000, `Website research for ${lead.business}`);
       const email = lead.email || (scan.emails || [])[0] || "";
       const phone = lead.phone || (scan.phones || [])[0] || "";
       const enriched = enrichProspect({ ...lead, email, phone }, scan);
