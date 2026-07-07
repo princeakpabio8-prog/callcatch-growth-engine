@@ -627,6 +627,10 @@
     let pipelineMemory = null;
     let lastAutoFollowupCheck = 0;
     let autoFollowupRunning = false;
+    let dataVersion = 0;
+    let lastHeavyCleanupAt = 0;
+    let heavyCleanupTimer = 0;
+    let derivedCache = { stamp: -1, leadMap: new Map(), sentTasks: [], sentByLead: new Map(), sentKeys: null, sentFingerprintMap: new Map() };
     let lastImportStats = { added: 0, skippedNoEmail: 0, duplicates: 0 };
     let setupState = {
       backend: false,
@@ -643,7 +647,8 @@
     const PRODUCTION_API_BASE = "https://callcatch-growth-engine.onrender.com";
     function apiUrl(path){ return window.location.protocol === "file:" ? `${PRODUCTION_API_BASE}${path}` : path; }
 
-    function save(){ localStorage.setItem("ccProspectsV2", JSON.stringify(leads)); localStorage.setItem("ccApprovalQueueV2", JSON.stringify(queue)); localStorage.setItem("ccSettingsV2", JSON.stringify(settings)); }
+    function markDirty(){ dataVersion += 1; derivedCache.stamp = -1; }
+    function save(){ markDirty(); localStorage.setItem("ccProspectsV2", JSON.stringify(leads)); localStorage.setItem("ccApprovalQueueV2", JSON.stringify(queue)); localStorage.setItem("ccSettingsV2", JSON.stringify(settings)); }
     async function api(path, options = {}) {
       let response;
       try {
@@ -770,14 +775,58 @@
     }
     function switchView(view){ document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active",b.dataset.view===view)); document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===view)); render(); maybeAutoSync(); }
     function selected(){ return leads.find(l=>l.id===selectedId) || leads[0]; }
+    function ensureDerivedCache(){
+      if (derivedCache.stamp === dataVersion) return derivedCache;
+      const leadMap = new Map(leads.map(lead => [lead.id, lead]));
+      const fingerprintFor = item => {
+        const lead = leadMap.get(item.leadId) || {};
+        const company = normalizeKey(lead.website || lead.business || lead.id || item.business || item.leadId);
+        return [company, item.channel || "message", taskStepKey(item)].join("|");
+      };
+      const sentTasks = queue
+        .filter(item => item.channel === "email" && /^sent$/i.test(item.status || ""))
+        .map(item => ({ ...item, lead: leadMap.get(item.leadId) || {} }))
+        .sort((a,b)=>new Date(b.sentAt || 0)-new Date(a.sentAt || 0));
+      const sentByLead = new Map();
+      sentTasks.forEach(item => {
+        if (!sentByLead.has(item.leadId)) sentByLead.set(item.leadId, []);
+        sentByLead.get(item.leadId).push(item);
+      });
+      const sentFingerprintMap = new Map();
+      queue.filter(item => /^sent|sending|scheduled/i.test(item.status || "")).forEach(item => {
+        sentFingerprintMap.set(item.sendFingerprint || fingerprintFor(item), item);
+      });
+      const sentKeys = new Set();
+      sentTasks.forEach(item => {
+        const recipient = emailIdentity(item.to || item.recipient || item.lead?.email || "");
+        if (recipient) sentKeys.add(`email:${recipient}`);
+        sentKeys.add(`fp:${item.sendFingerprint || fingerprintFor(item)}`);
+      });
+      leads.forEach(lead => {
+        const stored = lead.sentEmails || [];
+        const workedStage = !!lead.lastContact || (lead.replies || []).length > 0 || ["Contacted","Follow-up","Demo Scheduled","Trial Started","Customer","Lost"].includes(lead.stage || "");
+        if (stored.length || (sentByLead.get(lead.id) || []).length || workedStage) {
+          if (lead.email) sentKeys.add(`email:${emailIdentity(lead.email)}`);
+          sentKeys.add(`lead:${lead.id}`);
+          sentKeys.add(`company:${companyKey(lead)}`);
+        }
+        stored.forEach(sent => {
+          const recipient = emailIdentity(sent.to || sent.recipient || "");
+          if (recipient) sentKeys.add(`email:${recipient}`);
+        });
+      });
+      (auditLog || []).filter(entry => entry.action === "email_sent").forEach(entry => {
+        const recipient = emailIdentity(entry.details?.to || "");
+        if (recipient) sentKeys.add(`email:${recipient}`);
+      });
+      derivedCache = { stamp: dataVersion, leadMap, sentTasks, sentByLead, sentKeys, sentFingerprintMap };
+      return derivedCache;
+    }
     function tagClass(score){ return score >= 78 ? "hot" : score >= 58 ? "warn" : "bad"; }
     function stageCount(stage){ return leads.filter(l=>pipelineStage(l)===stage).length; }
     function addTimeline(lead, text){ lead.timeline = lead.timeline || []; lead.timeline.unshift({ at: now(), text }); }
     function sentEmailTasks(){
-      return queue
-        .filter(item => item.channel === "email" && /^sent$/i.test(item.status || ""))
-        .map(item => ({ ...item, lead: leads.find(lead => lead.id === item.leadId) || {} }))
-        .sort((a,b)=>new Date(b.sentAt || 0)-new Date(a.sentAt || 0));
+      return ensureDerivedCache().sentTasks;
     }
     async function refreshPipelineMemory(){
       try {
@@ -833,8 +882,7 @@
     }
     function leadSentEmails(lead = {}){
       const stored = (lead.sentEmails || []).map(item => ({ ...item, business: lead.business, leadId: lead.id, body: item.body || "" }));
-      const fromTasks = sentEmailTasks()
-        .filter(item => item.leadId === lead.id)
+      const fromTasks = (ensureDerivedCache().sentByLead.get(lead.id) || [])
         .map(item => ({
           id: item.id,
           taskId: item.id,
@@ -885,7 +933,7 @@
       );
     }
     function leadForTask(item = {}){
-      return leads.find(candidate => candidate.id === item.leadId) || {};
+      return ensureDerivedCache().leadMap.get(item.leadId) || {};
     }
     function campaignEligibleLeads(campaign = {}){
       const minFit = Number(campaign.minFitScore || 68);
@@ -994,34 +1042,10 @@
     function leadMatchesWorkedRecipient(item = {}){
       const recipient = taskRecipient(item);
       if (!recipient) return false;
-      return leads.some(lead => workedProspect(lead) && [
-        emailIdentity(lead.email),
-        ...(lead.sentEmails || []).map(sent => emailIdentity(sent.to || sent.recipient || ""))
-      ].filter(Boolean).includes(recipient));
+      return ensureDerivedCache().sentKeys.has(`email:${recipient}`);
     }
     function sentEmailKeys(){
-      const keys = new Set();
-      queue.filter(item => item.channel === "email" && /^sent$/i.test(item.status || "")).forEach(item => {
-        const recipient = taskRecipient(item);
-        if (recipient) keys.add(`email:${recipient}`);
-        keys.add(`fp:${item.sendFingerprint || sendFingerprint(item)}`);
-      });
-      leads.forEach(lead => {
-        if (leadHasSentEmail(lead)) {
-          if (lead.email) keys.add(`email:${emailIdentity(lead.email)}`);
-          keys.add(`lead:${lead.id}`);
-          keys.add(`company:${companyKey(lead)}`);
-        }
-        (lead.sentEmails || []).forEach(sent => {
-          const recipient = emailIdentity(sent.to || sent.recipient || "");
-          if (recipient) keys.add(`email:${recipient}`);
-        });
-      });
-      (auditLog || []).filter(entry => entry.action === "email_sent").forEach(entry => {
-        const recipient = emailIdentity(entry.details?.to || "");
-        if (recipient) keys.add(`email:${recipient}`);
-      });
-      return keys;
+      return ensureDerivedCache().sentKeys;
     }
     function isInitialCampaignEmail(item = {}){
       if (item.channel !== "email") return false;
@@ -1075,14 +1099,27 @@
       if (selectedId && !leads.some(lead => lead.id === selectedId)) selectedId = leads[0]?.id || "";
       if (leads.length !== before) save();
     }
+    function scheduleHeavyCleanup(){
+      if (heavyCleanupTimer) return;
+      heavyCleanupTimer = setTimeout(() => {
+        heavyCleanupTimer = 0;
+        const elapsed = Date.now() - lastHeavyCleanupAt;
+        if (elapsed < 60000) return;
+        lastHeavyCleanupAt = Date.now();
+        cleanupLeadInbox();
+        cleanupStaleQueue();
+        render();
+        syncCrm(true);
+      }, 1200);
+    }
     function followupTask(item = {}){
       const step = taskStepKey(item);
       const title = String(item.title || "").toLowerCase();
       return !!item.sequenceStep || step.includes("follow") || step.includes("final") || title.includes("follow") || title.includes("closing the loop");
     }
-    function freshCampaignTask(item = {}){
+    function freshCampaignTask(item = {}, sentKeys = sentEmailKeys()){
       if (item.channel === "email") {
-        if (staleCampaignEmailTask(item)) return false;
+        if (staleCampaignEmailTask(item, sentKeys)) return false;
         if (followupTask(item)) return false;
       }
       const lead = leadForTask(item);
@@ -1115,14 +1152,12 @@
       return isEmailReachableLead(lead);
     }
     function taskContactScore(item = {}){
-      const lead = leads.find(candidate => candidate.id === item.leadId) || {};
+      const lead = leadForTask(item);
       let score = contactScore(lead);
       if (item.channel === "email" && (item.to || item.recipient || lead.email)) score += 90;
       if (item.channel === "sms" && (item.to || item.recipient || lead.phone)) score += 60;
       if (/^approved/i.test(item.status || "")) score += 35;
-      if (sendReady(item)) score += 45;
       if (sendMissingInfo(item)) score -= 80;
-      if (duplicateSent(item)) score -= 120;
       return score;
     }
     function sortTasksForAction(list){
@@ -1457,31 +1492,67 @@
       return true;
     }
     function statData(){
-      const freshLeads = leads.filter(lead => !workedProspect(lead));
-      const activeEmailQueue = queue.filter(item => item.channel === "email" && freshCampaignTask(item));
-      const newCount = freshLeads.filter(l=>l.stage==="New").length;
-      const demos = leads.filter(l=>l.stage==="Demo Scheduled").length;
-      const customers = leads.filter(l=>l.stage==="Customer").length;
-      const pipeline = leads.reduce((s,l)=>s+Number(l.revenueOpportunityEstimate||0),0);
+      const sentKeys = sentEmailKeys();
+      let freshCount = 0;
+      let newCount = 0;
+      let demos = 0;
+      let customers = 0;
+      let followupsDue = 0;
+      let pipeline = 0;
+      leads.forEach(lead => {
+        const stage = lead.stage || "New";
+        const worked = workedProspect(lead);
+        if (!worked) {
+          freshCount += 1;
+          if (stage === "New") newCount += 1;
+        }
+        if (stage === "Demo Scheduled") demos += 1;
+        if (stage === "Customer") customers += 1;
+        if (["Contacted","Follow-up"].includes(stage)) followupsDue += 1;
+        pipeline += Number(lead.revenueOpportunityEstimate || 0);
+      });
+      const activeEmailQueue = queue.filter(item => item.channel === "email" && freshCampaignTask(item, sentKeys)).length;
       return [
-        ["Fresh Leads", freshLeads.length], ["New Leads", newCount], ["Emails Queued", activeEmailQueue.length],
-        ["Follow-ups Due", leads.filter(l=>["Contacted","Follow-up"].includes(l.stage)).length], ["Customers Won", customers], ["Pipeline Value", money(pipeline)]
+        ["Fresh Leads", freshCount], ["New Leads", newCount], ["Emails Queued", activeEmailQueue],
+        ["Follow-ups Due", followupsDue], ["Customers Won", customers], ["Pipeline Value", money(pipeline)]
       ];
     }
-    function renderStats(){ $("stats").innerHTML = statData().map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join(""); $("analyticsStats").innerHTML = statData().map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join(""); }
+    function renderStats(){
+      const stats = statData();
+      const html = stats.map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join("");
+      $("stats").innerHTML = html;
+      $("analyticsStats").innerHTML = html;
+    }
+    function topFreshLeads(limit = 5){
+      const candidates = [];
+      for (const lead of leads) {
+        if (!workedProspect(lead)) candidates.push(lead);
+        if (candidates.length >= 300) break;
+      }
+      return sortLeadsForAction(candidates).slice(0, limit);
+    }
     function renderAssistant(){
-      const best = sortLeadsForAction(leads.filter(lead => !workedProspect(lead))).slice(0,5);
+      const best = topFreshLeads(5);
+      const sentKeys = sentEmailKeys();
+      const freshOutreachCount = queue.reduce((count, item) => count + (freshCampaignTask(item, sentKeys) ? 1 : 0), 0);
       $("bestProspects").innerHTML = best.length ? best.map(leadRowHtml).join("") : `<p class="sub">No prospects yet. Run Discovery to build your list.</p>`;
       $("assistantNotes").textContent = lastGrowthRun ? `Today's Opportunities\n\nNew Businesses: ${lastGrowthRun.newBusinesses}\nQualified: ${lastGrowthRun.qualified}\nEmails Ready: ${lastGrowthRun.emailsReady}\nLinkedIn Messages Ready: ${lastGrowthRun.linkedinReady}\nFollow-ups Due: ${lastGrowthRun.followUpsDue}\nReplies Yesterday: ${lastGrowthRun.repliesYesterday}\nDemo Requests: ${lastGrowthRun.demoRequests}\nRevenue Pipeline: ${money(lastGrowthRun.revenuePipeline)}\n\nSending status: ${lastGrowthRun.capabilities?.sendingStatus || "approval-first"}`
-        : leads.length ? `Focus today:\n\n1. Work ${best[0]?.business || "your highest-fit fresh prospect"} first.\n2. Review ${queue.filter(item => freshCampaignTask(item)).length} fresh outreach messages before sending anything.\n3. Handle already-contacted companies from Pipeline and Follow-ups only.\n4. Move to the next city when Fresh Leads reaches zero.` : "Click Start Daily Growth or run Discovery. The assistant will find, research, score, and queue outreach.";
+        : leads.length ? `Focus today:\n\n1. Work ${best[0]?.business || "your highest-fit fresh prospect"} first.\n2. Review ${freshOutreachCount} fresh outreach messages before sending anything.\n3. Handle already-contacted companies from Pipeline and Follow-ups only.\n4. Move to the next city when Fresh Leads reaches zero.` : "Click Start Daily Growth or run Discovery. The assistant will find, research, score, and queue outreach.";
       bindFreshLeadActions();
     }
     function actionGuideSteps(){
-      const activeInitialEmails = queue.filter(item => item.channel === "email" && freshCampaignTask(item));
-      const readyEmails = activeInitialEmails.filter(item => sendReady(item)).length;
-      const needsApproval = activeInitialEmails.filter(item => /^needs approval/i.test(item.status || "")).length;
-      const needsEmail = activeInitialEmails.filter(item => sendCategory(item) === "missing").length;
-      const followups = queue.filter(item => item.channel === "email" && (item.sequenceStep || /follow/i.test(item.title || "")) && !/sent|stopped/i.test(item.status || "")).length;
+      const sentKeys = sentEmailKeys();
+      let readyEmails = 0;
+      let needsApproval = 0;
+      let followups = 0;
+      queue.forEach(item => {
+        if (item.channel !== "email") return;
+        const isFollowup = !!item.sequenceStep || /follow/i.test(item.title || "");
+        if (isFollowup && !/sent|stopped/i.test(item.status || "")) followups += 1;
+        if (!freshCampaignTask(item, sentKeys)) return;
+        if (sendReady(item)) readyEmails += 1;
+        if (/^needs approval/i.test(item.status || "")) needsApproval += 1;
+      });
       const replies = inboxItems().length;
       const steps = [];
       if (!leads.length) {
@@ -1551,7 +1622,7 @@
       return sortTasksForAction(mobileVisibleTasks(queue.filter(item =>
         ["email","sms"].includes(item.channel)
         && (/^sent$/i.test(item.status || "") || freshCampaignTask(item) || followupTask(item))
-      )));
+      ))).slice(0, 800);
     }
     function sendMissingInfo(item){
       const lead = leads.find(candidate => candidate.id === item.leadId) || {};
@@ -1572,13 +1643,14 @@
       return normalizeKey(title) || "initial";
     }
     function sendFingerprint(item){
-      const lead = leads.find(candidate => candidate.id === item.leadId) || {};
+      const lead = leadForTask(item);
       const company = normalizeKey(lead.website || lead.business || lead.id || item.business || item.leadId);
       return [company, item.channel || "message", taskStepKey(item)].join("|");
     }
     function duplicateSent(item){
       const fp = item.sendFingerprint || sendFingerprint(item);
-      return queue.find(other => other.id !== item.id && /^sent|sending|scheduled/i.test(other.status || "") && (other.sendFingerprint || sendFingerprint(other)) === fp);
+      const match = ensureDerivedCache().sentFingerprintMap.get(fp);
+      return match && match.id !== item.id ? match : null;
     }
     function sendReady(item){
       if (!/^approved/i.test(item.status || "")) return false;
@@ -2166,8 +2238,6 @@
       $("auditTable").innerHTML = auditLog.length ? `<tr><th>Time</th><th>Action</th><th>Details</th></tr>${auditLog.slice(0,40).map(row=>`<tr><td>${new Date(row.at).toLocaleString()}</td><td>${esc(row.action)}</td><td>${esc(JSON.stringify(row.details || {}))}</td></tr>`).join("")}` : `<tr><td>No server audit entries loaded yet.</td></tr>`;
     }
     function render(){
-      cleanupLeadInbox();
-      cleanupStaleQueue();
       const activeView = document.querySelector(".view.active")?.id || "assistant";
       renderStats();
       renderAssistant();
@@ -2618,7 +2688,7 @@ Helping home service businesses recover missed revenue.`;
       document.addEventListener("visibilitychange", ()=>{ if (!document.hidden) syncEverywhere(true); });
       window.addEventListener("focus", ()=>syncEverywhere(true));
       setInterval(()=>queueAutoFollowupCheck(true), 10 * 60 * 1000);
-      loadServerCrm().then(()=>Promise.all([checkEmailStatus(true), checkSmsStatus(true), refreshPipelineMemory()])).then(()=>runSetupChecks(true)).then(()=>{ render(); refreshSendingMetrics(); queueAutoFollowupCheck(true); }).catch(()=>render());
+      loadServerCrm().then(()=>Promise.all([checkEmailStatus(true), checkSmsStatus(true), refreshPipelineMemory()])).then(()=>runSetupChecks(true)).then(()=>{ render(); refreshSendingMetrics(); queueAutoFollowupCheck(true); scheduleHeavyCleanup(); }).catch(()=>{ render(); scheduleHeavyCleanup(); });
     }
     init();
   </script>
