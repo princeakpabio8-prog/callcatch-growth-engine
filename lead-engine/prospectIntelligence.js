@@ -123,8 +123,23 @@ function pick(options, seed = "") {
   return options[score % options.length];
 }
 
+function escapeRegex(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function businessName(lead = {}) {
+  let name = String(lead.business || "your company").replace(/\s+/g, " ").trim();
+  if (lead.city) {
+    const city = escapeRegex(lead.city);
+    const state = lead.state ? escapeRegex(lead.state) : "[A-Z]{2}|[A-Za-z ]+";
+    name = name.replace(new RegExp(`\\s+in\\s+${city}(?:,?\\s*${state})?\\.?$`, "i"), "");
+    name = name.replace(new RegExp(`\\s+-\\s+${city}(?:,?\\s*${state})?\\.?$`, "i"), "");
+  }
+  return name.trim() || "your company";
+}
+
 function businessTeam(lead) {
-  return `${lead.business || "your"} team`;
+  return `${businessName(lead)} team`;
 }
 
 function cityState(lead) {
@@ -132,10 +147,11 @@ function cityState(lead) {
 }
 
 function subjectLine(lead, profile, variant) {
+  const name = businessName(lead);
   const subjects = [
-    `Quick question for ${lead.business}`,
-    `A missed-call idea for ${lead.business}`,
-    `Thought this may help ${lead.business}`,
+    `Quick question for ${name}`,
+    `A missed-call idea for ${name}`,
+    `Thought this may help ${name}`,
     `Question about your service calls`,
     `One idea for your office team`,
     `A quick thought on missed calls`

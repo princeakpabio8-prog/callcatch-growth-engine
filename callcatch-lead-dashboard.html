@@ -56,6 +56,17 @@
     .brand { display: flex; align-items: center; gap: 10px; font-weight: 900; margin-bottom: 22px; }
     .mark { width: 36px; height: 36px; border-radius: 8px; background: #22b06f; display: grid; place-items: center; }
     nav { display: grid; gap: 7px; }
+    .nav-secondary { display: grid; gap: 7px; margin-top: 12px; opacity: .74; }
+    .nav-secondary::before {
+      content: "Advanced";
+      display: block;
+      color: #8fa1af;
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      margin: 4px 0 6px;
+    }
     .nav-btn {
       border: 0;
       border-radius: 7px;
@@ -114,6 +125,21 @@
     .work-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
     .work-list { display: grid; gap: 8px; }
     .work-item { border: 1px solid var(--line); border-radius: 7px; padding: 10px; background: rgba(127,127,127,.04); min-width: 0; }
+    .flow-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .flow-strip span {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 9px 10px;
+      color: var(--muted);
+      background: rgba(127,127,127,.04);
+      font-size: 13px;
+      font-weight: 800;
+    }
     .playbook { display: grid; grid-template-columns: 1.1fr .9fr; gap: 12px; align-items: start; }
     .steps { display: grid; gap: 8px; }
     .step {
@@ -336,6 +362,8 @@
       .stats, #sendingStats, #analyticsStats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .work-grid, .form-grid, .toolbar, .detail-grid, .playbook, .market-grid { grid-template-columns: 1fr; }
       .mobile-non-email { display: none !important; }
+      .nav-secondary { display: none; }
+      .flow-strip { grid-template-columns: 1fr; }
       .checklist { grid-template-columns: 1fr; }
       .panel { padding: 12px; }
       h1 { font-size: 24px; }
@@ -398,21 +426,24 @@
     <aside>
       <div class="brand"><div class="mark">C</div><div>CallCatch<br><span style="font-weight:400;color:#b9c8d5;">AI Growth Engine</span></div></div>
       <nav>
-        <button class="nav-btn active" data-view="assistant" type="button">Daily Assistant</button>
-        <button class="nav-btn" data-view="sendcenter" type="button">Send Center</button>
+        <button class="nav-btn active" data-view="assistant" type="button">Today</button>
+        <button class="nav-btn" data-view="sendcenter" type="button">Email Queue</button>
         <button class="nav-btn" data-view="finder" type="button">Discovery</button>
-        <button class="nav-btn" data-view="crm" type="button">CRM</button>
+        <button class="nav-btn" data-view="crm" type="button">Fresh Leads</button>
         <button class="nav-btn" data-view="pipeline" type="button">Pipeline</button>
-        <button class="nav-btn" data-view="automation" type="button">Campaigns</button>
-        <button class="nav-btn" data-view="analytics" type="button">Analytics</button>
-        <button class="nav-btn" data-view="territory" type="button">Territory</button>
-        <button class="nav-btn" data-view="settings" type="button">Settings</button>
+        <div class="nav-secondary">
+          <button class="nav-btn" data-view="automation" type="button">Campaigns</button>
+          <button class="nav-btn" data-view="analytics" type="button">Analytics</button>
+          <button class="nav-btn" data-view="territory" type="button">Territory</button>
+          <button class="nav-btn" data-view="settings" type="button">Settings</button>
+        </div>
       </nav>
-      <p class="side-note">Approval-first outbound: the system researches, scores, drafts, and queues. Humans decide what gets sent.</p>
+      <p class="side-note">Daily flow: find email-ready prospects, review the draft, send, then work follow-ups from Pipeline.</p>
     </aside>
     <main>
       <section class="view active" id="assistant">
         <div class="top"><div><h1>Daily AI Sales Assistant</h1><p class="sub">Your best prospects, follow-ups, demos, and pipeline value for today.</p></div><div class="actions"><button class="btn" id="themeBtn" type="button">Dark Mode</button><button class="btn primary" id="startGrowthBtn" type="button">▶ Start Daily Growth</button><button class="btn" id="refreshAssistantBtn" type="button">Refresh</button></div></div>
+        <div class="flow-strip"><span>1. Discover email-ready leads</span><span>2. Review the email</span><span>3. Send once</span><span>4. Follow up from Pipeline</span></div>
         <div class="panel" style="margin-bottom:14px;">
           <div class="form-grid">
             <div><label for="growthTime">Morning Run Time</label><input id="growthTime" type="time" value="08:00"></div>
@@ -449,15 +480,15 @@
       </section>
 
       <section class="view" id="sendcenter">
-        <div class="top"><div><h1>Unified Send Center</h1><p class="sub">Everything ready, missing, failed, and sent in one place.</p></div><div class="actions"><button class="btn" id="refreshSetupBtn" type="button">Refresh Checks</button><button class="btn" id="sendCenterSyncBtn" type="button">Sync All</button><button class="btn primary" id="sendCenterSendAllBtn" type="button">Send All Ready</button></div></div>
+        <div class="top"><div><h1>Email Work Queue</h1><p class="sub">Review, send, and follow up without sorting through old campaigns.</p></div><div class="actions"><button class="btn" id="refreshSetupBtn" type="button">Refresh Checks</button><button class="btn" id="sendCenterSyncBtn" type="button">Sync All</button><button class="btn primary" id="sendCenterSendAllBtn" type="button">Send All Ready</button></div></div>
         <div class="stats" id="sendCenterStats"></div>
         <div class="send-center-grid">
           <div class="panel">
-            <h2>Messages</h2>
+            <h2>Next Email Actions</h2>
             <div class="send-filters" id="sendFilters">
-              <button class="filter-btn active" data-send-filter="ready" type="button">Ready</button>
+              <button class="filter-btn active" data-send-filter="ready" type="button">Ready to Send</button>
               <button class="filter-btn" data-send-filter="missing" type="button">Missing Info</button>
-              <button class="filter-btn" data-send-filter="approval" type="button">Needs Approval</button>
+              <button class="filter-btn" data-send-filter="approval" type="button">Review Drafts</button>
               <button class="filter-btn" data-send-filter="failed" type="button">Failed</button>
               <button class="filter-btn" data-send-filter="sent" type="button">Sent</button>
               <button class="filter-btn" data-send-filter="all" type="button">All</button>
@@ -1038,6 +1069,12 @@
       if (removed > 0 || upgraded > 0) save();
       return removed;
     }
+    function cleanupLeadInbox(){
+      const before = leads.length;
+      leads = leads.filter(lead => isStorableProspect(lead) || workedProspect(lead));
+      if (selectedId && !leads.some(lead => lead.id === selectedId)) selectedId = leads[0]?.id || "";
+      if (leads.length !== before) save();
+    }
     function followupTask(item = {}){
       const step = taskStepKey(item);
       const title = String(item.title || "").toLowerCase();
@@ -1075,7 +1112,7 @@
       return !!String(lead.email || "").trim() || (lead.sentEmails || []).some(item => String(item.to || item.recipient || "").trim());
     }
     function isStorableProspect(lead = {}){
-      return isEmailReachableLead(lead) || !!String(lead.business || lead.phone || lead.website || lead.address || "").trim();
+      return isEmailReachableLead(lead);
     }
     function taskContactScore(item = {}){
       const lead = leads.find(candidate => candidate.id === item.leadId) || {};
@@ -1167,18 +1204,29 @@
     function localCity(lead){
       return [lead.city, lead.state].filter(Boolean).join(", ") || lead.area || "your area";
     }
+    function localBusinessName(lead = {}){
+      let name = String(lead.business || "your company").replace(/\s+/g, " ").trim();
+      if (lead.city) {
+        const city = lead.city.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const state = lead.state ? lead.state.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : "[A-Z]{2}|[A-Za-z ]+";
+        name = name.replace(new RegExp(`\\s+in\\s+${city}(?:,?\\s*${state})?\\.?$`, "i"), "");
+        name = name.replace(new RegExp(`\\s+-\\s+${city}(?:,?\\s*${state})?\\.?$`, "i"), "");
+      }
+      return name.trim() || "your company";
+    }
     function localSubject(lead, profile, variant){
+      const name = localBusinessName(lead);
       return pickText([
-        `Quick question for ${lead.business}`,
-        `A missed-call idea for ${lead.business}`,
-        `Thought this may help ${lead.business}`,
+        `Quick question for ${name}`,
+        `A missed-call idea for ${name}`,
+        `Thought this may help ${name}`,
         `Question about your service calls`,
         `One idea for your office team`,
         `A quick thought on missed calls`
       ], `${lead.id || lead.business}:${profile.weakness}:${variant}:${Date.now()}`);
     }
     function localGreeting(lead){
-      const team = `${lead.business || "your"} team`;
+      const team = `${localBusinessName(lead)} team`;
       return pickText([`Hi ${team},`, "Hi there,", `Good morning ${team},`, `Good afternoon ${team},`], `${lead.business}:${Date.now()}`);
     }
     function localObservation(lead){
@@ -1426,6 +1474,7 @@
       $("bestProspects").innerHTML = best.length ? best.map(leadRowHtml).join("") : `<p class="sub">No prospects yet. Run Discovery to build your list.</p>`;
       $("assistantNotes").textContent = lastGrowthRun ? `Today's Opportunities\n\nNew Businesses: ${lastGrowthRun.newBusinesses}\nQualified: ${lastGrowthRun.qualified}\nEmails Ready: ${lastGrowthRun.emailsReady}\nLinkedIn Messages Ready: ${lastGrowthRun.linkedinReady}\nFollow-ups Due: ${lastGrowthRun.followUpsDue}\nReplies Yesterday: ${lastGrowthRun.repliesYesterday}\nDemo Requests: ${lastGrowthRun.demoRequests}\nRevenue Pipeline: ${money(lastGrowthRun.revenuePipeline)}\n\nSending status: ${lastGrowthRun.capabilities?.sendingStatus || "approval-first"}`
         : leads.length ? `Focus today:\n\n1. Work ${best[0]?.business || "your highest-fit fresh prospect"} first.\n2. Review ${queue.filter(item => freshCampaignTask(item)).length} fresh outreach messages before sending anything.\n3. Handle already-contacted companies from Pipeline and Follow-ups only.\n4. Move to the next city when Fresh Leads reaches zero.` : "Click Start Daily Growth or run Discovery. The assistant will find, research, score, and queue outreach.";
+      bindFreshLeadActions();
     }
     function actionGuideSteps(){
       const activeInitialEmails = queue.filter(item => item.channel === "email" && freshCampaignTask(item));
@@ -1438,17 +1487,17 @@
       if (!leads.length) {
         steps.push(["Find email-ready prospects", "Run deep discovery for one trade and one city first.", "Open Discovery", "finder"]);
       } else if (readyEmails) {
-        steps.push(["Send ready emails", `${readyEmails} approved email${readyEmails === 1 ? "" : "s"} can go out now.`, "Open Send Center", "sendcenter"]);
+        steps.push(["Send ready emails", `${readyEmails} approved email${readyEmails === 1 ? "" : "s"} can go out now.`, "Open Email Queue", "sendcenter"]);
       } else if (needsApproval) {
         steps.push(["Review drafted emails", `${needsApproval} email${needsApproval === 1 ? "" : "s"} need approval before sending.`, "Review Queue", "sendcenter"]);
       } else if (replies) {
         steps.push(["Handle replies", `${replies} repl${replies === 1 ? "y" : "ies"} need a response.`, "Open Replies", "automation"]);
       } else if (followups) {
-        steps.push(["Work follow-ups", `${followups} follow-up email${followups === 1 ? "" : "s"} need attention.`, "Open Follow-ups", "automation"]);
+        steps.push(["Work follow-ups", `${followups} follow-up email${followups === 1 ? "" : "s"} need attention.`, "Open Email Queue", "sendcenter"]);
       } else {
         steps.push(["Add more prospects", "Run another city or trade to keep the pipeline moving.", "Open Discovery", "finder"]);
       }
-      steps.push(["Check setup", emailReady ? "Email sending is connected." : "Confirm email provider before sending.", "Open Send Center", "sendcenter"]);
+      steps.push(["Check setup", emailReady ? "Email sending is connected." : "Confirm email provider before sending.", "Open Email Queue", "sendcenter"]);
       steps.push(["Use one clean flow", "Discover, review, send, then let follow-ups appear when due.", "Start Here", steps[0][3]]);
       return steps;
     }
@@ -1491,17 +1540,17 @@
       $("workCalls").innerHTML = callTasks.length ? callTasks.map(item=>renderWorkItem(item.business, item.title || "Call task", "Open Lead", `data-work-lead="${item.leadId}"`)).join("") : `<p class="sub">No call tasks queued.</p>`;
       $("workFollowups").innerHTML = followupTasks.length
         ? followupTasks.map(item=>renderWorkItem(item.business, `${item.title || "Follow-up"} | ${item.status || "Needs Approval"}`, "Review", `data-work-compose="${item.id}"`)).join("")
-        : followups.length ? followups.map(lead=>renderWorkItem(lead.business, `${lead.followUpStatus || lead.stage} | ${lead.nextFollowUp || "Follow up due"}`, "Open Lead", `data-work-lead="${lead.id}"`)).join("") : `<p class="sub">No follow-ups due.</p>`;
+        : followups.length ? followups.map(lead=>renderWorkItem(lead.business, `${lead.followUpStatus || lead.stage} | ${lead.nextFollowUp || "Follow up due"}`, "Open Pipeline", `data-work-pipeline="${lead.id}"`)).join("") : `<p class="sub">No follow-ups due.</p>`;
       $("workReplies").innerHTML = replies.length ? replies.map(({lead,reply})=>renderWorkItem(lead.business, reply.body || "Reply received", "Review Reply", `data-work-reply="${reply.id}" data-work-lead="${lead.id}"`)).join("") : `<p class="sub">No replies waiting.</p>`;
       document.querySelectorAll("[data-work-compose]").forEach(b=>b.onclick=()=>openComposer(b.dataset.workCompose));
       document.querySelectorAll("[data-work-lead]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.workLead; switchView("crm"); });
+      document.querySelectorAll("[data-work-pipeline]").forEach(b=>b.onclick=()=>{ openPipelineDetail(b.dataset.workPipeline); switchView("pipeline"); });
       document.querySelectorAll("[data-work-reply]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.workLead; switchView("automation"); });
     }
     function sendableTasks(){
       return sortTasksForAction(mobileVisibleTasks(queue.filter(item =>
         ["email","sms"].includes(item.channel)
-        && !/^sent$/i.test(item.status || "")
-        && (freshCampaignTask(item) || followupTask(item))
+        && (/^sent$/i.test(item.status || "") || freshCampaignTask(item) || followupTask(item))
       )));
     }
     function sendMissingInfo(item){
@@ -1613,7 +1662,14 @@
       $("sendCenterStats").innerHTML = sendCenterStats().map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join("");
       document.querySelectorAll("[data-send-filter]").forEach(button => button.classList.toggle("active", button.dataset.sendFilter === sendCenterFilter));
       const visible = tasks.filter(item => sendCenterFilter === "all" || sendCategory(item) === sendCenterFilter);
-      const emptyText = mobileEmailFocus() ? "No email messages in this section right now." : `No ${sendCenterFilter === "all" ? "" : sendCenterFilter} messages right now.`;
+      const emptyText = {
+        ready: "No approved emails ready. Review drafts first, or run Discovery for more email-ready prospects.",
+        approval: "No drafts need review. Open Discovery to find fresh prospects, then tap Research + Draft.",
+        missing: "No drafts are missing recipient details.",
+        failed: "No failed messages right now.",
+        sent: "No sent messages in this view yet. Sent emails also appear in Pipeline.",
+        all: "No email tasks yet. Run Discovery, then review and send from here."
+      }[sendCenterFilter] || "No email messages in this section right now.";
       $("sendCenterList").innerHTML = visible.length ? visible.map(sendCenterItemHtml).join("") : `<p class="sub">${esc(emptyText)}</p>`;
       renderSetupChecklist();
       bindQueueActions();
@@ -1786,6 +1842,11 @@
       const action = nextFreshAction(l);
       return `<div class="lead-row ${l.id===selectedId?"active":""}" data-id="${l.id}"><div class="lead-top"><div class="lead-name">${esc(l.business)}</div><span class="tag ${tagClass(l.deepQualityScore || l.callCatchFitScore)}">${l.deepQualityScore || l.callCatchFitScore}</span></div><div class="meta"><span>${esc(l.trade)}</span><span>${esc([l.city,l.state].filter(Boolean).join(", ") || l.area || "")}</span><span>${esc(l.stage)}</span><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}${emailStatus.detail ? ` ${esc(emailStatus.detail)}` : ""}</span>${l.email ? `<span class="tag hot">Email Ready</span>` : `<span class="tag bad">Needs Email</span>`}${l.researchDepth ? `<span class="tag">Research: ${esc(l.researchDepth)}</span>` : ""}${l.phone ? `<span class="tag">Phone</span>` : ""}</div><div class="actions" style="margin-top:10px;"><button class="btn ${action.tone} small" data-smart-outreach="${l.id}" title="${esc(action.title)}">${esc(action.label)}</button><button class="btn small" data-open-fresh="${l.id}">Open</button></div></div>`;
     }
+    function bindFreshLeadActions(){
+      document.querySelectorAll(".lead-row").forEach(row=>row.onclick=event=>{ if (!event.target.closest("button")) { selectedId=row.dataset.id; render(); } });
+      document.querySelectorAll("[data-open-fresh]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); selectedId=button.dataset.openFresh; switchView("crm"); });
+      document.querySelectorAll("[data-smart-outreach]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); researchDraftAndMaybeSend(button.dataset.smartOutreach); });
+    }
     function renderList(){
       const visible = filtered();
       const pipelineCount = contactedProspects().length;
@@ -1799,9 +1860,7 @@
       $("leadList").innerHTML = visible.map(leadRowHtml).join("") || (stage
         ? `<p class="sub">No ${esc(stage)} prospects found here.</p>`
         : `<p class="sub">No uncontacted CRM prospects. Run Discovery for new prospects, or open Pipeline for contacted companies.</p>`);
-      document.querySelectorAll(".lead-row").forEach(row=>row.onclick=event=>{ if (!event.target.closest("button")) { selectedId=row.dataset.id; render(); } });
-      document.querySelectorAll("[data-open-fresh]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); selectedId=button.dataset.openFresh; render(); });
-      document.querySelectorAll("[data-smart-outreach]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); researchDraftAndMaybeSend(button.dataset.smartOutreach); });
+      bindFreshLeadActions();
     }
     function renderDetail(){
       const l = selected();
@@ -2107,8 +2166,21 @@
       $("auditTable").innerHTML = auditLog.length ? `<tr><th>Time</th><th>Action</th><th>Details</th></tr>${auditLog.slice(0,40).map(row=>`<tr><td>${new Date(row.at).toLocaleString()}</td><td>${esc(row.action)}</td><td>${esc(JSON.stringify(row.details || {}))}</td></tr>`).join("")}` : `<tr><td>No server audit entries loaded yet.</td></tr>`;
     }
     function render(){
+      cleanupLeadInbox();
       cleanupStaleQueue();
-      renderStats(); renderAssistant(); renderActionGuide(); renderTodayWork(); renderSendCenter(); renderMarketSuggestions(); renderList(); renderDetail(); renderPipeline(); renderQueue(); renderInbox(); renderSentHistory(); renderAnalytics(); renderTerritory(); renderSettings(); renderAudit(); renderSendingStats(); renderFollowupCenter();
+      const activeView = document.querySelector(".view.active")?.id || "assistant";
+      renderStats();
+      renderAssistant();
+      renderActionGuide();
+      renderTodayWork();
+      if (activeView === "sendcenter") renderSendCenter();
+      if (activeView === "finder") renderMarketSuggestions();
+      if (activeView === "crm") { renderList(); renderDetail(); }
+      if (activeView === "pipeline") renderPipeline();
+      if (activeView === "automation") { renderQueue(); renderInbox(); renderSentHistory(); renderSendingStats(); renderFollowupCenter(); }
+      if (activeView === "analytics") renderAnalytics();
+      if (activeView === "territory") renderTerritory();
+      if (activeView === "settings") { renderSettings(); renderAudit(); }
     }
     async function search(){
       if($("source").value!=="Free Public Sources"){ $("finderStatus").textContent="That provider is a future adapter slot."; return; }
