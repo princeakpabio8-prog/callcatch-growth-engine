@@ -594,6 +594,7 @@
     let composerTaskId = "";
     let pipelineDetailId = "";
     let pipelineMemory = null;
+    let lastAutoFollowupCheck = 0;
     let lastImportStats = { added: 0, skippedNoEmail: 0, duplicates: 0 };
     let setupState = {
       backend: false,
@@ -662,9 +663,10 @@
     }
     async function syncEverywhere(silent = false){
       const ok = await syncCrm(true);
+      const generatedFollowups = await autoDraftDueFollowups(true);
       await Promise.allSettled([checkEmailStatus(true), checkSmsStatus(true), refreshSendingMetrics(), refreshPipelineMemory()]);
       render();
-      if (!silent) toast(ok ? "Synced everywhere" : "Sync unavailable");
+      if (!silent) toast(generatedFollowups ? `${generatedFollowups} follow-up${generatedFollowups === 1 ? "" : "s"} drafted` : (ok ? "Synced everywhere" : "Sync unavailable"));
       return ok;
     }
     function mergeById(localItems, serverItems) {
@@ -2402,6 +2404,16 @@ Helping home service businesses recover missed revenue.`;
       }
       return generated;
     }
+    async function autoDraftDueFollowups(silent = true){
+      const current = Date.now();
+      if (current - lastAutoFollowupCheck < 60000) return 0;
+      lastAutoFollowupCheck = current;
+      const generated = generateLocalFollowups();
+      if (!generated) return 0;
+      await syncCrm(true);
+      if (!silent) toast(`${generated} due follow-up${generated === 1 ? "" : "s"} drafted`);
+      return generated;
+    }
     async function generateFollowups(){
       try {
         const result = await api("/api/sending/run-sequence", { method:"POST", body: JSON.stringify({ autoPilot:$("growthMode").value==="Auto Pilot" }) });
@@ -2518,7 +2530,8 @@ Helping home service businesses recover missed revenue.`;
       ["search","tradeFilter","stageFilter","territoryTrade","territoryStage"].forEach(id=>$(id).oninput=render);
       document.addEventListener("visibilitychange", ()=>{ if (!document.hidden) syncEverywhere(true); });
       window.addEventListener("focus", ()=>syncEverywhere(true));
-      loadServerCrm().then(()=>Promise.all([checkEmailStatus(true), checkSmsStatus(true), refreshPipelineMemory()])).then(()=>runSetupChecks(true)).then(()=>{ render(); refreshSendingMetrics(); }).catch(()=>render());
+      setInterval(()=>autoDraftDueFollowups(true).then(generated=>{ if (generated) render(); }).catch(()=>{}), 10 * 60 * 1000);
+      loadServerCrm().then(()=>autoDraftDueFollowups(true)).then(()=>Promise.all([checkEmailStatus(true), checkSmsStatus(true), refreshPipelineMemory()])).then(()=>runSetupChecks(true)).then(()=>{ render(); refreshSendingMetrics(); }).catch(()=>render());
     }
     init();
   </script>
