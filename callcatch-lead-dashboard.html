@@ -1897,7 +1897,24 @@
       document.querySelectorAll("[data-sendnow]").forEach(b=>b.onclick=()=>sendNow(b.dataset.sendnow));
       document.querySelectorAll("[data-schedule]").forEach(b=>b.onclick=()=>scheduleSend(b.dataset.schedule, b.dataset.when));
       document.querySelectorAll("[data-open-lead]").forEach(b=>b.onclick=()=>{ if(b.dataset.openLead){ selectedId=b.dataset.openLead; switchView("crm"); } });
-      document.querySelectorAll("[data-remove]").forEach(b=>b.onclick=()=>{ queue=queue.filter(q=>q.id!==b.dataset.remove); save(); render(); syncCrm(true).then(render); });
+      document.querySelectorAll("[data-remove]").forEach(b=>b.onclick=()=>removeQueueTask(b.dataset.remove));
+    }
+    async function removeQueueTask(taskId){
+      const before = queue.length;
+      queue = queue.filter(q=>q.id!==taskId);
+      if (queue.length === before) { toast("Task already removed"); return; }
+      save();
+      render();
+      try {
+        const savedQueue = await api("/api/approval-queue", { method:"POST", body: JSON.stringify({ items: queue, replace: true }) });
+        const returnedItems = Array.isArray(savedQueue.items) ? savedQueue.items : Array.isArray(savedQueue) ? savedQueue : queue;
+        queue = compactEmailDuplicates(returnedItems);
+        save();
+        render();
+        toast("Removed");
+      } catch(error) {
+        toast("Removed locally. Sync will retry.");
+      }
     }
     async function approveAndSend(taskId){
       const task = queue.find(q=>q.id===taskId);
@@ -2306,14 +2323,112 @@
         toast(`${result.results.length} due jobs processed`);
       } catch(error) { toast(error.message); }
     }
+    function daysSince(value){
+      const date = new Date(value || 0);
+      if (Number.isNaN(date.getTime())) return 0;
+      return Math.floor((Date.now() - date.getTime()) / 86400000);
+    }
+    function followupDraftBody(lead, step){
+      const business = lead.business || "your team";
+      const angle = weaknessProfile(lead);
+      const subject = step === "final"
+        ? `Subject: Last note for ${business}`
+        : `Subject: Following up with ${business}`;
+      const opener = step === "final"
+        ? `I wanted to close the loop on my note about missed calls at ${business}.`
+        : `I wanted to follow up on my note about missed calls at ${business}.`;
+      return `${subject}
+
+Hi ${business} team,
+
+${opener}
+
+The main reason I reached out is simple: ${angle.pain}. CallCatch helps by texting missed callers within seconds, so they stay engaged instead of calling the next company.
+
+If this is worth a quick look, I would be happy to show you the workflow in about 10 minutes.
+
+Best,
+
+Prince Esien
+
+Founder | CallCatch
+
+hello@callcatch.site
+
+https://callcatch.site
+
+Helping home service businesses recover missed revenue.`;
+    }
+    function generateLocalFollowups(){
+      let generated = 0;
+      leads.forEach(lead => {
+        if (!workedProspect(lead)) return;
+        if ((lead.replies || []).length || ["Customer","Lost","Demo Scheduled","Trial Started"].includes(pipelineStage(lead))) return;
+        const sent = leadSentEmails(lead);
+        if (!sent.length) return;
+        const followupSent = sent.filter(item => /follow/i.test(`${item.title || ""} ${item.subject || ""}`));
+        const latest = sent[0];
+        const step = followupSent.length ? "final" : "followup-1";
+        const dueDays = followupSent.length ? 4 : 3;
+        if (daysSince(latest.sentAt) < dueDays) return;
+        if (queue.some(task => task.leadId === lead.id && task.channel === "email" && task.sequenceStep === step && !/^sent|stopped/i.test(task.status || ""))) return;
+        const recipient = lead.email || latest.to || latest.recipient || "";
+        if (!recipient) return;
+        const task = {
+          id: id(),
+          leadId: lead.id,
+          business: lead.business,
+          channel: "email",
+          title: step === "final" ? "Final Follow-up Email" : "Follow-up #1 Email",
+          sequenceStep: step,
+          body: followupDraftBody(lead, step === "final" ? "final" : "followup"),
+          to: recipient,
+          recipient,
+          status: "Needs Approval",
+          createdAt: now(),
+          dueAt: now()
+        };
+        task.sendFingerprint = sendFingerprint(task);
+        queue.unshift(task);
+        lead.stage = lead.stage === "New" ? "Follow-up" : lead.stage;
+        lead.followUpStatus = step === "final" ? "Final follow-up ready" : "Follow-up #1 ready";
+        addTimeline(lead, `${task.title} generated`);
+        generated += 1;
+      });
+      if (generated) {
+        queue = compactEmailDuplicates(queue);
+        sendCenterFilter = "approval";
+        save();
+      }
+      return generated;
+    }
     async function generateFollowups(){
       try {
         const result = await api("/api/sending/run-sequence", { method:"POST", body: JSON.stringify({ autoPilot:$("growthMode").value==="Auto Pilot" }) });
         const crm = await api("/api/crm");
         applyServerState(crm); render();
         const sent = (result.sent || []).filter(item=>item.sent).length;
-        toast(`${result.generated.length} follow-ups generated, ${sent} sent`);
-      } catch(error) { toast(error.message); }
+        const generated = (result.generated || []).length;
+        if (!generated) {
+          const localGenerated = generateLocalFollowups();
+          if (localGenerated) {
+            await syncCrm(true);
+            render();
+            toast(`${localGenerated} follow-up${localGenerated === 1 ? "" : "s"} queued`);
+            return;
+          }
+        }
+        toast(`${generated} follow-ups generated, ${sent} sent`);
+      } catch(error) {
+        const localGenerated = generateLocalFollowups();
+        if (localGenerated) {
+          await syncCrm(true);
+          render();
+          toast(`${localGenerated} follow-up${localGenerated === 1 ? "" : "s"} queued`);
+        } else {
+          toast(error.message || "No follow-ups due");
+        }
+      }
     }
     async function recordReply(){
       try {

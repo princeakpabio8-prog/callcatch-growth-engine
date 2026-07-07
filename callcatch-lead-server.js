@@ -996,6 +996,17 @@ const server = http.createServer(async (req, res) => {
         const items = Array.isArray(body.items) ? body.items : [];
         state.approvalQueue = state.approvalQueue || [];
         hydrateSentEmailHistory(state);
+        if (body.replace === true) {
+          const normalized = items.map(item => ({ id: item.id || newId("task"), createdAt: item.createdAt || new Date().toISOString(), status: item.status || "Needs Approval", ...item }));
+          state.approvalQueue = compactApprovalQueue(normalized, state.leads || []);
+          state.auditLog.unshift({
+            id: newId("audit"),
+            at: new Date().toISOString(),
+            action: "approval_queue_replaced",
+            details: { count: state.approvalQueue.length }
+          });
+          return state.approvalQueue;
+        }
         if (items.length === 0) {
           state.approvalQueue = compactApprovalQueue(state.approvalQueue, state.leads || []);
           return state.approvalQueue;
