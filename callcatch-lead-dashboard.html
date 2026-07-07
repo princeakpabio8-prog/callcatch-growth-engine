@@ -595,6 +595,7 @@
     let pipelineDetailId = "";
     let pipelineMemory = null;
     let lastAutoFollowupCheck = 0;
+    let autoFollowupRunning = false;
     let lastImportStats = { added: 0, skippedNoEmail: 0, duplicates: 0 };
     let setupState = {
       backend: false,
@@ -663,10 +664,10 @@
     }
     async function syncEverywhere(silent = false){
       const ok = await syncCrm(true);
-      const generatedFollowups = await autoDraftDueFollowups(true);
       await Promise.allSettled([checkEmailStatus(true), checkSmsStatus(true), refreshSendingMetrics(), refreshPipelineMemory()]);
       render();
-      if (!silent) toast(generatedFollowups ? `${generatedFollowups} follow-up${generatedFollowups === 1 ? "" : "s"} drafted` : (ok ? "Synced everywhere" : "Sync unavailable"));
+      queueAutoFollowupCheck(true);
+      if (!silent) toast(ok ? "Synced everywhere" : "Sync unavailable");
       return ok;
     }
     function mergeById(localItems, serverItems) {
@@ -2361,21 +2362,22 @@ https://callcatch.site
 
 Helping home service businesses recover missed revenue.`;
     }
-    function generateLocalFollowups(){
+    function generateLocalFollowups(limit = 25){
       let generated = 0;
-      leads.forEach(lead => {
-        if (!workedProspect(lead)) return;
-        if ((lead.replies || []).length || ["Customer","Lost","Demo Scheduled","Trial Started"].includes(pipelineStage(lead))) return;
+      for (const lead of leads) {
+        if (generated >= limit) break;
+        if (!workedProspect(lead)) continue;
+        if ((lead.replies || []).length || ["Customer","Lost","Demo Scheduled","Trial Started"].includes(pipelineStage(lead))) continue;
         const sent = leadSentEmails(lead);
-        if (!sent.length) return;
+        if (!sent.length) continue;
         const followupSent = sent.filter(item => /follow/i.test(`${item.title || ""} ${item.subject || ""}`));
         const latest = sent[0];
         const step = followupSent.length ? "final" : "followup-1";
         const dueDays = followupSent.length ? 4 : 3;
-        if (daysSince(latest.sentAt) < dueDays) return;
-        if (queue.some(task => task.leadId === lead.id && task.channel === "email" && task.sequenceStep === step && !/^sent|stopped/i.test(task.status || ""))) return;
+        if (daysSince(latest.sentAt) < dueDays) continue;
+        if (queue.some(task => task.leadId === lead.id && task.channel === "email" && task.sequenceStep === step && !/^sent|stopped/i.test(task.status || ""))) continue;
         const recipient = lead.email || latest.to || latest.recipient || "";
-        if (!recipient) return;
+        if (!recipient) continue;
         const task = {
           id: id(),
           leadId: lead.id,
@@ -2396,7 +2398,7 @@ Helping home service businesses recover missed revenue.`;
         lead.followUpStatus = step === "final" ? "Final follow-up ready" : "Follow-up #1 ready";
         addTimeline(lead, `${task.title} generated`);
         generated += 1;
-      });
+      }
       if (generated) {
         queue = compactEmailDuplicates(queue);
         sendCenterFilter = "approval";
@@ -2407,12 +2409,25 @@ Helping home service businesses recover missed revenue.`;
     async function autoDraftDueFollowups(silent = true){
       const current = Date.now();
       if (current - lastAutoFollowupCheck < 60000) return 0;
+      if (autoFollowupRunning) return 0;
+      autoFollowupRunning = true;
       lastAutoFollowupCheck = current;
-      const generated = generateLocalFollowups();
-      if (!generated) return 0;
-      await syncCrm(true);
-      if (!silent) toast(`${generated} due follow-up${generated === 1 ? "" : "s"} drafted`);
-      return generated;
+      try {
+        const generated = generateLocalFollowups(15);
+        if (!generated) return 0;
+        await syncCrm(true);
+        if (!silent) toast(`${generated} due follow-up${generated === 1 ? "" : "s"} drafted`);
+        return generated;
+      } finally {
+        autoFollowupRunning = false;
+      }
+    }
+    function queueAutoFollowupCheck(silent = true){
+      setTimeout(() => {
+        autoDraftDueFollowups(silent).then(generated => {
+          if (generated) render();
+        }).catch(() => {});
+      }, 1200);
     }
     async function generateFollowups(){
       try {
@@ -2530,8 +2545,8 @@ Helping home service businesses recover missed revenue.`;
       ["search","tradeFilter","stageFilter","territoryTrade","territoryStage"].forEach(id=>$(id).oninput=render);
       document.addEventListener("visibilitychange", ()=>{ if (!document.hidden) syncEverywhere(true); });
       window.addEventListener("focus", ()=>syncEverywhere(true));
-      setInterval(()=>autoDraftDueFollowups(true).then(generated=>{ if (generated) render(); }).catch(()=>{}), 10 * 60 * 1000);
-      loadServerCrm().then(()=>autoDraftDueFollowups(true)).then(()=>Promise.all([checkEmailStatus(true), checkSmsStatus(true), refreshPipelineMemory()])).then(()=>runSetupChecks(true)).then(()=>{ render(); refreshSendingMetrics(); }).catch(()=>render());
+      setInterval(()=>queueAutoFollowupCheck(true), 10 * 60 * 1000);
+      loadServerCrm().then(()=>Promise.all([checkEmailStatus(true), checkSmsStatus(true), refreshPipelineMemory()])).then(()=>runSetupChecks(true)).then(()=>{ render(); refreshSendingMetrics(); queueAutoFollowupCheck(true); }).catch(()=>render());
     }
     init();
   </script>
