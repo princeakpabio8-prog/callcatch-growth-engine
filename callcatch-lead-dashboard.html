@@ -1051,6 +1051,9 @@
     function sentEmailKeys(){
       return ensureDerivedCache().sentKeys;
     }
+    function ensureSentKeySet(value){
+      return value && typeof value.has === "function" ? value : sentEmailKeys();
+    }
     function isInitialCampaignEmail(item = {}){
       if (item.channel !== "email") return false;
       const step = taskStepKey(item);
@@ -1058,9 +1061,10 @@
       return step === "initial-email" || title.includes("cold email") || title === "email" || title.includes("version a") || title.includes("version b");
     }
     function staleCampaignEmailTask(item = {}, sentKeys = sentEmailKeys()){
+      sentKeys = ensureSentKeySet(sentKeys);
       if (item.channel !== "email" || /^sent$/i.test(item.status || "")) return false;
       if (!isInitialCampaignEmail(item)) return false;
-      const lead = leads.find(candidate => candidate.id === item.leadId) || {};
+      const lead = leadForTask(item);
       const recipient = taskRecipient(item);
       return !!(
         sentKeys.has(`fp:${item.sendFingerprint || sendFingerprint(item)}`)
@@ -1122,6 +1126,7 @@
       return !!item.sequenceStep || step.includes("follow") || step.includes("final") || title.includes("follow") || title.includes("closing the loop");
     }
     function freshCampaignTask(item = {}, sentKeys = sentEmailKeys()){
+      sentKeys = ensureSentKeySet(sentKeys);
       if (item.channel === "email") {
         if (staleCampaignEmailTask(item, sentKeys)) return false;
         if (followupTask(item)) return false;
