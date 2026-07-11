@@ -1,175 +1,47 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://callcatch.site/schemas/brain-one-output.json",
-  "title": "CallCatch Brain One Phase A Structured Intelligence Output",
+  "title": "CallCatch Brain One Phase A Analyst Intelligence Output",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "business_identity",
+    "contacts",
     "business_dna",
-    "evidence",
+    "evidence_log",
     "confirmed_facts",
     "inferences",
     "unknowns",
     "digital_health",
     "ai_discoverability",
+    "future_readiness",
     "hidden_opportunities",
+    "money_left_on_table",
+    "ai_opportunity_radar",
+    "why_we_chose_you",
+    "one_day_action_plan",
     "risks",
-    "priority",
-    "contact_confidence",
+    "contact_decision",
     "brain_two_handoff"
   ],
   "properties": {
-    "business_identity": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["business_name", "website_url", "trade", "location"],
-      "properties": {
-        "business_name": { "type": "string" },
-        "website_url": { "type": "string" },
-        "trade": { "type": "string" },
-        "location": { "type": "string" }
-      }
-    },
-    "business_dna": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["positioning", "likely_customer_base", "service_model", "evidence_ids"],
-      "properties": {
-        "positioning": { "type": "string" },
-        "likely_customer_base": { "type": "string" },
-        "service_model": { "type": "string" },
-        "evidence_ids": { "$ref": "#/$defs/evidence_ids" }
-      }
-    },
-    "evidence": {
-      "type": "array",
-      "minItems": 1,
-      "items": { "$ref": "#/$defs/evidence_item" }
-    },
-    "confirmed_facts": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/claim" }
-    },
-    "inferences": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/inference" }
-    },
-    "unknowns": {
-      "type": "array",
-      "items": { "type": "string" }
-    },
-    "digital_health": { "$ref": "#/$defs/scored_assessment" },
-    "ai_discoverability": { "$ref": "#/$defs/scored_assessment" },
-    "hidden_opportunities": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/opportunity" }
-    },
-    "risks": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/risk" }
-    },
-    "priority": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["level", "score", "reason", "evidence_ids"],
-      "properties": {
-        "level": { "type": "string", "enum": ["low", "medium", "high", "urgent"] },
-        "score": { "type": "number", "minimum": 0, "maximum": 100 },
-        "reason": { "type": "string" },
-        "evidence_ids": { "$ref": "#/$defs/evidence_ids" }
-      }
-    },
-    "contact_confidence": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["owner_name", "confidence", "contact_paths", "evidence_ids"],
-      "properties": {
-        "owner_name": { "type": "string" },
-        "confidence": { "type": "number", "minimum": 0, "maximum": 100 },
-        "contact_paths": { "type": "array", "items": { "type": "string" } },
-        "evidence_ids": { "$ref": "#/$defs/evidence_ids" }
-      }
-    },
-    "brain_two_handoff": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["approved_for_handoff", "summary", "evidence_ids", "do_not_automate_outbound"],
-      "properties": {
-        "approved_for_handoff": { "type": "boolean" },
-        "summary": { "type": "string" },
-        "evidence_ids": { "$ref": "#/$defs/evidence_ids" },
-        "do_not_automate_outbound": { "type": "boolean" }
-      }
-    }
-  },
-  "$defs": {
-    "evidence_ids": {
-      "type": "array",
-      "items": { "type": "string", "minLength": 1 }
-    },
-    "evidence_item": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "source_type", "source_url", "excerpt"],
-      "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "source_type": { "type": "string" },
-        "source_url": { "type": "string" },
-        "excerpt": { "type": "string" }
-      }
-    },
-    "claim": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["claim", "evidence_ids"],
-      "properties": {
-        "claim": { "type": "string" },
-        "evidence_ids": { "$ref": "#/$defs/evidence_ids" }
-      }
-    },
-    "inference": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["inference", "reasoning", "confidence", "evidence_ids"],
-      "properties": {
-        "inference": { "type": "string" },
-        "reasoning": { "type": "string" },
-        "confidence": { "type": "number", "minimum": 0, "maximum": 100 },
-        "evidence_ids": { "$ref": "#/$defs/evidence_ids" }
-      }
-    },
-    "scored_assessment": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["score", "summary", "strengths", "gaps", "evidence_ids"],
-      "properties": {
-        "score": { "type": "number", "minimum": 0, "maximum": 100 },
-        "summary": { "type": "string" },
-        "strengths": { "type": "array", "items": { "type": "string" } },
-        "gaps": { "type": "array", "items": { "type": "string" } },
-        "evidence_ids": { "$ref": "#/$defs/evidence_ids" }
-      }
-    },
-    "opportunity": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["opportunity", "why_it_matters", "evidence_ids"],
-      "properties": {
-        "opportunity": { "type": "string" },
-        "why_it_matters": { "type": "string" },
-        "evidence_ids": { "$ref": "#/$defs/evidence_ids" }
-      }
-    },
-    "risk": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["risk", "severity", "evidence_ids"],
-      "properties": {
-        "risk": { "type": "string" },
-        "severity": { "type": "string", "enum": ["low", "medium", "high"] },
-        "evidence_ids": { "$ref": "#/$defs/evidence_ids" }
-      }
-    }
+    "business_identity": { "type": "object" },
+    "contacts": { "type": "array" },
+    "business_dna": { "type": "object" },
+    "evidence_log": { "type": "array", "minItems": 1 },
+    "confirmed_facts": { "type": "array" },
+    "inferences": { "type": "array" },
+    "unknowns": { "type": "array" },
+    "digital_health": { "type": "object" },
+    "ai_discoverability": { "type": "object" },
+    "future_readiness": { "type": "object" },
+    "hidden_opportunities": { "type": "array", "maxItems": 5 },
+    "money_left_on_table": { "type": "object" },
+    "ai_opportunity_radar": { "type": "object" },
+    "why_we_chose_you": { "type": "object" },
+    "one_day_action_plan": { "type": "object" },
+    "risks": { "type": "array" },
+    "contact_decision": { "type": "object" },
+    "brain_two_handoff": { "type": "object" }
   }
 }

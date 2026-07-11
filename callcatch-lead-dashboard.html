@@ -165,6 +165,23 @@
     .step strong { display: block; }
     .step p { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
     .panel { padding: 15px; min-width: 0; }
+    details {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-top: 10px;
+      background: rgba(127,127,127,.03);
+    }
+    summary {
+      cursor: pointer;
+      font-weight: 900;
+      color: var(--ink);
+      list-style-position: inside;
+    }
+    details h4 { margin: 12px 0 8px; }
+    .markdown h3, .markdown h4, .markdown h5 { margin: 10px 0 7px; }
+    .markdown p { margin-bottom: 8px; }
+    .markdown ul { margin: 7px 0 10px 20px; padding: 0; }
     .toolbar { display: grid; grid-template-columns: 1fr 150px 150px; gap: 8px; margin-bottom: 12px; }
     input, select, textarea {
       width: 100%;
@@ -1124,6 +1141,42 @@
         .filter(run => run.businessId === leadId)
         .sort((a,b)=>new Date(b.createdAt || 0)-new Date(a.createdAt || 0))[0] || null;
     }
+    function markdownToHtml(markdown = ""){
+      const lines = String(markdown || "").split(/\r?\n/);
+      const html = [];
+      let inList = false;
+      const inline = value => esc(value).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      const closeList = () => { if (inList) { html.push("</ul>"); inList = false; } };
+      lines.forEach(line=>{
+        const trimmed = line.trim();
+        if (!trimmed) { closeList(); return; }
+        const heading = trimmed.match(/^(#{1,3})\s+(.+)$/);
+        if (heading) {
+          closeList();
+          const level = heading[1].length + 2;
+          html.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+          return;
+        }
+        const bullet = trimmed.match(/^[-*]\s+(.+)$/);
+        if (bullet) {
+          if (!inList) { html.push("<ul>"); inList = true; }
+          html.push(`<li>${inline(bullet[1])}</li>`);
+          return;
+        }
+        closeList();
+        html.push(`<p>${inline(trimmed)}</p>`);
+      });
+      closeList();
+      return html.join("");
+    }
+    function objectSummaryHtml(value){
+      if (Array.isArray(value)) return value.length ? `<ul>${value.map(item=>`<li>${esc(typeof item === "string" ? item : JSON.stringify(item))}</li>`).join("")}</ul>` : `<p class="sub">None listed.</p>`;
+      if (!value || typeof value !== "object") return `<p class="sub">${esc(value ?? "unknown")}</p>`;
+      return `<div class="queue">${Object.entries(value).filter(([key])=>key !== "evidence_ids").map(([key,val])=>`<div class="mini"><span>${esc(key.replaceAll("_"," "))}</span><strong>${esc(Array.isArray(val) ? val.join(", ") : typeof val === "object" && val !== null ? JSON.stringify(val) : val ?? "unknown")}</strong></div>`).join("")}</div>`;
+    }
+    function claimTags(items = []){
+      return (items || []).slice(0,8).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.claim || item.title || item.risk || item.opportunity || "Observation")}</strong><span class="tag ${item.status === "confirmed" ? "hot" : item.status === "unknown" ? "warn" : ""}">${esc(item.status || item.confidence || "inferred")}</span></div><p class="hint">${esc(item.reasoning || item.limitation || item.why_it_matters || item.why_it_matters || "")}</p><p class="hint">Evidence: ${esc((item.evidence_ids || []).join(", ") || "none")}</p></div>`).join("") || `<p class="sub">None listed.</p>`;
+    }
     function brainOneReportHtml(lead = {}){
       const run = brainOneLatestRun(lead.id);
       if (!run) {
@@ -1131,24 +1184,35 @@
       }
       const output = run.phaseAOutput || run.validatedOutput || {};
       const blueprint = run.blueprintMarkdown || "";
-      const priority = output.priority || {};
+      const decision = output.contact_decision || {};
       const digital = output.digital_health || {};
       const discoverability = output.ai_discoverability || {};
+      const readiness = output.future_readiness || {};
       const opportunities = output.hidden_opportunities || [];
       const risks = output.risks || [];
       const statusTone = run.executionStatus === "completed" ? "hot" : ["failed","validation_failed"].includes(run.executionStatus) ? "bad" : "warn";
       const approval = run.approvalStatus || "pending-review";
       const validationMessage = "Brain One completed its analysis, but the structured report could not be validated. Please run again.";
-      const readableBlueprint = blueprint ? esc(blueprint).replace(/\n/g, "<br>") : "";
+      const opportunityPriority = Math.max(0, ...opportunities.map(item=>Number(item.opportunity_priority_score || 0)));
+      const decisionTone = decision.decision === "CONTACT" ? "hot" : "warn";
       return `<div class="panel"><div class="lead-top"><div><h3>Brain One Opportunity Intelligence</h3><p class="sub">Run ${esc(run.id)} | ${esc(formatDateTime(run.createdAt))}</p></div><span class="tag ${statusTone}">${esc(run.executionStatus)}</span></div>
         ${run.executionStatus === "failed" ? `<p class="hint">${esc(run.errorDetails?.message || "Analysis failed. Check NVIDIA_API_KEY or model output.")}</p>` : ""}
         ${run.executionStatus === "validation_failed" ? `<p class="hint">${esc(run.errorDetails?.message || validationMessage)}</p>${run.errorDetails?.parserError ? `<p class="hint">Parser: ${esc(run.errorDetails.parserError)}</p>` : ""}` : ""}
         ${run.executionStatus === "running" ? `<p class="hint">Brain One is analyzing this business. Refresh shortly.</p>` : ""}
-        ${run.executionStatus === "completed" ? `<div class="detail-grid"><div class="mini"><span>Priority</span><strong>${esc(priority.level || "unknown")}</strong></div><div class="mini"><span>Score</span><strong>${esc(priority.score ?? "-")}</strong></div><div class="mini"><span>Digital</span><strong>${esc(digital.score ?? "-")}</strong></div><div class="mini"><span>AI Findability</span><strong>${esc(discoverability.score ?? "-")}</strong></div></div>
-        <p class="hint">${esc(output.brain_two_handoff?.summary || priority.reason || "Brain One report is ready.")}</p>
-        <div class="insights">${opportunities.slice(0,5).map(item=>`<span class="tag">${esc(item.opportunity || item.why_it_matters || "")}</span>`).join("") || `<span class="tag">No hidden opportunities listed</span>`}</div>
-        <div class="queue">${risks.slice(0,2).map(item=>`<div class="queue-item"><strong>${esc(item.risk || "Risk")}</strong><p class="hint">${esc(item.severity || "unknown")} | ${esc((item.evidence_ids || []).join(", "))}</p></div>`).join("")}</div>
-        ${readableBlueprint ? `<div class="script" style="margin-top:10px;">${readableBlueprint}</div>` : ""}
+        ${run.executionStatus === "completed" ? `<div class="detail-grid"><div class="mini"><span>Decision</span><strong><span class="tag ${decisionTone}">${esc(decision.decision || "UNKNOWN")}</span></strong></div><div class="mini"><span>Opportunity Priority</span><strong>${esc(opportunityPriority)}</strong></div><div class="mini"><span>CallCatch Score</span><strong>${esc(decision.callcatch_opportunity_score ?? "-")}</strong></div><div class="mini"><span>Digital Health</span><strong>${esc(digital.score ?? "-")}</strong></div><div class="mini"><span>AI Discoverability</span><strong>${esc(discoverability.score ?? "-")}</strong></div><div class="mini"><span>Future Readiness</span><strong>${esc(readiness.readiness_level || "unknown")}</strong></div></div>
+        <p class="hint">${esc(decision.primary_reason || output.brain_two_handoff?.summary || "Brain One report is ready.")}</p>
+        <div class="insights"><span class="tag hot">Confirmed</span><span class="tag">Inferred</span><span class="tag warn">Unknown</span></div>
+        <details open><summary>Business DNA</summary>${objectSummaryHtml(output.business_dna || {})}</details>
+        <details><summary>Evidence and Confidence</summary><h4>Confirmed</h4>${claimTags(output.confirmed_facts || [])}<h4>Inferred</h4>${claimTags(output.inferences || [])}</details>
+        <details><summary>Hidden Opportunities</summary>${opportunities.slice(0,5).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.title || item.opportunity || "Opportunity")}</strong><span class="tag">${esc(item.opportunity_priority_score ?? "-")}</span></div><p class="hint">${esc(item.specific_observed_problem || "")}</p><p>${esc(item.why_it_matters || "")}</p><p class="hint">First test: ${esc(item.recommended_first_test || "unknown")} | CallCatch: ${esc(item.callcatch_relevance || "unknown")}</p><p class="hint">Evidence: ${esc((item.evidence_ids || []).join(", ") || "none")}</p></div>`).join("") || `<p class="sub">No hidden opportunities listed.</p>`}</details>
+        <details><summary>Money Left on the Table</summary>${objectSummaryHtml(output.money_left_on_table || {})}</details>
+        <details><summary>AI Opportunity Radar</summary>${Object.entries(output.ai_opportunity_radar || {}).map(([key,item])=>`<div class="queue-item"><div class="lead-top"><strong>${esc(key.replaceAll("_"," "))}</strong><span class="tag">${esc(item.status || "unknown")}</span></div><p class="hint">${esc(item.opportunity || "")}</p><p class="hint">Confidence: ${esc(item.confidence || "unknown")}</p></div>`).join("") || `<p class="sub">No radar data.</p>`}</details>
+        <details><summary>Why We Chose You</summary>${objectSummaryHtml(output.why_we_chose_you || {})}</details>
+        <details><summary>One-Day Action Plan</summary>${objectSummaryHtml(output.one_day_action_plan || {})}</details>
+        <details><summary>Risks and Unknowns</summary><h4>Risks</h4>${claimTags(risks)}<h4>Unknowns</h4>${objectSummaryHtml(output.unknowns || [])}</details>
+        <details><summary>Brain Two Handoff</summary>${objectSummaryHtml(output.brain_two_handoff || {})}</details>
+        <details><summary>Internal Analyst View</summary><div class="script" style="min-height:80px;">${esc(JSON.stringify({ contacts: output.contacts || [], validation: "validated", evidence_log: output.evidence_log || [] }, null, 2))}</div></details>
+        <details open><summary>Full Business Growth Blueprint</summary><div class="script markdown" style="margin-top:10px;">${blueprint ? markdownToHtml(blueprint) : "<p>No founder-facing blueprint returned.</p>"}</div></details>
         <p class="hint">Phase A ${esc(run.phaseADurationMs || 0)}ms | Phase B ${esc(run.phaseBDurationMs || 0)}ms | finish ${esc(run.finishReason || "unknown")}</p>
         <p class="hint">Approval status: ${esc(approval)}. Approval does not trigger outbound email.</p>
         <div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-one-approve="${run.id}|${lead.id}">Approve for CRM/Brain Two</button><button class="btn small" data-brain-one-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-one-analyze="${lead.id}">Analyze Again</button></div>` : `<div class="actions" style="margin-top:10px;"><button class="btn small" data-brain-one-analyze="${lead.id}">Run Again</button></div>`}

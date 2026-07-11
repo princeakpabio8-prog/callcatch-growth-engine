@@ -39,17 +39,22 @@ Phase A returns compact JSON only, matching `/schemas/brain-one-output.json`.
 Required sections:
 
 - business identity
+- contacts with strict owner/contact separation
 - business DNA
-- evidence
+- evidence log
 - confirmed facts
 - inferences
 - unknowns
-- digital health assessment
+- digital health assessment with calculated sub-score total
 - AI discoverability assessment
+- future readiness
 - hidden opportunities
+- money left on the table
+- AI opportunity radar
+- why we chose you
+- one-day action plan
 - risks
-- recommended priority
-- owner/contact confidence
+- CONTACT or DO NOT CONTACT decision
 - Brain Two handoff context
 
 Phase B renders the long-form Business Growth Blueprint as Markdown using only the validated Phase A JSON as its factual source. Phase B output is stored separately from the Phase A JSON.
@@ -58,7 +63,9 @@ Phase B renders the long-form Business Growth Blueprint as Markdown using only t
 
 Evidence IDs in the output must match evidence IDs from `evidenceLog`.
 
-Confirmed facts require direct evidence. Inferences require evidence plus reasoning. Revenue estimates require clear assumptions. If evidence is weak or missing, the output must say unknown rather than guessing.
+Confirmed facts require direct evidence. Inferences require evidence plus reasoning. Monetary estimates require clear assumptions and evidence. If evidence is weak or missing, the output must say unknown or insufficient evidence rather than guessing.
+
+Owner names and contact names must never contain email addresses. Generic inboxes are not person names. CONTACT decisions require more than weak evidence.
 
 ## Persistence
 
