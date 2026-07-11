@@ -1129,22 +1129,27 @@
       if (!run) {
         return `<div class="panel"><div class="lead-top"><div><h3>Brain One Opportunity Intelligence</h3><p class="sub">Manual analysis only. This will not send or queue outreach.</p></div><span class="tag warn">Not analyzed</span></div><div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-one-analyze="${lead.id}">Analyze Business</button></div><p class="hint" id="brainOneStatus-${lead.id}"></p></div>`;
       }
-      const output = run.validatedOutput || {};
-      const blueprint = output.businessGrowthBlueprint || {};
-      const priority = output.recommendedPriority || {};
-      const digital = output.digitalHealthAssessment || {};
-      const discoverability = output.aiDiscoverabilityAssessment || {};
-      const opportunities = output.hiddenOpportunities || [];
-      const estimates = output.revenueOpportunityEstimates || [];
-      const statusTone = run.executionStatus === "completed" ? "hot" : run.executionStatus === "failed" ? "bad" : "warn";
+      const output = run.phaseAOutput || run.validatedOutput || {};
+      const blueprint = run.blueprintMarkdown || "";
+      const priority = output.priority || {};
+      const digital = output.digital_health || {};
+      const discoverability = output.ai_discoverability || {};
+      const opportunities = output.hidden_opportunities || [];
+      const risks = output.risks || [];
+      const statusTone = run.executionStatus === "completed" ? "hot" : ["failed","validation_failed"].includes(run.executionStatus) ? "bad" : "warn";
       const approval = run.approvalStatus || "pending-review";
+      const validationMessage = "Brain One completed its analysis, but the structured report could not be validated. Please run again.";
+      const readableBlueprint = blueprint ? esc(blueprint).replace(/\n/g, "<br>") : "";
       return `<div class="panel"><div class="lead-top"><div><h3>Brain One Opportunity Intelligence</h3><p class="sub">Run ${esc(run.id)} | ${esc(formatDateTime(run.createdAt))}</p></div><span class="tag ${statusTone}">${esc(run.executionStatus)}</span></div>
         ${run.executionStatus === "failed" ? `<p class="hint">${esc(run.errorDetails?.message || "Analysis failed. Check NVIDIA_API_KEY or model output.")}</p>` : ""}
+        ${run.executionStatus === "validation_failed" ? `<p class="hint">${esc(run.errorDetails?.message || validationMessage)}</p>${run.errorDetails?.parserError ? `<p class="hint">Parser: ${esc(run.errorDetails.parserError)}</p>` : ""}` : ""}
         ${run.executionStatus === "running" ? `<p class="hint">Brain One is analyzing this business. Refresh shortly.</p>` : ""}
         ${run.executionStatus === "completed" ? `<div class="detail-grid"><div class="mini"><span>Priority</span><strong>${esc(priority.level || "unknown")}</strong></div><div class="mini"><span>Score</span><strong>${esc(priority.score ?? "-")}</strong></div><div class="mini"><span>Digital</span><strong>${esc(digital.score ?? "-")}</strong></div><div class="mini"><span>AI Findability</span><strong>${esc(discoverability.score ?? "-")}</strong></div></div>
-        <p class="hint">${esc(blueprint.summary || priority.reason || "Brain One report is ready.")}</p>
-        <div class="insights">${opportunities.slice(0,5).map(item=>`<span class="tag">${esc(item.opportunity || item.whyItMatters || "")}</span>`).join("") || `<span class="tag">No hidden opportunities listed</span>`}</div>
-        <div class="queue">${estimates.slice(0,2).map(item=>`<div class="queue-item"><strong>${esc(item.label)}</strong><p class="hint">${money(item.low)} - ${money(item.high)} | confidence ${esc(item.confidence)}%</p><p class="hint">${esc((item.assumptions || []).join(" "))}</p></div>`).join("")}</div>
+        <p class="hint">${esc(output.brain_two_handoff?.summary || priority.reason || "Brain One report is ready.")}</p>
+        <div class="insights">${opportunities.slice(0,5).map(item=>`<span class="tag">${esc(item.opportunity || item.why_it_matters || "")}</span>`).join("") || `<span class="tag">No hidden opportunities listed</span>`}</div>
+        <div class="queue">${risks.slice(0,2).map(item=>`<div class="queue-item"><strong>${esc(item.risk || "Risk")}</strong><p class="hint">${esc(item.severity || "unknown")} | ${esc((item.evidence_ids || []).join(", "))}</p></div>`).join("")}</div>
+        ${readableBlueprint ? `<div class="script" style="margin-top:10px;">${readableBlueprint}</div>` : ""}
+        <p class="hint">Phase A ${esc(run.phaseADurationMs || 0)}ms | Phase B ${esc(run.phaseBDurationMs || 0)}ms | finish ${esc(run.finishReason || "unknown")}</p>
         <p class="hint">Approval status: ${esc(approval)}. Approval does not trigger outbound email.</p>
         <div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-one-approve="${run.id}|${lead.id}">Approve for CRM/Brain Two</button><button class="btn small" data-brain-one-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-one-analyze="${lead.id}">Analyze Again</button></div>` : `<div class="actions" style="margin-top:10px;"><button class="btn small" data-brain-one-analyze="${lead.id}">Run Again</button></div>`}
         <p class="hint" id="brainOneStatus-${lead.id}"></p></div>`;

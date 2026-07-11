@@ -25,18 +25,56 @@ function compact(value, max = 12000) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
+function stripCodeFences(value = "") {
+  return String(value || "")
+    .trim()
+    .replace(/^```(?:json|markdown)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
+
+function firstCompleteJsonObject(value = "") {
+  const text = stripCodeFences(value);
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (start === -1) {
+      if (char === "{") {
+        start = index;
+        depth = 1;
+      }
+      continue;
+    }
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+    } else if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, index + 1);
+    }
+  }
+  if (start >= 0) return text.slice(start);
+  return text;
+}
+
 function parseMaybeJson(raw) {
-  const text = String(raw || "").trim();
+  const text = firstCompleteJsonObject(raw);
   if (!text) throw new Error("Brain One returned an empty response");
-  try {
-    return JSON.parse(text);
-  } catch {}
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced) return JSON.parse(fenced[1]);
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start >= 0 && end > start) return JSON.parse(text.slice(start, end + 1));
-  throw new Error("Brain One response was not valid JSON");
+  return JSON.parse(text);
 }
 
 function typeOf(value) {
@@ -56,13 +94,14 @@ function validateRequiredObject(value, pathName, required = [], errors = []) {
   return errors;
 }
 
-function validateEvidenceItems(items, pathName, errors) {
+function validateEvidenceItems(items, pathName, errors, style = "camel") {
   if (!Array.isArray(items)) {
     errors.push(`${pathName} must be an array`);
     return;
   }
+  const required = style === "snake" ? ["id", "source_type", "source_url", "excerpt"] : ["id", "sourceType", "sourceUrl", "excerpt"];
   for (const [index, item] of items.entries()) {
-    validateRequiredObject(item, `${pathName}[${index}]`, ["id", "sourceType", "sourceUrl", "excerpt"], errors);
+    validateRequiredObject(item, `${pathName}[${index}]`, required, errors);
   }
 }
 
@@ -81,6 +120,10 @@ function validateBrainOneInput(input) {
   return { ok: errors.length === 0, errors };
 }
 
+function evidenceIdList(item = {}) {
+  return item.evidence_ids || item.evidenceIds || [];
+}
+
 function claimListChecks(items, pathName, evidenceIds, errors, requireAssumptions = false) {
   if (!Array.isArray(items)) {
     errors.push(`${pathName} must be an array`);
@@ -91,10 +134,11 @@ function claimListChecks(items, pathName, evidenceIds, errors, requireAssumption
       errors.push(`${pathName}[${index}] must be an object`);
       continue;
     }
-    if (!Array.isArray(item.evidenceIds) || item.evidenceIds.length === 0) {
-      errors.push(`${pathName}[${index}] must include evidenceIds`);
+    const ids = evidenceIdList(item);
+    if (!Array.isArray(ids) || ids.length === 0) {
+      errors.push(`${pathName}[${index}] must include evidence_ids`);
     } else {
-      for (const id of item.evidenceIds) {
+      for (const id of ids) {
         if (!evidenceIds.has(id)) errors.push(`${pathName}[${index}] references unknown evidence id ${id}`);
       }
     }
@@ -109,11 +153,12 @@ function sectionEvidenceCheck(section, pathName, evidenceIds, errors) {
     errors.push(`${pathName} must be an object`);
     return;
   }
-  if (!Array.isArray(section.evidenceIds) || section.evidenceIds.length === 0) {
-    errors.push(`${pathName} must include evidenceIds`);
+  const ids = evidenceIdList(section);
+  if (!Array.isArray(ids) || ids.length === 0) {
+    errors.push(`${pathName} must include evidence_ids`);
     return;
   }
-  for (const id of section.evidenceIds) {
+  for (const id of ids) {
     if (!evidenceIds.has(id)) errors.push(`${pathName} references unknown evidence id ${id}`);
   }
 }
@@ -122,26 +167,24 @@ function validateBrainOneOutput(output) {
   const errors = [];
   validateRequiredObject(output, "output", outputSchema.required, errors);
   if (errors.length) return { ok: false, errors };
-  validateRequiredObject(output.businessIdentity, "businessIdentity", ["businessName", "websiteUrl", "trade", "location"], errors);
-  validateEvidenceItems(output.evidenceLog, "evidenceLog", errors);
-  const evidenceIds = new Set((output.evidenceLog || []).map(item => item.id));
-  claimListChecks(output.confirmedFacts, "confirmedFacts", evidenceIds, errors);
+  validateRequiredObject(output.business_identity, "business_identity", ["business_name", "website_url", "trade", "location"], errors);
+  validateEvidenceItems(output.evidence, "evidence", errors, "snake");
+  const evidenceIds = new Set((output.evidence || []).map(item => item.id));
+  claimListChecks(output.confirmed_facts, "confirmed_facts", evidenceIds, errors);
   claimListChecks(output.inferences, "inferences", evidenceIds, errors);
-  claimListChecks(output.hiddenOpportunities, "hiddenOpportunities", evidenceIds, errors);
-  claimListChecks(output.revenueOpportunityEstimates, "revenueOpportunityEstimates", evidenceIds, errors, true);
+  claimListChecks(output.hidden_opportunities, "hidden_opportunities", evidenceIds, errors);
   claimListChecks(output.risks, "risks", evidenceIds, errors);
-  sectionEvidenceCheck(output.businessDNA, "businessDNA", evidenceIds, errors);
-  sectionEvidenceCheck(output.digitalHealthAssessment, "digitalHealthAssessment", evidenceIds, errors);
-  sectionEvidenceCheck(output.aiDiscoverabilityAssessment, "aiDiscoverabilityAssessment", evidenceIds, errors);
-  sectionEvidenceCheck(output.recommendedPriority, "recommendedPriority", evidenceIds, errors);
-  sectionEvidenceCheck(output.ownerContactConfidence, "ownerContactConfidence", evidenceIds, errors);
-  sectionEvidenceCheck(output.businessGrowthBlueprint, "businessGrowthBlueprint", evidenceIds, errors);
-  sectionEvidenceCheck(output.brainTwoHandoffContext, "brainTwoHandoffContext", evidenceIds, errors);
-  if (output.brainTwoHandoffContext?.doNotAutomateOutbound !== true) {
-    errors.push("brainTwoHandoffContext.doNotAutomateOutbound must be true");
+  sectionEvidenceCheck(output.business_dna, "business_dna", evidenceIds, errors);
+  sectionEvidenceCheck(output.digital_health, "digital_health", evidenceIds, errors);
+  sectionEvidenceCheck(output.ai_discoverability, "ai_discoverability", evidenceIds, errors);
+  sectionEvidenceCheck(output.priority, "priority", evidenceIds, errors);
+  sectionEvidenceCheck(output.contact_confidence, "contact_confidence", evidenceIds, errors);
+  sectionEvidenceCheck(output.brain_two_handoff, "brain_two_handoff", evidenceIds, errors);
+  if (output.brain_two_handoff?.do_not_automate_outbound !== true) {
+    errors.push("brain_two_handoff.do_not_automate_outbound must be true");
   }
-  if (output.brainTwoHandoffContext?.approvedForHandoff !== false) {
-    errors.push("brainTwoHandoffContext.approvedForHandoff must remain false until manual approval");
+  if (output.brain_two_handoff?.approved_for_handoff !== false) {
+    errors.push("brain_two_handoff.approved_for_handoff must remain false until manual approval");
   }
   if (!Array.isArray(output.unknowns)) errors.push("unknowns must be an array");
   return { ok: errors.length === 0, errors };
@@ -163,8 +206,19 @@ async function callNvidia(messages, options = {}) {
   const model = options.model || resolvedNvidiaModel();
   const logStage = stageLogger(options);
   let stage = "nvidia_request_started";
+  const maxTokens = Number(options.maxTokens || 3500);
+  const temperature = Number(options.temperature ?? 0.1);
+  const wantsStructured = options.responseFormat !== false;
   try {
-    logStage(stage, { model, timeoutMs, maxTokens: options.maxTokens || 1800 });
+    logStage(stage, { model, timeoutMs, maxTokens, structuredResponseModeRequested: wantsStructured });
+    const requestBody = {
+      model,
+      messages,
+      temperature,
+      max_tokens: maxTokens,
+      stream: false
+    };
+    if (wantsStructured) requestBody.response_format = { type: "json_object" };
     const response = await fetchImpl(NVIDIA_URL, {
       method: "POST",
       signal: AbortSignal.timeout(timeoutMs),
@@ -172,13 +226,7 @@ async function callNvidia(messages, options = {}) {
         "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: 0.2,
-        max_tokens: Number(options.maxTokens || 1800),
-        stream: false
-      })
+      body: JSON.stringify(requestBody)
     });
     stage = "nvidia_headers_received";
     logStage(stage, { status: response.status, ok: response.ok });
@@ -196,9 +244,23 @@ async function callNvidia(messages, options = {}) {
       error.upstreamStatus = response.status;
       error.upstreamBody = rawBody.slice(0, 4000);
       error.failureStage = stage;
+      error.structuredResponseModeAccepted = false;
       throw error;
     }
-    return payload.choices?.[0]?.message?.content || payload.output_text || "";
+    const content = payload.choices?.[0]?.message?.content || payload.output_text || "";
+    const finishReason = payload.choices?.[0]?.finish_reason || payload.finish_reason || "";
+    logStage("nvidia_result_metadata", {
+      finishReason,
+      responseCharCount: String(content || "").length,
+      structuredResponseModeAccepted: wantsStructured
+    });
+    return {
+      content,
+      finishReason,
+      responseCharCount: String(content || "").length,
+      structuredResponseModeAccepted: wantsStructured,
+      upstreamStatus: response.status
+    };
   } catch (error) {
     const timedOut = error.name === "AbortError" || error.name === "TimeoutError" || /aborted|timeout/i.test(error.message);
     const wrapped = timedOut
@@ -207,6 +269,7 @@ async function callNvidia(messages, options = {}) {
     wrapped.failureStage = error.failureStage || stage;
     wrapped.upstreamStatus = error.upstreamStatus || 0;
     wrapped.upstreamBody = error.upstreamBody || "";
+    wrapped.structuredResponseModeAccepted = error.structuredResponseModeAccepted ?? false;
     logStage("nvidia_request_failed", {
       failureStage: wrapped.failureStage,
       error: wrapped.message,
@@ -219,12 +282,44 @@ async function callNvidia(messages, options = {}) {
 function buildMessages(contextPackage, repairContext = null) {
   const schemaText = compact(JSON.stringify(outputSchema), 9000);
   const userContent = repairContext
-    ? `Repair the previous Brain One JSON output so it validates. Return JSON only.\n\nValidation errors:\n${repairContext.errors.join("\n")}\n\nOriginal context package:\n${JSON.stringify(contextPackage)}\n\nPrevious raw response:\n${repairContext.rawResponse}`
-    : `Analyze this business using Brain One. Return JSON only matching this output schema.\n\nOutput schema:\n${schemaText}\n\nContext package:\n${JSON.stringify(contextPackage)}`;
+    ? `Repair the previous Brain One PHASE A JSON output. Return corrected JSON only.\n\nExact parser or validation error:\n${repairContext.errors.join("\n")}\n\nRequired schema:\n${schemaText}\n\nMalformed model output:\n${repairContext.rawResponse}\n\nOriginal context package:\n${JSON.stringify(contextPackage)}\n\nReturn exactly one corrected JSON object. No markdown. No code fences.`
+    : `PHASE A - Structured Intelligence.\nReturn compact JSON only matching this schema exactly.\nDo not include the long-form Business Growth Blueprint.\n\nOutput schema:\n${schemaText}\n\nContext package:\n${JSON.stringify(contextPackage)}`;
   return [
     { role: "system", content: RUNTIME_PROMPT },
     { role: "user", content: userContent }
   ];
+}
+
+function buildBlueprintMessages(phaseAOutput) {
+  return [
+    {
+      role: "system",
+      content: "You are CALLCATCH BRAIN ONE Phase B. Render a concise Business Growth Blueprint in Markdown using only the provided validated Phase A JSON. Do not add facts that are not in Phase A. Do not write or recommend outbound email copy."
+    },
+    {
+      role: "user",
+      content: `PHASE B - Blueprint Rendering.\nUse this validated Phase A JSON as the only factual source:\n${JSON.stringify(phaseAOutput)}\n\nReturn Markdown with these sections only:\n# Business Growth Blueprint\n## Opportunity Summary\n## Digital Gaps\n## Hidden Opportunities\n## CallCatch Fit\n## Next Best Manual Actions\n## Brain Two Handoff Notes`
+    }
+  ];
+}
+
+function modelContent(result) {
+  if (typeof result === "string") {
+    return {
+      content: result,
+      finishReason: "",
+      responseCharCount: result.length,
+      structuredResponseModeAccepted: false
+    };
+  }
+  const content = result?.content || "";
+  return {
+    content,
+    finishReason: result?.finishReason || "",
+    responseCharCount: result?.responseCharCount ?? String(content).length,
+    structuredResponseModeAccepted: !!result?.structuredResponseModeAccepted,
+    upstreamStatus: result?.upstreamStatus || 0
+  };
 }
 
 async function runBrainOne(contextPackage, options = {}) {
@@ -237,43 +332,101 @@ async function runBrainOne(contextPackage, options = {}) {
   }
   const model = options.model || resolvedNvidiaModel();
   const started = Date.now();
-  const callModel = options.callModel || ((messages) => callNvidia(messages, { ...options, model, startedAt: started }));
-  const firstRaw = await callModel(buildMessages(contextPackage));
+  const callModel = options.callModel || ((messages, callOptions = {}) => callNvidia(messages, { ...options, ...callOptions, model, startedAt: started }));
+  const phaseAStarted = Date.now();
+  const firstResult = modelContent(await callModel(buildMessages(contextPackage)));
+  const firstRaw = firstResult.content;
   let rawResponse = firstRaw;
   let repairErrors = [];
+  let firstParseFailure = "";
+  let phaseAOutput = null;
+  let phaseAMeta = firstResult;
   try {
     try {
       logStage("brain_one_json_validation_started", { attempt: 1 });
       const parsed = parseMaybeJson(firstRaw);
       const validation = validateBrainOneOutput(parsed);
       if (validation.ok) {
+        phaseAOutput = parsed;
         logStage("brain_one_json_validation_completed", { attempt: 1, ok: true });
-        return { model, rawResponse, output: parsed, durationMs: Date.now() - started, repaired: false };
+      } else {
+        firstParseFailure = validation.errors.join("; ");
+        logStage("brain_one_json_validation_completed", { attempt: 1, ok: false, errors: validation.errors.slice(0, 5) });
+        repairErrors = validation.errors;
       }
-      logStage("brain_one_json_validation_completed", { attempt: 1, ok: false, errors: validation.errors.slice(0, 5) });
-      repairErrors = validation.errors;
     } catch (error) {
+      firstParseFailure = error.message;
       logStage("brain_one_json_validation_completed", { attempt: 1, ok: false, errors: [error.message] });
       repairErrors = [error.message];
     }
-    const repairedRaw = await callModel(buildMessages(contextPackage, { errors: repairErrors, rawResponse: firstRaw }));
-    rawResponse = repairedRaw;
-    logStage("brain_one_json_validation_started", { attempt: 2 });
-    const repaired = parseMaybeJson(repairedRaw);
-    const repairedValidation = validateBrainOneOutput(repaired);
-    if (!repairedValidation.ok) {
-      logStage("brain_one_json_validation_completed", { attempt: 2, ok: false, errors: repairedValidation.errors.slice(0, 5) });
-      const error = new Error(`Brain One output failed validation after repair: ${repairedValidation.errors.join("; ")}`);
-      error.validationErrors = repairedValidation.errors;
-      error.rawResponse = repairedRaw;
-      error.failureStage = "brain_one_json_validation_completed";
-      throw error;
+    let repairedMeta = null;
+    if (!phaseAOutput) {
+      const repairedResult = modelContent(await callModel(buildMessages(contextPackage, { errors: repairErrors, rawResponse: firstRaw })));
+      repairedMeta = repairedResult;
+      const repairedRaw = repairedResult.content;
+      rawResponse = repairedRaw;
+      logStage("brain_one_json_validation_started", { attempt: 2 });
+      let repaired = null;
+      let repairedValidation = null;
+      try {
+        repaired = parseMaybeJson(repairedRaw);
+        repairedValidation = validateBrainOneOutput(repaired);
+      } catch (error) {
+        repairedValidation = { ok: false, errors: [error.message] };
+      }
+      if (!repairedValidation.ok) {
+        logStage("brain_one_json_validation_completed", { attempt: 2, ok: false, repairAttemptResult: "failed", errors: repairedValidation.errors.slice(0, 5) });
+        const error = new Error(`Brain One output failed validation after repair: ${repairedValidation.errors.join("; ")}`);
+        error.validationErrors = repairedValidation.errors;
+        error.rawResponse = repairedRaw;
+        error.parserError = firstParseFailure;
+        error.failureStage = "brain_one_json_validation_completed";
+        error.userMessage = "Brain One completed its analysis, but the structured report could not be validated. Please run again.";
+        throw error;
+      }
+      phaseAOutput = repaired;
+      phaseAMeta = repairedMeta;
+      logStage("brain_one_json_validation_completed", { attempt: 2, ok: true });
     }
-    logStage("brain_one_json_validation_completed", { attempt: 2, ok: true });
-    return { model, rawResponse, output: repaired, durationMs: Date.now() - started, repaired: true };
+    const phaseADurationMs = Date.now() - phaseAStarted;
+    logStage("brain_one_phase_a_completed", {
+      durationMs: phaseADurationMs,
+      finishReason: phaseAMeta.finishReason,
+      responseCharCount: phaseAMeta.responseCharCount,
+      structuredResponseModeAccepted: phaseAMeta.structuredResponseModeAccepted,
+      firstParseFailure: firstParseFailure || "",
+      repairAttemptResult: firstParseFailure ? "succeeded" : "not-needed"
+    });
+    const phaseBStarted = Date.now();
+    const blueprintResult = modelContent(await callModel(buildBlueprintMessages(phaseAOutput), { phase: "blueprint", responseFormat: false, maxTokens: 1800, temperature: 0.2 }));
+    const blueprintMarkdown = String(blueprintResult.content || "").trim();
+    const phaseBDurationMs = Date.now() - phaseBStarted;
+    logStage("brain_one_phase_b_completed", {
+      durationMs: phaseBDurationMs,
+      finishReason: blueprintResult.finishReason,
+      responseCharCount: blueprintResult.responseCharCount
+    });
+    return {
+      model,
+      rawResponse,
+      output: phaseAOutput,
+      phaseAOutput,
+      blueprintMarkdown,
+      phaseARawResponse: rawResponse,
+      phaseBRawResponse: blueprintMarkdown,
+      finishReason: phaseAMeta.finishReason,
+      responseCharCount: phaseAMeta.responseCharCount,
+      structuredResponseModeAccepted: phaseAMeta.structuredResponseModeAccepted,
+      firstParseFailure: firstParseFailure || "",
+      phaseADurationMs,
+      phaseBDurationMs,
+      durationMs: Date.now() - started,
+      repaired: !!firstParseFailure
+    };
   } catch (error) {
     if (!error.rawResponse) error.rawResponse = rawResponse;
     if (!error.validationErrors) error.validationErrors = [error.message];
+    if (!error.parserError) error.parserError = firstParseFailure || error.message;
     if (!error.failureStage) error.failureStage = "brain_one_run_failed";
     logStage("brain_one_failed", { failureStage: error.failureStage, error: error.message });
     throw error;
@@ -366,7 +519,7 @@ function applyBrainOneReviewState(state = {}, { runId, leadId, approved, reviewe
     lead.brainOneLatestRunId = record.id;
     lead.brainOneApprovalStatus = record.approvalStatus;
     lead.brainOneApprovedAt = approved ? record.reviewedAt : "";
-    lead.brainOneSummary = record.validatedOutput?.businessGrowthBlueprint?.summary || "";
+    lead.brainOneSummary = record.blueprintMarkdown || record.validatedOutput?.brain_two_handoff?.summary || "";
     lead.timeline = lead.timeline || [];
     lead.timeline.unshift({
       at: record.reviewedAt,

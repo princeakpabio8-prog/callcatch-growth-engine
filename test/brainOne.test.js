@@ -6,6 +6,7 @@ const {
   buildBrainOneContextPackage,
   callNvidia,
   duplicateBrainOneRun,
+  parseMaybeJson,
   resolvedNvidiaTimeoutMs,
   runBrainOne,
   validateBrainOneInput,
@@ -41,42 +42,59 @@ function sampleContext(index = 1) {
 }
 
 function sampleOutput(context = sampleContext(1), overrides = {}) {
-  const evidenceLog = context.evidenceLog.map(item => ({
+  const evidence = context.evidenceLog.map(item => ({
     id: item.id,
-    sourceType: item.sourceType,
-    sourceUrl: item.sourceUrl,
+    source_type: item.sourceType,
+    source_url: item.sourceUrl,
     excerpt: item.excerpt
   }));
-  const ev = evidenceLog[0].id;
-  const websiteEv = evidenceLog[1]?.id || ev;
+  const ev = evidence[0].id;
+  const websiteEv = evidence[1]?.id || ev;
   return {
-    businessIdentity: {
-      businessName: context.businessIdentity.businessName,
-      websiteUrl: context.businessIdentity.websiteUrl,
+    business_identity: {
+      business_name: context.businessIdentity.businessName,
+      website_url: context.businessIdentity.websiteUrl,
       trade: context.businessIdentity.trade,
       location: [context.businessIdentity.city, context.businessIdentity.state].filter(Boolean).join(", ")
     },
-    businessDNA: {
+    business_dna: {
       positioning: "Local home service provider",
-      likelyCustomerBase: "Homeowners and property managers",
-      serviceModel: "Inbound service requests",
-      evidenceIds: [ev]
+      likely_customer_base: "Homeowners and property managers",
+      service_model: "Inbound service requests",
+      evidence_ids: [ev]
     },
-    evidenceLog,
-    confirmedFacts: [{ claim: "The business has a public website or lead record.", evidenceIds: [ev] }],
-    inferences: [{ inference: "Missed calls may matter for this business.", reasoning: "Service businesses rely on inbound requests.", confidence: 70, evidenceIds: [ev] }],
+    evidence,
+    confirmed_facts: [{ claim: "The business has a public website or lead record.", evidence_ids: [ev] }],
+    inferences: [{ inference: "Missed calls may matter for this business.", reasoning: "Service businesses rely on inbound requests.", confidence: 70, evidence_ids: [ev] }],
     unknowns: ["Owner name is unknown unless listed in public evidence."],
-    digitalHealthAssessment: { score: 62, summary: "Basic digital presence found.", strengths: ["Public business record"], gaps: ["Booking depth unknown"], evidenceIds: [ev, websiteEv] },
-    aiDiscoverabilityAssessment: { score: 58, summary: "Some discoverability signals exist.", strengths: ["Indexed website evidence"], gaps: ["Structured AI visibility unknown"], evidenceIds: [websiteEv] },
-    hiddenOpportunities: [{ opportunity: "Recover missed service callers", whyItMatters: "Urgent callers often move to the next provider.", evidenceIds: [ev] }],
-    revenueOpportunityEstimates: [{ label: "Recovered missed-call revenue", low: 3000, high: 12000, currency: "USD", assumptions: ["One to three recovered jobs per month", "Average ticket varies by trade"], confidence: 55, evidenceIds: [ev] }],
-    risks: [{ risk: "Public information may be incomplete.", severity: "medium", evidenceIds: [ev] }],
-    recommendedPriority: { level: "medium", score: 67, reason: "Useful fit with incomplete evidence.", evidenceIds: [ev] },
-    ownerContactConfidence: { ownerName: "", confidence: 20, contactPaths: [context.publicContactDetails.email || context.publicContactDetails.phone || "website"], evidenceIds: [ev] },
-    businessGrowthBlueprint: { summary: "Focus on missed-call capture and response speed.", nextBestActions: ["Confirm service hours", "Confirm missed-call handling"], callCatchFitRationale: "CallCatch is relevant if inbound calls are missed.", evidenceIds: [ev] },
-    brainTwoHandoffContext: { approvedForHandoff: false, summary: "Manual approval required before Brain Two.", evidenceIds: [ev], doNotAutomateOutbound: true },
+    digital_health: { score: 62, summary: "Basic digital presence found.", strengths: ["Public business record"], gaps: ["Booking depth unknown"], evidence_ids: [ev, websiteEv] },
+    ai_discoverability: { score: 58, summary: "Some discoverability signals exist.", strengths: ["Indexed website evidence"], gaps: ["Structured AI visibility unknown"], evidence_ids: [websiteEv] },
+    hidden_opportunities: [{ opportunity: "Recover missed service callers", why_it_matters: "Urgent callers often move to the next provider.", evidence_ids: [ev] }],
+    risks: [{ risk: "Public information may be incomplete.", severity: "medium", evidence_ids: [ev] }],
+    priority: { level: "medium", score: 67, reason: "Useful fit with incomplete evidence.", evidence_ids: [ev] },
+    contact_confidence: { owner_name: "", confidence: 20, contact_paths: [context.publicContactDetails.email || context.publicContactDetails.phone || "website"], evidence_ids: [ev] },
+    brain_two_handoff: { approved_for_handoff: false, summary: "Manual approval required before Brain Two.", evidence_ids: [ev], do_not_automate_outbound: true },
     ...overrides
   };
+}
+
+function compactJson(context = sampleContext(1), overrides = {}) {
+  return JSON.stringify(sampleOutput(context, overrides));
+}
+
+async function runWithFirstResponse(firstResponse, context = sampleContext(1)) {
+  const valid = compactJson(context);
+  let calls = 0;
+  const result = await runBrainOne(context, {
+    model: "test-model",
+    callModel: async () => {
+      calls += 1;
+      if (calls === 1) return firstResponse;
+      if (calls === 2) return valid;
+      return "# Business Growth Blueprint\n\nManual review only.";
+    }
+  });
+  return { result, calls };
 }
 
 test("valid Brain One output passes strict evidence validation across five sample businesses", () => {
@@ -90,24 +108,26 @@ test("valid Brain One output passes strict evidence validation across five sampl
 
 test("malformed JSON retries once and accepts repaired Brain One output", async () => {
   const context = sampleContext(1);
-  const valid = JSON.stringify(sampleOutput(context));
   let calls = 0;
   const result = await runBrainOne(context, {
     model: "test-model",
     callModel: async () => {
       calls += 1;
-      return calls === 1 ? "{ bad json" : valid;
+      if (calls === 1) return "{ bad json";
+      if (calls === 2) return compactJson(context);
+      return "# Business Growth Blueprint\n\nManual review only.";
     }
   });
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
   assert.equal(result.repaired, true);
-  assert.equal(result.output.businessIdentity.businessName, context.businessIdentity.businessName);
+  assert.equal(result.output.business_identity.business_name, context.businessIdentity.businessName);
+  assert.match(result.blueprintMarkdown, /Business Growth Blueprint/);
 });
 
 test("missing evidence references reject model output", () => {
   const context = sampleContext(2);
   const output = sampleOutput(context, {
-    confirmedFacts: [{ claim: "Unsupported claim", evidenceIds: ["missing-evidence"] }]
+    confirmed_facts: [{ claim: "Unsupported claim", evidence_ids: ["missing-evidence"] }]
   });
   const validation = validateBrainOneOutput(output);
   assert.equal(validation.ok, false);
@@ -147,7 +167,7 @@ test("NVIDIA timeout resolver reads configured environment value", () => {
 
 test("NVIDIA request uses compact non-streaming production parameters", async () => {
   let requestBody = null;
-  const content = await callNvidia([{ role: "user", content: "test" }], {
+  const result = await callNvidia([{ role: "user", content: "test" }], {
     apiKey: "secret-test-key",
     model: "meta/llama-3.1-8b-instruct",
     fetchImpl: async (url, options) => {
@@ -155,15 +175,57 @@ test("NVIDIA request uses compact non-streaming production parameters", async ()
       return {
         ok: true,
         status: 200,
-        text: async () => JSON.stringify({ choices: [{ message: { content: "{\"ok\":true}" } }] })
+        text: async () => JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: "{\"ok\":true}" } }] })
       };
     }
   });
-  assert.equal(content, "{\"ok\":true}");
+  assert.equal(result.content, "{\"ok\":true}");
+  assert.equal(result.finishReason, "stop");
+  assert.equal(result.structuredResponseModeAccepted, true);
   assert.equal(requestBody.model, "meta/llama-3.1-8b-instruct");
-  assert.equal(requestBody.temperature, 0.2);
-  assert.equal(requestBody.max_tokens, 1800);
+  assert.equal(requestBody.temperature, 0.1);
+  assert.equal(requestBody.max_tokens, 3500);
   assert.equal(requestBody.stream, false);
+  assert.deepEqual(requestBody.response_format, { type: "json_object" });
+});
+
+test("JSON extractor accepts Markdown code fences", () => {
+  const parsed = parseMaybeJson(`\`\`\`json\n${compactJson()}\n\`\`\``);
+  assert.equal(parsed.business_identity.business_name, sampleContext(1).businessIdentity.businessName);
+});
+
+test("JSON extractor accepts text before JSON", () => {
+  const parsed = parseMaybeJson(`Here is the report:\n${compactJson()}`);
+  assert.equal(parsed.priority.level, "medium");
+});
+
+test("JSON extractor ignores commentary after a complete JSON object", () => {
+  const parsed = parseMaybeJson(`${compactJson()}\nDone.`);
+  assert.equal(parsed.brain_two_handoff.do_not_automate_outbound, true);
+});
+
+test("missing comma JSON is repaired once", async () => {
+  const { result, calls } = await runWithFirstResponse(`{"business_identity":{"business_name":"Broken" "website_url":"https://x.test"}}`);
+  assert.equal(calls, 3);
+  assert.equal(result.repaired, true);
+});
+
+test("unescaped quotation mark JSON is repaired once", async () => {
+  const { result, calls } = await runWithFirstResponse(`{"business_identity":{"business_name":"Bob's "Best" HVAC","website_url":"https://x.test"}}`);
+  assert.equal(calls, 3);
+  assert.equal(result.repaired, true);
+});
+
+test("trailing comma JSON is repaired once", async () => {
+  const { result, calls } = await runWithFirstResponse(`{"business_identity":{"business_name":"Broken","website_url":"https://x.test",}}`);
+  assert.equal(calls, 3);
+  assert.equal(result.repaired, true);
+});
+
+test("truncated JSON is repaired once", async () => {
+  const { result, calls } = await runWithFirstResponse(compactJson().slice(0, 600));
+  assert.equal(calls, 3);
+  assert.equal(result.repaired, true);
 });
 
 test("duplicate analysis request detects an active run for the same business", () => {

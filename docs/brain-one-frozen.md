@@ -14,7 +14,7 @@ Brain One is a manual business analysis engine. It researches one business recor
 - Every material claim must reference evidence from the input package.
 - Estimates must include assumptions and confidence.
 - Malformed model output is rejected.
-- One repair attempt is allowed. If repair fails, the run is stored as failed.
+- One repair attempt is allowed. If repair fails, the raw response and parser error are stored and the user sees a clear validation message.
 
 ## Input Contract
 
@@ -32,25 +32,27 @@ No private inbox content, secret keys, or sender credentials are included.
 
 ## Output Contract
 
-Brain One returns JSON only, matching `/schemas/brain-one-output.json`.
+Brain One now runs in two phases.
+
+Phase A returns compact JSON only, matching `/schemas/brain-one-output.json`.
 
 Required sections:
 
 - business identity
 - business DNA
-- evidence log
+- evidence
 - confirmed facts
 - inferences
 - unknowns
 - digital health assessment
 - AI discoverability assessment
 - hidden opportunities
-- revenue opportunity estimates with assumptions
 - risks
 - recommended priority
 - owner/contact confidence
-- Business Growth Blueprint
 - Brain Two handoff context
+
+Phase B renders the long-form Business Growth Blueprint as Markdown using only the validated Phase A JSON as its factual source. Phase B output is stored separately from the Phase A JSON.
 
 ## Evidence Standard
 
@@ -65,10 +67,12 @@ Every run is logged with:
 - business ID
 - input snapshot
 - model name
-- raw response
-- validated output
+- raw Phase A response
+- validated Phase A output
+- Phase B Markdown blueprint
 - execution status
 - execution duration
+- parser error details when validation fails
 - error details
 - created timestamp
 

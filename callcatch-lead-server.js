@@ -837,7 +837,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && url.pathname === "/api/brain-one/health") {
     const started = Date.now();
     try {
-      const content = await callNvidia([
+      const result = await callNvidia([
         { role: "system", content: "Return JSON only." },
         { role: "user", content: "{\"ok\":true}" }
       ], {
@@ -851,7 +851,9 @@ const server = http.createServer(async (req, res) => {
         model: resolvedNvidiaModel(),
         timeoutMs: Math.min(resolvedNvidiaTimeoutMs(), 60000),
         latencyMs: Date.now() - started,
-        sampleBytes: String(content || "").length
+        sampleBytes: String(result.content || "").length,
+        finishReason: result.finishReason || "",
+        structuredResponseModeAccepted: result.structuredResponseModeAccepted
       });
     } catch (error) {
       return send(res, 502, {
@@ -920,6 +922,16 @@ const server = http.createServer(async (req, res) => {
         if (!record) throw new Error("Brain One run log disappeared");
         record.rawResponse = result.rawResponse;
         record.validatedOutput = result.output;
+        record.phaseAOutput = result.phaseAOutput;
+        record.blueprintMarkdown = result.blueprintMarkdown;
+        record.phaseARawResponse = result.phaseARawResponse;
+        record.phaseBRawResponse = result.phaseBRawResponse;
+        record.finishReason = result.finishReason;
+        record.responseCharCount = result.responseCharCount;
+        record.structuredResponseModeAccepted = result.structuredResponseModeAccepted;
+        record.firstParseFailure = result.firstParseFailure;
+        record.phaseADurationMs = result.phaseADurationMs;
+        record.phaseBDurationMs = result.phaseBDurationMs;
         record.executionStatus = "completed";
         record.executionDurationMs = result.durationMs;
         record.errorDetails = null;
@@ -939,11 +951,12 @@ const server = http.createServer(async (req, res) => {
         const record = (state.brainOneRuns || []).find(item => item.id === runId);
         if (!record) return null;
         record.rawResponse = error.rawResponse || record.rawResponse || "";
-        record.executionStatus = "failed";
+        record.executionStatus = error.userMessage ? "validation_failed" : "failed";
         record.executionDurationMs = record.createdAt ? Date.now() - new Date(record.createdAt).getTime() : 0;
         record.errorDetails = {
-          message: error.message,
+          message: error.userMessage || error.message,
           validationErrors: error.validationErrors || [],
+          parserError: error.parserError || "",
           failureStage: error.failureStage || "",
           upstreamStatus: error.upstreamStatus || 0,
           upstreamBody: error.upstreamBody || ""
@@ -952,7 +965,8 @@ const server = http.createServer(async (req, res) => {
         return record;
       }) : null;
       return send(res, error.upstreamStatus ? 502 : 400, {
-        error: error.message,
+        error: error.userMessage || error.message,
+        parserError: error.parserError || "",
         failureStage: error.failureStage || "",
         upstreamStatus: error.upstreamStatus || 0,
         upstreamBody: error.upstreamBody || "",
