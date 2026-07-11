@@ -502,6 +502,7 @@
               <button class="filter-btn active" data-send-filter="ready" type="button">Ready to Send</button>
               <button class="filter-btn" data-send-filter="missing" type="button">Missing Info</button>
               <button class="filter-btn" data-send-filter="approval" type="button">Review Drafts</button>
+              <button class="filter-btn" data-send-filter="paused" type="button">Paused</button>
               <button class="filter-btn" data-send-filter="failed" type="button">Failed</button>
               <button class="filter-btn" data-send-filter="sent" type="button">Sent</button>
               <button class="filter-btn" data-send-filter="all" type="button">All</button>
@@ -644,6 +645,7 @@
     let pipelineDetailId = "";
     let pipelineMemory = null;
     let lastSentNotice = null;
+    let sendingMetricsSnapshot = null;
     let lastAutoFollowupCheck = 0;
     let autoFollowupRunning = false;
     let dataVersion = 0;
@@ -1749,7 +1751,8 @@
     function sendCategory(item){
       const status = String(item.status || "");
       if (/^sent$/i.test(status)) return "sent";
-      if (/failed|rate limited/i.test(status)) return "failed";
+      if (/rate limited/i.test(status)) return "paused";
+      if (/failed/i.test(status)) return "failed";
       if (status.includes("duplicate") || duplicateSent(item)) return "failed";
       if (sendMissingInfo(item)) return "missing";
       if (!/^approved/i.test(status)) return "approval";
@@ -1761,10 +1764,19 @@
         ["Ready", count("ready")],
         ["Missing Info", count("missing")],
         ["Needs Approval", count("approval")],
+        ["Paused", count("paused")],
         ["Failed", count("failed")],
         ["Sent", count("sent")],
+        ["Left This Hour", sendingMetricsSnapshot?.remaining?.remainingThisHour ?? "-"],
+        ["Left Today", sendingMetricsSnapshot?.remaining?.remainingToday ?? "-"],
         ["Total", tasks.length]
       ];
+    }
+    function rateLimitMessage(result = {}){
+      const reset = result.resetAt || result.limit?.resetHourAt || result.task?.nextAttemptAt || "";
+      const resetText = reset ? ` Try again after ${formatDateTime(reset)}.` : " Try again later.";
+      const remaining = result.limit ? ` Remaining: ${result.limit.remainingThisHour || 0}/hour, ${result.limit.remainingToday || 0}/day.` : "";
+      return result.error || `Sending paused because the safety limit was reached.${resetText}${remaining}`;
     }
     function messageSubject(body){
       const first = String(body || "").split(/\r?\n/).find(Boolean) || "";
@@ -1871,6 +1883,7 @@
         ready: "No approved emails ready. Review drafts first, or run Discovery for more email-ready prospects.",
         approval: "No drafts need review. Open Discovery to find fresh prospects, then tap Research + Draft.",
         missing: "No drafts are missing recipient details.",
+        paused: "Sending is paused by the safety limit. CallCatch will let you continue when capacity resets.",
         failed: "No failed messages right now.",
         sent: "No sent messages in this view yet. Sent emails also appear in Pipeline.",
         all: "No email tasks yet. Run Discovery, then review and send from here."
@@ -1880,6 +1893,9 @@
       renderSendCenterFollowups();
       renderSetupChecklist();
       bindQueueActions();
+      if (!sendingMetricsSnapshot) setTimeout(() => refreshSendingMetrics().then(() => {
+        if (document.querySelector(".view.active")?.id === "sendcenter") renderSendCenter();
+      }), 50);
       if (!setupChecksLoaded && !setupChecksRunning) setTimeout(() => runSetupChecks(true), 50);
     }
     function openComposer(taskId){
@@ -2374,7 +2390,8 @@
     async function refreshSendingMetrics(){
       try {
         const m = await api("/api/sending/metrics");
-        $("sendingStats").innerHTML = [["Emails Waiting",m.emailsWaiting],["Emails Sent Today",m.emailsSentToday],["Open Rate",m.openRate+"%"],["Reply Rate",m.replyRate+"%"],["Meetings Booked",m.meetingsBooked],["Follow-ups Due",m.followUpsDue],["Pipeline",money(m.estimatedRevenuePipeline)]].map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join("");
+        sendingMetricsSnapshot = m;
+        if ($("sendingStats")) $("sendingStats").innerHTML = [["Emails Waiting",m.emailsWaiting],["Emails Sent Today",m.emailsSentToday],["Left This Hour",m.remaining?.remainingThisHour ?? "-"],["Left Today",m.remaining?.remainingToday ?? "-"],["Open Rate",m.openRate+"%"],["Reply Rate",m.replyRate+"%"],["Meetings Booked",m.meetingsBooked],["Follow-ups Due",m.followUpsDue],["Pipeline",money(m.estimatedRevenuePipeline)]].map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join("");
       } catch {}
     }
     function renderAudit(){
@@ -2529,12 +2546,22 @@
         $("sendProgress").textContent = `Sending... 0 / ${approved.length} Complete`;
         const result = await api("/api/sending/send-all-approved", { method:"POST", body: JSON.stringify({ taskIds: approved.map(item=>item.id) }) });
         (result.results?.sent || []).forEach(item => item.task?.id && markEmailSentLocally(item.task.id, item.task));
+        (result.results?.skipped || []).forEach(item => {
+          const task = queue.find(q=>q.id===item.task?.id);
+          if (task) {
+            task.status = "Rate Limited";
+            task.error = rateLimitMessage(item);
+            task.nextAttemptAt = item.task?.nextAttemptAt || item.resetAt || "";
+          }
+        });
         const crm = await api("/api/crm");
         applyServerState(crm);
         if (result.sent) sendCenterFilter = "sent";
+        if (result.skipped) sendCenterFilter = "paused";
         render();
-        $("sendProgress").textContent = `Complete: ${result.complete} / ${result.total}. Sent: ${result.sent}. Failed: ${result.failed}. Messages remaining: ${result.remaining}.`;
-        toast(`${result.sent} sent, ${result.failed} failed`);
+        const pauseText = result.skipped ? ` Sending paused: ${rateLimitMessage(result.results?.skipped?.[0] || {})}` : "";
+        $("sendProgress").textContent = `Complete: ${result.complete} / ${result.total}. Sent: ${result.sent}. Failed: ${result.failed}. Messages remaining: ${result.remaining}.${pauseText}`;
+        toast(result.skipped ? "Sending paused by limit" : `${result.sent} sent, ${result.failed} failed`);
       } catch(error) {
         $("sendProgress").textContent = `Bulk send failed: ${error.message}`;
         toast(error.message);
@@ -2562,12 +2589,20 @@
         $("sendProgress").textContent = `Sending ${localTask?.channel === "sms" ? "SMS" : "email"} through Render...`;
         const result = await api("/api/sending/send-now", { method:"POST", body: JSON.stringify({ taskId }) });
         if (result.sent) markEmailSentLocally(taskId, result.task || {});
+        if (result.rateLimited && localTask) {
+          localTask.status = "Rate Limited";
+          localTask.error = rateLimitMessage(result);
+          localTask.nextAttemptAt = result.task?.nextAttemptAt || result.resetAt || "";
+          save();
+        }
         const crm = await api("/api/crm");
         applyServerState(crm);
         if (result.sent) sendCenterFilter = "sent";
+        if (result.rateLimited) sendCenterFilter = "paused";
         render();
-        $("sendProgress").textContent = result.sent ? `${result.task?.channel === "sms" ? "SMS" : "Email"} sent successfully. Follow-up is now tracked in CallCatch.` : (result.error || "Message was not sent.");
-        toast(result.sent ? "Sent and tracked" : (result.error || "Not sent"));
+        const resultMessage = result.sent ? `${result.task?.channel === "sms" ? "SMS" : "Email"} sent successfully. Follow-up is now tracked in CallCatch.` : result.rateLimited ? rateLimitMessage(result) : (result.error || "Message was not sent.");
+        $("sendProgress").textContent = resultMessage;
+        toast(result.sent ? "Sent and tracked" : result.rateLimited ? "Sending paused" : (result.error || "Not sent"));
         if (result.sent) queueAutoFollowupCheck(true);
         return !!result.sent;
       } catch(error) {

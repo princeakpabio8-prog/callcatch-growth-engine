@@ -58,12 +58,21 @@ function canSendMore(state, date = new Date()) {
   const hour = hourKey(date);
   const dayCount = sending.counts.byDay[day] || 0;
   const hourCount = sending.counts.byHour[hour] || 0;
+  const hourResetAt = new Date(date);
+  hourResetAt.setUTCMinutes(0, 0, 0);
+  hourResetAt.setUTCHours(hourResetAt.getUTCHours() + 1);
+  const dayResetAt = new Date(date);
+  dayResetAt.setUTCHours(24, 0, 0, 0);
   return {
     allowed: dayCount < sending.limits.maxPerDay && hourCount < sending.limits.maxPerHour,
     dayCount,
     hourCount,
     remainingToday: Math.max(0, sending.limits.maxPerDay - dayCount),
-    remainingThisHour: Math.max(0, sending.limits.maxPerHour - hourCount)
+    remainingThisHour: Math.max(0, sending.limits.maxPerHour - hourCount),
+    maxPerHour: sending.limits.maxPerHour,
+    maxPerDay: sending.limits.maxPerDay,
+    resetHourAt: hourResetAt.toISOString(),
+    resetDayAt: dayResetAt.toISOString()
   };
 }
 
@@ -229,7 +238,10 @@ async function sendTaskNow(state, taskId) {
   if (!limit.allowed) {
     task.status = "Rate Limited";
     task.nextAttemptAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-    return { sent: false, rateLimited: true, task };
+    const blockedBy = limit.remainingThisHour <= 0 ? "hourly" : "daily";
+    const resetAt = blockedBy === "hourly" ? limit.resetHourAt : limit.resetDayAt;
+    task.error = `Sending paused: ${blockedBy} limit reached. Try again after ${resetAt}.`;
+    return { sent: false, rateLimited: true, error: task.error, limit, resetAt, task };
   }
 
   const lead = findLead(state, task);
