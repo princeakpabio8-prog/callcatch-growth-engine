@@ -364,6 +364,8 @@
       .mobile-non-email { display: none !important; }
       .nav-secondary { display: none; }
       .flow-strip { grid-template-columns: 1fr; }
+      .setup-panel { order: 2; }
+      .send-actions-panel { order: 1; }
       .checklist { grid-template-columns: 1fr; }
       .panel { padding: 12px; }
       h1 { font-size: 24px; }
@@ -483,7 +485,7 @@
         <div class="top"><div><h1>Email Work Queue</h1><p class="sub">Review, send, and follow up without sorting through old campaigns.</p></div><div class="actions"><button class="btn" id="refreshSetupBtn" type="button">Refresh Checks</button><button class="btn" id="sendCenterSyncBtn" type="button">Sync All</button><button class="btn primary" id="sendCenterSendAllBtn" type="button">Send All Ready</button></div></div>
         <div class="stats" id="sendCenterStats"></div>
         <div class="send-center-grid">
-          <div class="panel">
+          <div class="panel send-actions-panel">
             <h2>Next Email Actions</h2>
             <div class="send-filters" id="sendFilters">
               <button class="filter-btn active" data-send-filter="ready" type="button">Ready to Send</button>
@@ -495,7 +497,7 @@
             </div>
             <div class="queue" id="sendCenterList"></div>
           </div>
-          <div class="panel">
+          <div class="panel setup-panel">
             <h2>Setup Checklist</h2>
             <div class="checklist" id="setupChecklist"></div>
             <p class="hint" id="setupChecklistStatus">Checks run automatically when the app loads.</p>
@@ -633,15 +635,17 @@
     let derivedCache = { stamp: -1, leadMap: new Map(), sentTasks: [], sentByLead: new Map(), sentKeys: null, sentFingerprintMap: new Map() };
     let lastImportStats = { added: 0, skippedNoEmail: 0, duplicates: 0 };
     let setupState = {
-      backend: false,
-      leadSources: false,
-      serper: false,
-      brave: false,
-      email: false,
-      sms: false,
-      crm: false,
-      approvalQueue: false
+      backend: null,
+      leadSources: null,
+      serper: null,
+      brave: null,
+      email: null,
+      sms: null,
+      crm: null,
+      approvalQueue: null
     };
+    let setupChecksRunning = false;
+    let setupChecksLoaded = false;
     let selectedId = leads[0]?.id || "";
     const $ = id => document.getElementById(id);
     const PRODUCTION_API_BASE = "https://callcatch-growth-engine.onrender.com";
@@ -1723,16 +1727,27 @@
         : leads.length
           ? "No email-ready outreach is queued yet. Search found prospects; scan or enrich them to discover emails."
           : "Run Discovery to add prospects, then CallCatch will queue email outreach when emails are found.";
+      const stateBadge = (value, optional = false) => {
+        if (value === true) return { label: "Ready", tone: "hot" };
+        if (value === null || value === undefined) return { label: "Checking", tone: "warn" };
+        if (optional) return { label: "Optional", tone: "warn" };
+        return { label: "Needs Setup", tone: "bad" };
+      };
       const items = [
-        ["Render Backend", setupState.backend, "Live app is reachable."],
-        ["Lead Sources", setupState.leadSources, "Public discovery APIs respond."],
-        ["Serper Search", setupState.serper, setupState.serper ? "Website finder is active." : "Recommended: add SERPER_API_KEY to find more official websites."],
-        ["Email Provider", setupState.email, "Resend, Brevo, or SMTP is configured."],
-        ["SMS Provider", setupState.sms, "Twilio is configured."],
-        ["CRM Sync", setupState.crm, "Leads and queue are synced with Render."],
+        ["Render Backend", setupState.backend, setupState.backend === false ? "Could not verify Render yet. Tap Refresh Checks." : "Live app is reachable."],
+        ["Lead Sources", setupState.leadSources, setupState.leadSources === false ? "Public source check did not pass yet. Discovery can still try live search." : "Public discovery APIs respond."],
+        ["Serper Search", setupState.serper, setupState.serper ? "Website finder is active." : "Optional: add SERPER_API_KEY to find more official websites.", true],
+        ["Email Provider", setupState.email, setupState.email === false ? "Email sending is not verified yet. Check provider settings if sending fails." : "Resend, Brevo, or SMTP is configured."],
+        ["SMS Provider", setupState.sms, setupState.sms === false ? "Twilio is optional and hidden on mobile." : "Twilio is configured.", true],
+        ["CRM Sync", setupState.crm, setupState.crm === false ? "CRM sync has not been verified yet." : "Leads and queue are synced with Render."],
         ["Approval Queue", setupState.approvalQueue || leads.length > 0, queueDetail]
       ].filter(([label]) => !(mobileEmailFocus() && label === "SMS Provider"));
-      $("setupChecklist").innerHTML = items.map(([label, ok, detail])=>`<div class="check-item"><span class="tag ${ok ? "hot" : "bad"}">${ok ? "Ready" : "Needs Setup"}</span><strong>${esc(label)}</strong><p class="hint">${esc(detail)}</p></div>`).join("");
+      $("setupChecklist").innerHTML = items.map(([label, ok, detail, optional])=>{
+        const badge = stateBadge(ok, optional);
+        return `<div class="check-item"><span class="tag ${badge.tone}">${esc(badge.label)}</span><strong>${esc(label)}</strong><p class="hint">${esc(detail)}</p></div>`;
+      }).join("");
+      const status = $("setupChecklistStatus");
+      if (status && !setupChecksLoaded && !setupChecksRunning) status.textContent = "Checks will update automatically. You can still use Discovery and Email Queue.";
     }
     function renderSendCenter(){
       const tasks = sendableTasks();
@@ -1750,6 +1765,7 @@
       $("sendCenterList").innerHTML = visible.length ? visible.map(sendCenterItemHtml).join("") : `<p class="sub">${esc(emptyText)}</p>`;
       renderSetupChecklist();
       bindQueueActions();
+      if (!setupChecksLoaded && !setupChecksRunning) setTimeout(() => runSetupChecks(true), 50);
     }
     function openComposer(taskId){
       const task = queue.find(item => item.id === taskId);
@@ -1884,6 +1900,8 @@
       if (task) copy(task.body);
     }
     async function runSetupChecks(silent = false){
+      if (setupChecksRunning) return false;
+      setupChecksRunning = true;
       $("setupChecklistStatus").textContent = "Checking CallCatch setup...";
       try {
         const [health, network, email, sms, crm] = await Promise.allSettled([
@@ -1906,13 +1924,17 @@
         emailReady = setupState.email;
         smsReady = setupState.sms;
         serverSynced = setupState.crm;
+        setupChecksLoaded = true;
         $("setupChecklistStatus").textContent = "Setup checks updated.";
         if (!silent) toast("Setup checks updated");
       } catch {
         $("setupChecklistStatus").textContent = "Setup checks could not complete.";
         if (!silent) toast("Setup check failed");
+      } finally {
+        setupChecksRunning = false;
       }
-      renderSendCenter();
+      if (document.querySelector(".view.active")?.id === "sendcenter") renderSendCenter();
+      return setupChecksLoaded;
     }
     function leadRowHtml(l){
       const emailStatus = leadEmailStatus(l);
