@@ -190,6 +190,47 @@ const RADAR_DIMENSIONS = [
   "operational_efficiency",
   "future_readiness"
 ];
+const MONEY_FALLBACK_DISCLAIMER = "Insufficient evidence for a responsible monetary estimate.";
+
+function safeMoneyFallback() {
+  return {
+    status: "insufficient_evidence",
+    low_estimate: null,
+    high_estimate: null,
+    currency: null,
+    time_period: null,
+    calculation_method: null,
+    assumptions: [],
+    evidence_ids: [],
+    confidence: "low",
+    disclaimer: MONEY_FALLBACK_DISCLAIMER
+  };
+}
+
+function safeRadarFallback() {
+  return Object.fromEntries(RADAR_DIMENSIONS.map(key => [key, {
+    status: "unknown",
+    evidence: "Insufficient public evidence was available.",
+    opportunity: "Unknown until more public evidence is collected.",
+    confidence: "low",
+    evidence_ids: []
+  }]));
+}
+
+function safeEvidenceSectionFallback(summary = "Insufficient public evidence was available.") {
+  return {
+    status: "insufficient_evidence",
+    summary,
+    evidence_ids: []
+  };
+}
+
+function recordNormalization(meta, field) {
+  if (!meta) return;
+  meta.normalization_applied = true;
+  meta.normalized_fields = meta.normalized_fields || [];
+  if (!meta.normalized_fields.includes(field)) meta.normalized_fields.push(field);
+}
 
 function isEmailLike(value = "") {
   return /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i.test(String(value || ""));
@@ -258,10 +299,11 @@ function sectionEvidenceCheck(section, pathName, evidenceIds, errors) {
   }
 }
 
-function normalizeBrainOneOutput(output = {}) {
+function normalizeBrainOneOutput(output = {}, meta = null) {
   if (Array.isArray(output.evidence) && !Array.isArray(output.evidence_log)) {
     output.evidence_log = output.evidence;
     delete output.evidence;
+    recordNormalization(meta, "evidence_log");
   }
   if (output.contact_confidence && !Array.isArray(output.contacts)) {
     output.contacts = [{
@@ -276,6 +318,29 @@ function normalizeBrainOneOutput(output = {}) {
       evidence_ids: evidenceIdList(output.contact_confidence)
     }];
     delete output.contact_confidence;
+    recordNormalization(meta, "contacts");
+  }
+  for (const field of ["contacts", "evidence_log", "confirmed_facts", "inferences", "unknowns", "hidden_opportunities", "risks"]) {
+    if (!Array.isArray(output[field])) {
+      output[field] = [];
+      recordNormalization(meta, field);
+    }
+  }
+  if (!output.money_left_on_table || typeof output.money_left_on_table !== "object" || Array.isArray(output.money_left_on_table)) {
+    output.money_left_on_table = safeMoneyFallback();
+    recordNormalization(meta, "money_left_on_table");
+  }
+  if (!output.ai_opportunity_radar || typeof output.ai_opportunity_radar !== "object" || Array.isArray(output.ai_opportunity_radar)) {
+    output.ai_opportunity_radar = safeRadarFallback();
+    recordNormalization(meta, "ai_opportunity_radar");
+  }
+  if (!output.why_we_chose_you || typeof output.why_we_chose_you !== "object" || Array.isArray(output.why_we_chose_you)) {
+    output.why_we_chose_you = safeEvidenceSectionFallback("Insufficient public evidence was available to explain why this business deserves attention.");
+    recordNormalization(meta, "why_we_chose_you");
+  }
+  if (!output.one_day_action_plan || typeof output.one_day_action_plan !== "object" || Array.isArray(output.one_day_action_plan)) {
+    output.one_day_action_plan = safeEvidenceSectionFallback("Insufficient public evidence was available to create a responsible one-day action plan.");
+    recordNormalization(meta, "one_day_action_plan");
   }
   const subScores = output.digital_health?.sub_scores || {};
   if (output.digital_health && typeof subScores === "object") {
@@ -373,17 +438,27 @@ function validateMoneyLeftOnTable(section, evidenceIds, errors) {
     errors.push("money_left_on_table must be an object");
     return;
   }
-  for (const key of ["status", "summary", "low_estimate", "high_estimate", "currency", "time_period", "calculation_method", "assumptions", "evidence_ids", "confidence", "disclaimer"]) {
+  for (const key of ["status", "low_estimate", "high_estimate", "currency", "time_period", "calculation_method", "assumptions", "evidence_ids", "confidence", "disclaimer"]) {
     if (!(key in section)) errors.push(`money_left_on_table.${key} is required`);
   }
-  if (section?.status === "insufficient_evidence") return;
-  if (!["estimated", "scenario"].includes(section?.status)) errors.push("money_left_on_table.status must be estimated, scenario, or insufficient_evidence");
+  if (section?.status === "insufficient_evidence") {
+    if (section.low_estimate !== null || section.high_estimate !== null || section.currency !== null || section.time_period !== null || section.calculation_method !== null) {
+      errors.push("money_left_on_table insufficient_evidence values must use null monetary fields");
+    }
+    if (!Array.isArray(section.assumptions) || section.assumptions.length !== 0) errors.push("money_left_on_table insufficient_evidence assumptions must be empty");
+    if (!Array.isArray(section.evidence_ids) || section.evidence_ids.length !== 0) errors.push("money_left_on_table insufficient_evidence evidence_ids must be empty");
+    if (section.confidence !== "low") errors.push("money_left_on_table insufficient_evidence confidence must be low");
+    if (section.disclaimer !== MONEY_FALLBACK_DISCLAIMER) errors.push("money_left_on_table insufficient_evidence disclaimer must use the safe fallback");
+    return;
+  }
+  if (section?.status !== "estimated") errors.push("money_left_on_table.status must be estimated or insufficient_evidence");
   if (!Number.isFinite(Number(section?.low_estimate)) || !Number.isFinite(Number(section?.high_estimate))) {
-    errors.push("money_left_on_table estimates must be numeric when status is estimated or scenario");
+    errors.push("money_left_on_table estimates must be numeric when status is estimated");
   }
   if (!Array.isArray(section?.assumptions) || section.assumptions.length === 0) errors.push("money_left_on_table.assumptions are required for estimates");
   evidenceReferenceCheck(evidenceIdList(section), "money_left_on_table", evidenceIds, errors);
   if (!section?.calculation_method) errors.push("money_left_on_table.calculation_method is required for estimates");
+  if (!CLAIM_CONFIDENCE.has(section?.confidence)) errors.push("money_left_on_table.confidence must be high, medium, or low");
 }
 
 function validateContactDecision(section, evidenceIds, errors) {
@@ -398,8 +473,18 @@ function validateRadar(section, evidenceIds, errors) {
   validateRequiredObject(section, "ai_opportunity_radar", RADAR_DIMENSIONS, errors);
   for (const key of RADAR_DIMENSIONS) {
     validateRequiredObject(section?.[key], `ai_opportunity_radar.${key}`, ["status", "evidence", "opportunity", "confidence", "evidence_ids"], errors);
-    evidenceReferenceCheck(evidenceIdList(section?.[key]), `ai_opportunity_radar.${key}`, evidenceIds, errors);
+    if (section?.[key]?.status !== "unknown") {
+      evidenceReferenceCheck(evidenceIdList(section?.[key]), `ai_opportunity_radar.${key}`, evidenceIds, errors);
+    }
   }
+}
+
+function safeSectionEvidenceCheck(section, pathName, evidenceIds, errors) {
+  if (section?.status === "insufficient_evidence") {
+    if (!Array.isArray(section.evidence_ids)) errors.push(`${pathName}.evidence_ids must be an array`);
+    return;
+  }
+  sectionEvidenceCheck(section, pathName, evidenceIds, errors);
 }
 
 function validatePhaseBMarkdownAgainstPhaseA(markdown = "", phaseA = {}) {
@@ -424,9 +509,15 @@ function validatePhaseBMarkdownAgainstPhaseA(markdown = "", phaseA = {}) {
   return { ok: errors.length === 0, errors, allowedFacts: allowedNames };
 }
 
-function validateBrainOneOutput(output) {
+function validateBrainOneOutput(output, options = {}) {
   const errors = [];
-  normalizeBrainOneOutput(output);
+  const normalizationMeta = options.normalizationMeta || { normalization_applied: false, normalized_fields: [] };
+  normalizeBrainOneOutput(output, normalizationMeta);
+  if (normalizationMeta.normalization_applied && typeof options.logger === "function") {
+    options.logger("info", "brain_one_output_normalized", {
+      normalized_fields: normalizationMeta.normalized_fields
+    });
+  }
   validateRequiredObject(output, "output", outputSchema.required, errors);
   if (errors.length) return { ok: false, errors };
   validateRequiredObject(output.business_identity, "business_identity", ["business_name", "website_url", "trade", "location"], errors);
@@ -444,8 +535,8 @@ function validateBrainOneOutput(output) {
   validateHiddenOpportunities(output.hidden_opportunities, evidenceIds, errors);
   validateMoneyLeftOnTable(output.money_left_on_table, evidenceIds, errors);
   validateRadar(output.ai_opportunity_radar, evidenceIds, errors);
-  sectionEvidenceCheck(output.why_we_chose_you, "why_we_chose_you", evidenceIds, errors);
-  sectionEvidenceCheck(output.one_day_action_plan, "one_day_action_plan", evidenceIds, errors);
+  safeSectionEvidenceCheck(output.why_we_chose_you, "why_we_chose_you", evidenceIds, errors);
+  safeSectionEvidenceCheck(output.one_day_action_plan, "one_day_action_plan", evidenceIds, errors);
   validateContactDecision(output.contact_decision, evidenceIds, errors);
   sectionEvidenceCheck(output.brain_two_handoff, "brain_two_handoff", evidenceIds, errors);
   if (output.brain_two_handoff?.do_not_automate_outbound !== true) {
@@ -566,7 +657,7 @@ function buildBlueprintMessages(phaseAOutput) {
     },
     {
       role: "user",
-      content: `PHASE B - Founder-Facing Blueprint Rendering.\nUse this validated Phase A JSON as the only factual source:\n${JSON.stringify(phaseAOutput)}\n\nReturn Markdown with these sections only:\n# Business Growth Blueprint\n## Opportunity Summary\n## What We Noticed\n## Hidden Opportunities\n## Money Left on the Table\n## AI Opportunity Radar\n## Why This Business Deserves Attention\n## If CallCatch Owned This Business For One Day\n## Contact Decision\n\nDo not include internal evidence IDs, JSON, validation terms, or unsupported claims.`
+      content: `PHASE B - Founder-Facing Blueprint Rendering.\nUse this validated Phase A JSON as the only factual source:\n${JSON.stringify(phaseAOutput)}\n\nReturn Markdown with these sections only:\n# Business Growth Blueprint\n## Opportunity Summary\n## What We Noticed\n## Hidden Opportunities\n## Money Left on the Table\n## AI Opportunity Radar\n## Why This Business Deserves Attention\n## If CallCatch Owned This Business For One Day\n## Contact Decision\n\nIf money_left_on_table.status is "insufficient_evidence", write exactly this idea in plain language: "Insufficient public evidence was available to produce a responsible monetary estimate." Do not show $0, £0, zero loss, or an invented range.\n\nDo not include internal evidence IDs, JSON, validation terms, or unsupported claims.`
     }
   ];
 }
@@ -609,13 +700,19 @@ async function runBrainOne(contextPackage, options = {}) {
   let firstParseFailure = "";
   let phaseAOutput = null;
   let phaseAMeta = firstResult;
+  let normalizationMeta = { normalization_applied: false, normalized_fields: [] };
   try {
     try {
       logStage("brain_one_json_validation_started", { attempt: 1 });
       const parsed = parseMaybeJson(firstRaw);
-      const validation = validateBrainOneOutput(parsed);
+      const attemptNormalizationMeta = { normalization_applied: false, normalized_fields: [] };
+      const validation = validateBrainOneOutput(parsed, { normalizationMeta: attemptNormalizationMeta });
+      if (attemptNormalizationMeta.normalization_applied) {
+        logStage("brain_one_output_normalized", { attempt: 1, normalized_fields: attemptNormalizationMeta.normalized_fields });
+      }
       if (validation.ok) {
         phaseAOutput = parsed;
+        normalizationMeta = attemptNormalizationMeta;
         logStage("brain_one_json_validation_completed", { attempt: 1, ok: true });
       } else {
         firstParseFailure = validation.errors.join("; ");
@@ -638,7 +735,12 @@ async function runBrainOne(contextPackage, options = {}) {
       let repairedValidation = null;
       try {
         repaired = parseMaybeJson(repairedRaw);
-        repairedValidation = validateBrainOneOutput(repaired);
+        const attemptNormalizationMeta = { normalization_applied: false, normalized_fields: [] };
+        repairedValidation = validateBrainOneOutput(repaired, { normalizationMeta: attemptNormalizationMeta });
+        if (attemptNormalizationMeta.normalization_applied) {
+          logStage("brain_one_output_normalized", { attempt: 2, normalized_fields: attemptNormalizationMeta.normalized_fields });
+        }
+        if (repairedValidation.ok) normalizationMeta = attemptNormalizationMeta;
       } catch (error) {
         repairedValidation = { ok: false, errors: [error.message] };
       }
@@ -699,7 +801,9 @@ async function runBrainOne(contextPackage, options = {}) {
       phaseADurationMs,
       phaseBDurationMs,
       durationMs: Date.now() - started,
-      repaired: !!firstParseFailure
+      repaired: !!firstParseFailure,
+      normalization_applied: normalizationMeta.normalization_applied,
+      normalized_fields: normalizationMeta.normalized_fields || []
     };
   } catch (error) {
     if (!error.rawResponse) error.rawResponse = rawResponse;

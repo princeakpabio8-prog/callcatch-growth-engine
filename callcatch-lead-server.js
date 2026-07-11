@@ -932,6 +932,8 @@ const server = http.createServer(async (req, res) => {
         record.firstParseFailure = result.firstParseFailure;
         record.phaseADurationMs = result.phaseADurationMs;
         record.phaseBDurationMs = result.phaseBDurationMs;
+        record.normalization_applied = result.normalization_applied;
+        record.normalized_fields = result.normalized_fields || [];
         record.executionStatus = "completed";
         record.executionDurationMs = result.durationMs;
         record.errorDetails = null;

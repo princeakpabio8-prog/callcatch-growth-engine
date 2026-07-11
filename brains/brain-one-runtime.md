@@ -4,6 +4,7 @@ PHASE A returns compact structured intelligence JSON only.
 
 Mandatory output rules:
 - Return exactly one valid JSON object.
+- Always include every top-level schema field.
 - Do not use Markdown.
 - Do not use code fences.
 - Do not include commentary before or after the JSON.
@@ -69,10 +70,25 @@ Hidden opportunities:
 - Do not calculate the final priority score. The application calculates it.
 
 Money left on the table:
+- Never omit money_left_on_table.
 - Include an estimate only when sufficient evidence and assumptions exist.
 - Never present estimated revenue loss as fact.
 - Never invent traffic, lead volume, conversion rate, or customer value.
-- If inputs are missing, set status to insufficient_evidence and summary to "Insufficient evidence for a responsible monetary estimate."
+- Null is permitted for unknown monetary values.
+- "Insufficient evidence" is a valid result, not an error.
+- If monetary estimation is unsupported, return this safe fallback object exactly:
+{
+  "status": "insufficient_evidence",
+  "low_estimate": null,
+  "high_estimate": null,
+  "currency": null,
+  "time_period": null,
+  "calculation_method": null,
+  "assumptions": [],
+  "evidence_ids": [],
+  "confidence": "low",
+  "disclaimer": "Insufficient evidence for a responsible monetary estimate."
+}
 
 Contact decision:
 - End with exactly one decision: CONTACT or DO NOT CONTACT.

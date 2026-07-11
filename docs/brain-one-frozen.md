@@ -67,6 +67,28 @@ Confirmed facts require direct evidence. Inferences require evidence plus reason
 
 Owner names and contact names must never contain email addresses. Generic inboxes are not person names. CONTACT decisions require more than weak evidence.
 
+## Defensive Normalization
+
+Brain One may normalize missing non-dangerous sections before validation. Normalization never creates facts, money, contacts, or outreach intent.
+
+Safe defaults may be inserted for:
+
+- contacts: []
+- evidence_log: []
+- confirmed_facts: []
+- inferences: []
+- unknowns: []
+- hidden_opportunities: []
+- risks: []
+- money_left_on_table: insufficient-evidence fallback
+- ai_opportunity_radar: unknown-state fallback
+- why_we_chose_you: insufficient-evidence fallback
+- one_day_action_plan: insufficient-evidence fallback
+
+When normalization happens, the run records `normalization_applied: true` and lists `normalized_fields`. The raw model response is preserved.
+
+Dangerous errors are still rejected, including email addresses as owner names, unsupported confirmed absence claims, fabricated monetary estimates, weak CONTACT decisions, malformed business identity, and Phase B facts absent from Phase A.
+
 ## Persistence
 
 Every run is logged with:

@@ -191,16 +191,15 @@ function sampleOutput(context = sampleContext(1), overrides = {}) {
     }],
     money_left_on_table: {
       status: "insufficient_evidence",
-      summary: "Insufficient evidence for a responsible monetary estimate.",
       low_estimate: null,
       high_estimate: null,
-      currency: "USD",
-      time_period: "monthly",
-      calculation_method: "",
+      currency: null,
+      time_period: null,
+      calculation_method: null,
       assumptions: [],
       evidence_ids: [],
       confidence: "low",
-      disclaimer: "No traffic, missed-call volume, conversion rate, or customer value was confirmed."
+      disclaimer: "Insufficient evidence for a responsible monetary estimate."
     },
     ai_opportunity_radar: {
       discoverability: radar("moderate", evs),
@@ -365,6 +364,107 @@ test("unsupported monetary estimate is rejected", () => {
   const validation = validateBrainOneOutput(output);
   assert.equal(validation.ok, false);
   assert.match(validation.errors.join("\n"), /assumptions|required|evidence_ids/);
+});
+
+test("money_left_on_table omitted entirely is normalized to safe fallback", () => {
+  const output = sampleOutput(sampleContext(1));
+  delete output.money_left_on_table;
+  const meta = { normalization_applied: false, normalized_fields: [] };
+  const validation = validateBrainOneOutput(output, { normalizationMeta: meta });
+  assert.equal(validation.ok, true);
+  assert.equal(output.money_left_on_table.status, "insufficient_evidence");
+  assert.equal(output.money_left_on_table.low_estimate, null);
+  assert.equal(meta.normalization_applied, true);
+  assert.deepEqual(meta.normalized_fields, ["money_left_on_table"]);
+});
+
+test("money_left_on_table returned as null is normalized to safe fallback", () => {
+  const output = sampleOutput(sampleContext(1));
+  output.money_left_on_table = null;
+  const meta = { normalization_applied: false, normalized_fields: [] };
+  const validation = validateBrainOneOutput(output, { normalizationMeta: meta });
+  assert.equal(validation.ok, true);
+  assert.equal(output.money_left_on_table.disclaimer, "Insufficient evidence for a responsible monetary estimate.");
+  assert.equal(meta.normalized_fields.includes("money_left_on_table"), true);
+});
+
+test("safe fallback money_left_on_table object is accepted", () => {
+  const output = sampleOutput(sampleContext(1));
+  output.money_left_on_table = {
+    status: "insufficient_evidence",
+    low_estimate: null,
+    high_estimate: null,
+    currency: null,
+    time_period: null,
+    calculation_method: null,
+    assumptions: [],
+    evidence_ids: [],
+    confidence: "low",
+    disclaimer: "Insufficient evidence for a responsible monetary estimate."
+  };
+  assert.equal(validateBrainOneOutput(output).ok, true);
+});
+
+test("valid estimated money_left_on_table object is accepted", () => {
+  const output = sampleOutput(sampleContext(1));
+  output.money_left_on_table = {
+    status: "estimated",
+    low_estimate: 3000,
+    high_estimate: 9000,
+    currency: "USD",
+    time_period: "monthly",
+    calculation_method: "scenario: recovered calls x assumed close rate x assumed ticket value",
+    assumptions: ["One to three recovered calls", "Scenario values are not confirmed revenue"],
+    evidence_ids: ["ev-lead-record"],
+    confidence: "low",
+    disclaimer: "Scenario estimate only, not confirmed revenue loss."
+  };
+  assert.equal(validateBrainOneOutput(output).ok, true);
+});
+
+test("missing contacts normalize to empty array", () => {
+  const output = sampleOutput(sampleContext(1));
+  delete output.contacts;
+  const meta = { normalization_applied: false, normalized_fields: [] };
+  const validation = validateBrainOneOutput(output, { normalizationMeta: meta });
+  assert.equal(validation.ok, true);
+  assert.deepEqual(output.contacts, []);
+  assert.equal(meta.normalized_fields.includes("contacts"), true);
+});
+
+test("missing hidden opportunities normalize to empty array", () => {
+  const output = sampleOutput(sampleContext(1));
+  delete output.hidden_opportunities;
+  const meta = { normalization_applied: false, normalized_fields: [] };
+  const validation = validateBrainOneOutput(output, { normalizationMeta: meta });
+  assert.equal(validation.ok, true);
+  assert.deepEqual(output.hidden_opportunities, []);
+  assert.equal(meta.normalized_fields.includes("hidden_opportunities"), true);
+});
+
+test("normalization metadata and raw response are preserved during run", async () => {
+  const context = sampleContext(1);
+  const modelOutput = sampleOutput(context);
+  delete modelOutput.money_left_on_table;
+  const raw = JSON.stringify(modelOutput);
+  let calls = 0;
+  const result = await runBrainOne(context, {
+    model: "test-model",
+    callModel: async () => {
+      calls += 1;
+      return calls === 1 ? raw : "# Business Growth Blueprint\n\n## Money Left on the Table\nInsufficient public evidence was available to produce a responsible monetary estimate.";
+    }
+  });
+  assert.equal(result.rawResponse, raw);
+  assert.equal(result.normalization_applied, true);
+  assert.deepEqual(result.normalized_fields, ["money_left_on_table"]);
+  assert.equal(result.phaseAOutput.money_left_on_table.status, "insufficient_evidence");
+});
+
+test("founder-facing Blueprint displays insufficient-evidence money statement", () => {
+  const html = markdownToSafeHtml("## Money Left on the Table\nInsufficient public evidence was available to produce a responsible monetary estimate.");
+  assert.match(html, /Insufficient public evidence was available to produce a responsible monetary estimate/);
+  assert.doesNotMatch(html, /\$0|£0|zero loss/i);
 });
 
 test("duplicated opportunities are rejected", () => {

@@ -1177,6 +1177,12 @@
     function claimTags(items = []){
       return (items || []).slice(0,8).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.claim || item.title || item.risk || item.opportunity || "Observation")}</strong><span class="tag ${item.status === "confirmed" ? "hot" : item.status === "unknown" ? "warn" : ""}">${esc(item.status || item.confidence || "inferred")}</span></div><p class="hint">${esc(item.reasoning || item.limitation || item.why_it_matters || item.why_it_matters || "")}</p><p class="hint">Evidence: ${esc((item.evidence_ids || []).join(", ") || "none")}</p></div>`).join("") || `<p class="sub">None listed.</p>`;
     }
+    function moneyLeftHtml(value = {}){
+      if (value.status === "insufficient_evidence") {
+        return `<p class="sub">Insufficient public evidence was available to produce a responsible monetary estimate.</p>`;
+      }
+      return objectSummaryHtml(value);
+    }
     function brainOneReportHtml(lead = {}){
       const run = brainOneLatestRun(lead.id);
       if (!run) {
@@ -1205,7 +1211,7 @@
         <details open><summary>Business DNA</summary>${objectSummaryHtml(output.business_dna || {})}</details>
         <details><summary>Evidence and Confidence</summary><h4>Confirmed</h4>${claimTags(output.confirmed_facts || [])}<h4>Inferred</h4>${claimTags(output.inferences || [])}</details>
         <details><summary>Hidden Opportunities</summary>${opportunities.slice(0,5).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.title || item.opportunity || "Opportunity")}</strong><span class="tag">${esc(item.opportunity_priority_score ?? "-")}</span></div><p class="hint">${esc(item.specific_observed_problem || "")}</p><p>${esc(item.why_it_matters || "")}</p><p class="hint">First test: ${esc(item.recommended_first_test || "unknown")} | CallCatch: ${esc(item.callcatch_relevance || "unknown")}</p><p class="hint">Evidence: ${esc((item.evidence_ids || []).join(", ") || "none")}</p></div>`).join("") || `<p class="sub">No hidden opportunities listed.</p>`}</details>
-        <details><summary>Money Left on the Table</summary>${objectSummaryHtml(output.money_left_on_table || {})}</details>
+        <details><summary>Money Left on the Table</summary>${moneyLeftHtml(output.money_left_on_table || {})}</details>
         <details><summary>AI Opportunity Radar</summary>${Object.entries(output.ai_opportunity_radar || {}).map(([key,item])=>`<div class="queue-item"><div class="lead-top"><strong>${esc(key.replaceAll("_"," "))}</strong><span class="tag">${esc(item.status || "unknown")}</span></div><p class="hint">${esc(item.opportunity || "")}</p><p class="hint">Confidence: ${esc(item.confidence || "unknown")}</p></div>`).join("") || `<p class="sub">No radar data.</p>`}</details>
         <details><summary>Why We Chose You</summary>${objectSummaryHtml(output.why_we_chose_you || {})}</details>
         <details><summary>One-Day Action Plan</summary>${objectSummaryHtml(output.one_day_action_plan || {})}</details>
