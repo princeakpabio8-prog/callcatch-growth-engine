@@ -269,6 +269,16 @@
     .card { border: 1px solid var(--line); border-radius: 7px; padding: 10px; margin-bottom: 8px; background: rgba(127,127,127,.04); cursor: grab; }
     .queue { display: grid; gap: 10px; }
     .queue-item { padding: 12px; }
+    .sent-confirm {
+      display: none;
+      border: 1px solid rgba(34, 197, 94, .32);
+      background: rgba(34, 197, 94, .12);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .sent-confirm.show { display: block; }
+    .sent-confirm strong { display: block; color: var(--green); margin-bottom: 4px; }
     .send-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
     .filter-btn {
       border: 1px solid var(--line);
@@ -487,6 +497,7 @@
         <div class="send-center-grid">
           <div class="panel send-actions-panel">
             <h2>Next Email Actions</h2>
+            <div class="sent-confirm" id="sendCenterSentNotice"></div>
             <div class="send-filters" id="sendFilters">
               <button class="filter-btn active" data-send-filter="ready" type="button">Ready to Send</button>
               <button class="filter-btn" data-send-filter="missing" type="button">Missing Info</button>
@@ -496,6 +507,11 @@
               <button class="filter-btn" data-send-filter="all" type="button">All</button>
             </div>
             <div class="queue" id="sendCenterList"></div>
+          </div>
+          <div class="panel">
+            <h2>Follow-ups</h2>
+            <p class="hint">CallCatch drafts follow-ups when a sent email reaches its due date.</p>
+            <div class="queue" id="sendCenterFollowups"></div>
           </div>
           <div class="panel setup-panel">
             <h2>Setup Checklist</h2>
@@ -627,6 +643,7 @@
     let composerTaskId = "";
     let pipelineDetailId = "";
     let pipelineMemory = null;
+    let lastSentNotice = null;
     let lastAutoFollowupCheck = 0;
     let autoFollowupRunning = false;
     let dataVersion = 0;
@@ -938,6 +955,60 @@
     }
     function leadForTask(item = {}){
       return ensureDerivedCache().leadMap.get(item.leadId) || {};
+    }
+    function datePlusDays(value, days){
+      const base = value ? new Date(value) : new Date();
+      if (Number.isNaN(base.getTime())) return new Date(Date.now() + days*24*60*60*1000).toISOString();
+      return new Date(base.getTime() + days*24*60*60*1000).toISOString();
+    }
+    function markEmailSentLocally(taskId, sentTask = {}){
+      const task = queue.find(item => item.id === taskId) || sentTask;
+      if (!task || !task.id) return null;
+      const sentAt = sentTask.sentAt || task.sentAt || now();
+      Object.assign(task, sentTask, {
+        status: "Sent",
+        sentAt,
+        deliveredAt: sentTask.deliveredAt || task.deliveredAt || sentAt,
+        error: ""
+      });
+      task.to = task.to || task.recipient || sentTask.to || sentTask.recipient || "";
+      task.recipient = task.recipient || task.to;
+      task.sendFingerprint = task.sendFingerprint || sendFingerprint(task);
+      const lead = leadForTask(task);
+      if (lead.id) {
+        lead.email = lead.email || task.to || task.recipient || "";
+        lead.stage = ["Customer","Lost","Demo Scheduled","Trial Started"].includes(pipelineStage(lead)) ? lead.stage : "Contacted";
+        lead.lastContact = sentAt.slice(0,10);
+        lead.nextFollowUp = lead.nextFollowUp || datePlusDays(sentAt, 3).slice(0,10);
+        lead.followUpStatus = lead.followUpStatus || "Follow-up #1 scheduled";
+        lead.sentEmails = lead.sentEmails || [];
+        const alreadyStored = lead.sentEmails.some(item => item.taskId === task.id || (item.to === task.to && item.subject === messageSubject(task.body)));
+        if (!alreadyStored) {
+          lead.sentEmails.unshift({
+            id: id(),
+            taskId: task.id,
+            title: task.title || "Sent email",
+            to: task.to || task.recipient || "",
+            subject: messageSubject(task.body),
+            body: task.body || "",
+            sentAt,
+            provider: task.provider || sentTask.provider || "",
+            messageId: task.messageId || sentTask.messageId || ""
+          });
+        }
+        addTimeline(lead, `${task.title || "Email"} sent to ${task.to || task.recipient || "prospect"}`);
+      }
+      lastSentNotice = {
+        business: task.business || lead.business || "Prospect",
+        channel: task.channel || "email",
+        to: task.to || task.recipient || "",
+        sentAt,
+        followUp: lead.nextFollowUp || datePlusDays(sentAt, 3).slice(0,10)
+      };
+      recoverPipelineFromSentHistory();
+      sendCenterFilter = "sent";
+      save();
+      return task;
     }
     function campaignEligibleLeads(campaign = {}){
       const minFit = Number(campaign.minFitScore || 68);
@@ -1724,7 +1795,10 @@
       const recipientLabel = item.channel === "sms" ? "Phone" : "Email";
       const recipient = item.to || item.recipient || (item.channel === "sms" ? lead.phone : lead.email) || "";
       const quickAction = category === "approval" ? "Approve & Send" : "Send Now";
-      return `<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag ${category === "ready" || category === "sent" ? "hot" : category === "failed" || category === "missing" ? "bad" : "warn"}">${esc(duplicate ? "duplicate" : category.replace("-", " "))}</span></div><p class="hint">${esc(item.channel.toUpperCase())} | ${esc(item.status || "Needs Approval")} | Lead ID: ${esc(item.leadId || "")}${duplicate ? ` | Already sent as ${esc(duplicate.title || duplicate.id)}` : ""}</p><div class="insights">${checks.map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${recipientLabel}</label><input data-to="${item.id}" value="${esc(recipient)}" placeholder="${item.channel === "sms" ? "+15551234567" : "prospect@example.com"}"></div><button class="message-preview" data-compose="${item.id}" type="button" style="width:100%;text-align:left;cursor:pointer;"><strong>${esc(messageSubject(item.body))}</strong><p class="hint">${esc(messagePreview(item.body) || "No message generated yet.")}</p></button><div class="actions" style="margin-top:8px;"><button class="btn primary small" data-compose="${item.id}">Review</button><button class="btn small" data-approve-send="${item.id}">${esc(quickAction)}</button><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-open-lead="${item.leadId || ""}">Open Lead</button><button class="btn small" data-remove="${item.id}">Remove</button></div></div>`;
+      const actions = category === "sent"
+        ? `<span class="tag hot">Sent ${esc(item.sentAt ? formatDateTime(item.sentAt) : "")}</span><button class="btn small" data-open-pipeline="${item.leadId || ""}">Open Pipeline</button><button class="btn small" data-copy="${item.id}">Copy</button>`
+        : `<button class="btn primary small" data-compose="${item.id}">Review</button><button class="btn small" data-approve-send="${item.id}">${esc(quickAction)}</button><button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-open-lead="${item.leadId || ""}">Open Lead</button><button class="btn small" data-remove="${item.id}">Remove</button>`;
+      return `<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag ${category === "ready" || category === "sent" ? "hot" : category === "failed" || category === "missing" ? "bad" : "warn"}">${esc(duplicate ? "duplicate" : category.replace("-", " "))}</span></div><p class="hint">${esc(item.channel.toUpperCase())} | ${esc(item.status || "Needs Approval")} | Lead ID: ${esc(item.leadId || "")}${duplicate ? ` | Already sent as ${esc(duplicate.title || duplicate.id)}` : ""}</p><div class="insights">${checks.map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${recipientLabel}</label><input data-to="${item.id}" value="${esc(recipient)}" placeholder="${item.channel === "sms" ? "+15551234567" : "prospect@example.com"}" ${category === "sent" ? "disabled" : ""}></div><button class="message-preview" data-compose="${item.id}" type="button" style="width:100%;text-align:left;cursor:pointer;"><strong>${esc(messageSubject(item.body))}</strong><p class="hint">${esc(messagePreview(item.body) || "No message generated yet.")}</p></button><div class="actions" style="margin-top:8px;">${actions}</div></div>`;
     }
     function renderSetupChecklist(){
       const queueDetail = setupState.approvalQueue
@@ -1754,6 +1828,40 @@
       const status = $("setupChecklistStatus");
       if (status && !setupChecksLoaded && !setupChecksRunning) status.textContent = "Checks will update automatically. You can still use Discovery and Email Queue.";
     }
+    function renderSendCenterSentNotice(){
+      const el = $("sendCenterSentNotice");
+      if (!el) return;
+      if (!lastSentNotice) {
+        el.classList.remove("show");
+        el.innerHTML = "";
+        return;
+      }
+      el.classList.add("show");
+      el.innerHTML = `<strong>Sent marked</strong><span>${esc(lastSentNotice.business)} was sent ${esc(formatDateTime(lastSentNotice.sentAt))}. Follow-up is scheduled for ${esc(formatDateOnly(lastSentNotice.followUp))}.</span>`;
+    }
+    function renderSendCenterFollowups(){
+      const el = $("sendCenterFollowups");
+      if (!el) return;
+      const { followTasks, waiting } = followupRows();
+      const dueTasks = followTasks.filter(task => dueToday(task.dueAt || task.createdAt || now()) || /^needs approval|approved/i.test(task.status || ""));
+      const rows = [
+        ...dueTasks.slice(0, 5).map(task => ({
+          title: task.business || "Prospect",
+          status: task.status || "Needs Approval",
+          detail: `${task.title || "Follow-up"} is ready${task.dueAt ? ` | Due ${formatDateTime(task.dueAt)}` : ""}`,
+          actions: `<button class="btn primary small" data-compose="${task.id}">Review</button><button class="btn small" data-approve-send="${task.id}">Approve & Send</button><button class="btn small" data-open-pipeline="${task.leadId || ""}">Open Pipeline</button>`
+        })),
+        ...waiting.slice(0, Math.max(0, 5 - dueTasks.length)).map(({ task, lead, dueAt }) => ({
+          title: lead.business || task.business || "Prospect",
+          status: dueToday(dueAt) ? "Due today" : "Waiting",
+          detail: `Next follow-up: ${dueAt ? formatDateOnly(dueAt) : "Not scheduled yet"}`,
+          actions: `<button class="btn small" data-open-pipeline="${task.leadId || ""}">Open Pipeline</button>`
+        }))
+      ];
+      el.innerHTML = rows.length
+        ? rows.map(row => `<div class="queue-item"><div class="lead-top"><strong>${esc(row.title)}</strong><span class="tag ${row.status === "Waiting" ? "warn" : "hot"}">${esc(row.status)}</span></div><p class="hint">${esc(row.detail)}</p><div class="actions" style="margin-top:8px;">${row.actions}</div></div>`).join("")
+        : `<p class="sub">No follow-ups due right now. Sent emails will appear here when the next step is ready.</p>`;
+    }
     function renderSendCenter(){
       const tasks = sendableTasks();
       $("sendCenterStats").innerHTML = sendCenterStats(tasks).map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join("");
@@ -1768,6 +1876,8 @@
         all: "No email tasks yet. Run Discovery, then review and send from here."
       }[sendCenterFilter] || "No email messages in this section right now.";
       $("sendCenterList").innerHTML = visible.length ? visible.map(sendCenterItemHtml).join("") : `<p class="sub">${esc(emptyText)}</p>`;
+      renderSendCenterSentNotice();
+      renderSendCenterFollowups();
       renderSetupChecklist();
       bindQueueActions();
       if (!setupChecksLoaded && !setupChecksRunning) setTimeout(() => runSetupChecks(true), 50);
@@ -2063,6 +2173,7 @@
       document.querySelectorAll("[data-sendnow]").forEach(b=>b.onclick=()=>sendNow(b.dataset.sendnow));
       document.querySelectorAll("[data-schedule]").forEach(b=>b.onclick=()=>scheduleSend(b.dataset.schedule, b.dataset.when));
       document.querySelectorAll("[data-open-lead]").forEach(b=>b.onclick=()=>{ if(b.dataset.openLead){ selectedId=b.dataset.openLead; switchView("crm"); } });
+      document.querySelectorAll("[data-open-pipeline]").forEach(b=>b.onclick=()=>{ if(b.dataset.openPipeline){ openPipelineDetail(b.dataset.openPipeline); switchView("pipeline"); } });
       document.querySelectorAll("[data-remove]").forEach(b=>b.onclick=()=>removeQueueTask(b.dataset.remove));
     }
     async function removeQueueTask(taskId){
@@ -2417,8 +2528,10 @@
         render();
         $("sendProgress").textContent = `Sending... 0 / ${approved.length} Complete`;
         const result = await api("/api/sending/send-all-approved", { method:"POST", body: JSON.stringify({ taskIds: approved.map(item=>item.id) }) });
+        (result.results?.sent || []).forEach(item => item.task?.id && markEmailSentLocally(item.task.id, item.task));
         const crm = await api("/api/crm");
         applyServerState(crm);
+        if (result.sent) sendCenterFilter = "sent";
         render();
         $("sendProgress").textContent = `Complete: ${result.complete} / ${result.total}. Sent: ${result.sent}. Failed: ${result.failed}. Messages remaining: ${result.remaining}.`;
         toast(`${result.sent} sent, ${result.failed} failed`);
@@ -2448,10 +2561,14 @@
         }
         $("sendProgress").textContent = `Sending ${localTask?.channel === "sms" ? "SMS" : "email"} through Render...`;
         const result = await api("/api/sending/send-now", { method:"POST", body: JSON.stringify({ taskId }) });
+        if (result.sent) markEmailSentLocally(taskId, result.task || {});
         const crm = await api("/api/crm");
-        applyServerState(crm); render();
-        $("sendProgress").textContent = result.sent ? `${result.task?.channel === "sms" ? "SMS" : "Email"} sent successfully.` : (result.error || "Message was not sent.");
-        toast(result.sent ? "Message sent" : (result.error || "Not sent"));
+        applyServerState(crm);
+        if (result.sent) sendCenterFilter = "sent";
+        render();
+        $("sendProgress").textContent = result.sent ? `${result.task?.channel === "sms" ? "SMS" : "Email"} sent successfully. Follow-up is now tracked in CallCatch.` : (result.error || "Message was not sent.");
+        toast(result.sent ? "Sent and tracked" : (result.error || "Not sent"));
+        if (result.sent) queueAutoFollowupCheck(true);
         return !!result.sent;
       } catch(error) {
         const localTask = queue.find(q=>q.id===taskId);
