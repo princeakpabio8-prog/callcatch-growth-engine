@@ -13,7 +13,15 @@ const { buildCampaign, buildSequenceTasks } = require("./lead-engine/campaigns")
 const { DEFAULT_DAILY_GROWTH, automationCapabilities, mergeConfig, runDailyGrowth } = require("./lead-engine/dailyGrowth");
 const { activeProvider, configured: emailConfigured, emailConfig, parseEmail, sendEmail } = require("./lead-engine/emailAdapter");
 const { configured: smsConfigured, normalizePhone, sendSms, smsConfig } = require("./lead-engine/smsAdapter");
-const { applyBrainOneReviewState, buildBrainOneContextPackage, duplicateBrainOneRun, runBrainOne } = require("./lead-engine/brainOneService");
+const {
+  applyBrainOneReviewState,
+  buildBrainOneContextPackage,
+  callNvidia,
+  duplicateBrainOneRun,
+  resolvedNvidiaModel,
+  resolvedNvidiaTimeoutMs,
+  runBrainOne
+} = require("./lead-engine/brainOneService");
 const {
   generateFollowUps,
   metrics: sendingMetrics,
@@ -699,7 +707,8 @@ const server = http.createServer(async (req, res) => {
       brainOne: {
         enabled: true,
         mode: "manual-only",
-        model: process.env.NVIDIA_MODEL || "meta/llama-3.1-70b-instruct",
+        model: resolvedNvidiaModel(),
+        timeoutMs: resolvedNvidiaTimeoutMs(),
         configured: !!process.env.NVIDIA_API_KEY
       },
       automation: ["daily-growth", "campaign-sequences", "approval-first-autopilot"],
@@ -825,13 +834,52 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, { runs });
   }
 
+  if (req.method === "GET" && url.pathname === "/api/brain-one/health") {
+    const started = Date.now();
+    try {
+      const content = await callNvidia([
+        { role: "system", content: "Return JSON only." },
+        { role: "user", content: "{\"ok\":true}" }
+      ], {
+        model: resolvedNvidiaModel(),
+        maxTokens: 20,
+        logger: log,
+        timeoutMs: Math.min(resolvedNvidiaTimeoutMs(), 60000)
+      });
+      return send(res, 200, {
+        ok: true,
+        model: resolvedNvidiaModel(),
+        timeoutMs: Math.min(resolvedNvidiaTimeoutMs(), 60000),
+        latencyMs: Date.now() - started,
+        sampleBytes: String(content || "").length
+      });
+    } catch (error) {
+      return send(res, 502, {
+        ok: false,
+        model: resolvedNvidiaModel(),
+        timeoutMs: Math.min(resolvedNvidiaTimeoutMs(), 60000),
+        latencyMs: Date.now() - started,
+        error: error.message,
+        failureStage: error.failureStage || "",
+        upstreamStatus: error.upstreamStatus || 0,
+        upstreamBody: error.upstreamBody || ""
+      });
+    }
+  }
+
   if (req.method === "POST" && url.pathname === "/api/brain-one/analyze") {
     const createdAt = new Date().toISOString();
     let runId = "";
     let contextPackage = null;
-    let modelName = process.env.NVIDIA_MODEL || "meta/llama-3.1-70b-instruct";
+    let modelName = resolvedNvidiaModel();
     try {
       const body = await readJson(req);
+      modelName = resolvedNvidiaModel();
+      log("info", "brain_one_request_received", {
+        leadId: body.leadId || "",
+        model: modelName,
+        timeoutMs: resolvedNvidiaTimeoutMs()
+      });
       const state = await readStore();
       const lead = (state.leads || []).find(item => item.id === body.leadId) || body.lead;
       if (!lead || !lead.id) return send(res, 404, { error: "Business record not found" });
@@ -866,7 +914,7 @@ const server = http.createServer(async (req, res) => {
         state.auditLog.unshift({ id: newId("audit"), at: createdAt, action: "brain_one_started", details: { runId, businessId: lead.id } });
         return record;
       });
-      const result = await runBrainOne(contextPackage, { model: modelName });
+      const result = await runBrainOne(contextPackage, { model: modelName, logger: log, timeoutMs: resolvedNvidiaTimeoutMs() });
       const completed = await mutateStore(state => {
         const record = (state.brainOneRuns || []).find(item => item.id === run.id);
         if (!record) throw new Error("Brain One run log disappeared");
@@ -895,12 +943,21 @@ const server = http.createServer(async (req, res) => {
         record.executionDurationMs = record.createdAt ? Date.now() - new Date(record.createdAt).getTime() : 0;
         record.errorDetails = {
           message: error.message,
-          validationErrors: error.validationErrors || []
+          validationErrors: error.validationErrors || [],
+          failureStage: error.failureStage || "",
+          upstreamStatus: error.upstreamStatus || 0,
+          upstreamBody: error.upstreamBody || ""
         };
         state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "brain_one_failed", details: { runId, error: error.message } });
         return record;
       }) : null;
-      return send(res, 400, { error: error.message, run: failed });
+      return send(res, error.upstreamStatus ? 502 : 400, {
+        error: error.message,
+        failureStage: error.failureStage || "",
+        upstreamStatus: error.upstreamStatus || 0,
+        upstreamBody: error.upstreamBody || "",
+        run: failed
+      });
     }
   }
 
@@ -1497,10 +1554,23 @@ const server = http.createServer(async (req, res) => {
   send(res, 404, { error: "Not found" });
 });
 
+const brainOneRequestTimeoutMs = Math.max(210000, (resolvedNvidiaTimeoutMs() * 2) + 30000);
+server.requestTimeout = brainOneRequestTimeoutMs;
+server.headersTimeout = Math.max(65000, Math.min(brainOneRequestTimeoutMs, 300000));
+
 server.listen(PORT, HOST, () => {
   log("info", "server_started", {
     url: HOST === "0.0.0.0" ? `http://0.0.0.0:${PORT}` : `http://127.0.0.1:${PORT}`,
-    requiresApiKey: false
+    requiresApiKey: false,
+    nvidiaModel: resolvedNvidiaModel(),
+    nvidiaTimeoutMs: resolvedNvidiaTimeoutMs(),
+    requestTimeoutMs: server.requestTimeout,
+    headersTimeoutMs: server.headersTimeout
+  });
+  log("info", "brain_one_nvidia_config", {
+    message: "NVIDIA startup config resolved",
+    model: resolvedNvidiaModel(),
+    timeoutMs: resolvedNvidiaTimeoutMs()
   });
   runBackgroundAutomation();
   setInterval(runBackgroundAutomation, 30 * 60 * 1000);

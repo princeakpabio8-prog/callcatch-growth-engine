@@ -685,7 +685,15 @@
         throw new Error(`Cannot reach CallCatch backend at ${target}. Open https://callcatch-growth-engine.onrender.com/ directly, or wait for Render to finish waking up, then try again.`);
       }
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Server request failed");
+      if (!response.ok) {
+        const detail = [
+          payload.error || "Server request failed",
+          payload.failureStage ? `Stage: ${payload.failureStage}` : "",
+          payload.upstreamStatus ? `NVIDIA status: ${payload.upstreamStatus}` : "",
+          payload.upstreamBody ? `Body: ${String(payload.upstreamBody).slice(0, 500)}` : ""
+        ].filter(Boolean).join(" | ");
+        throw new Error(detail);
+      }
       return payload;
     }
     async function syncCrm(silent = true) {

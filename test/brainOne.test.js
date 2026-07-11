@@ -6,6 +6,7 @@ const {
   buildBrainOneContextPackage,
   callNvidia,
   duplicateBrainOneRun,
+  resolvedNvidiaTimeoutMs,
   runBrainOne,
   validateBrainOneInput,
   validateBrainOneOutput
@@ -132,11 +133,37 @@ test("NVIDIA API failure is reported without exposing the API key", async () => 
       fetchImpl: async () => ({
         ok: false,
         status: 500,
-        json: async () => ({ error: { message: "upstream failed" } })
+        text: async () => JSON.stringify({ error: { message: "upstream failed" } })
       })
     }),
     /upstream failed/
   );
+});
+
+test("NVIDIA timeout resolver reads configured environment value", () => {
+  assert.equal(resolvedNvidiaTimeoutMs("180000"), 180000);
+  assert.equal(resolvedNvidiaTimeoutMs(""), 180000);
+});
+
+test("NVIDIA request uses compact non-streaming production parameters", async () => {
+  let requestBody = null;
+  const content = await callNvidia([{ role: "user", content: "test" }], {
+    apiKey: "secret-test-key",
+    model: "meta/llama-3.1-8b-instruct",
+    fetchImpl: async (url, options) => {
+      requestBody = JSON.parse(options.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ choices: [{ message: { content: "{\"ok\":true}" } }] })
+      };
+    }
+  });
+  assert.equal(content, "{\"ok\":true}");
+  assert.equal(requestBody.model, "meta/llama-3.1-8b-instruct");
+  assert.equal(requestBody.temperature, 0.2);
+  assert.equal(requestBody.max_tokens, 1800);
+  assert.equal(requestBody.stream, false);
 });
 
 test("duplicate analysis request detects an active run for the same business", () => {

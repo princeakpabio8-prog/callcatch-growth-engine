@@ -4,9 +4,18 @@ const path = require("path");
 const inputSchema = require("../schemas/brain-one-input.json");
 const outputSchema = require("../schemas/brain-one-output.json");
 
-const DEFAULT_MODEL = process.env.NVIDIA_MODEL || "meta/llama-3.1-70b-instruct";
+const DEFAULT_MODEL = process.env.NVIDIA_MODEL || "meta/llama-3.1-8b-instruct";
 const NVIDIA_URL = process.env.NVIDIA_API_URL || "https://integrate.api.nvidia.com/v1/chat/completions";
 const RUNTIME_PROMPT = fs.readFileSync(path.join(__dirname, "..", "brains", "brain-one-runtime.md"), "utf8");
+
+function resolvedNvidiaTimeoutMs(value = process.env.NVIDIA_TIMEOUT_MS) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 180000;
+}
+
+function resolvedNvidiaModel(value = process.env.NVIDIA_MODEL) {
+  return String(value || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -138,29 +147,73 @@ function validateBrainOneOutput(output) {
   return { ok: errors.length === 0, errors };
 }
 
+function stageLogger(options = {}) {
+  const logger = typeof options.logger === "function" ? options.logger : null;
+  const start = options.startedAt || Date.now();
+  return (stage, meta = {}) => {
+    if (logger) logger("info", stage, { elapsedMs: Date.now() - start, ...meta });
+  };
+}
+
 async function callNvidia(messages, options = {}) {
   const apiKey = options.apiKey || process.env.NVIDIA_API_KEY;
   if (!apiKey) throw new Error("NVIDIA_API_KEY is not configured");
   const fetchImpl = options.fetchImpl || fetch;
-  const timeoutMs = Number(options.timeoutMs || process.env.NVIDIA_TIMEOUT_MS || 45000);
-  const response = await fetchImpl(NVIDIA_URL, {
-    method: "POST",
-    signal: AbortSignal.timeout(timeoutMs),
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: options.model || DEFAULT_MODEL,
-      messages,
-      temperature: 0.2,
-      top_p: 0.7,
-      max_tokens: 4096
-    })
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error?.message || payload.message || `NVIDIA API failed with ${response.status}`);
-  return payload.choices?.[0]?.message?.content || payload.output_text || "";
+  const timeoutMs = resolvedNvidiaTimeoutMs(options.timeoutMs);
+  const model = options.model || resolvedNvidiaModel();
+  const logStage = stageLogger(options);
+  let stage = "nvidia_request_started";
+  try {
+    logStage(stage, { model, timeoutMs, maxTokens: options.maxTokens || 1800 });
+    const response = await fetchImpl(NVIDIA_URL, {
+      method: "POST",
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: 0.2,
+        max_tokens: Number(options.maxTokens || 1800),
+        stream: false
+      })
+    });
+    stage = "nvidia_headers_received";
+    logStage(stage, { status: response.status, ok: response.ok });
+    const rawBody = await response.text();
+    stage = "nvidia_response_completed";
+    logStage(stage, { status: response.status, bodyBytes: rawBody.length });
+    let payload = {};
+    try {
+      payload = rawBody ? JSON.parse(rawBody) : {};
+    } catch {
+      payload = { raw: rawBody };
+    }
+    if (!response.ok) {
+      const error = new Error(payload.error?.message || payload.message || `NVIDIA API failed with ${response.status}`);
+      error.upstreamStatus = response.status;
+      error.upstreamBody = rawBody.slice(0, 4000);
+      error.failureStage = stage;
+      throw error;
+    }
+    return payload.choices?.[0]?.message?.content || payload.output_text || "";
+  } catch (error) {
+    const timedOut = error.name === "AbortError" || error.name === "TimeoutError" || /aborted|timeout/i.test(error.message);
+    const wrapped = timedOut
+      ? new Error(`NVIDIA request timed out after ${timeoutMs}ms at ${stage}`)
+      : error;
+    wrapped.failureStage = error.failureStage || stage;
+    wrapped.upstreamStatus = error.upstreamStatus || 0;
+    wrapped.upstreamBody = error.upstreamBody || "";
+    logStage("nvidia_request_failed", {
+      failureStage: wrapped.failureStage,
+      error: wrapped.message,
+      upstreamStatus: wrapped.upstreamStatus
+    });
+    throw wrapped;
+  }
 }
 
 function buildMessages(contextPackage, repairContext = null) {
@@ -175,43 +228,54 @@ function buildMessages(contextPackage, repairContext = null) {
 }
 
 async function runBrainOne(contextPackage, options = {}) {
+  const logStage = stageLogger(options);
   const inputValidation = validateBrainOneInput(contextPackage);
   if (!inputValidation.ok) {
     const error = new Error(`Brain One input failed validation: ${inputValidation.errors.join("; ")}`);
     error.validationErrors = inputValidation.errors;
     throw error;
   }
-  const model = options.model || DEFAULT_MODEL;
+  const model = options.model || resolvedNvidiaModel();
   const started = Date.now();
-  const callModel = options.callModel || ((messages) => callNvidia(messages, { ...options, model }));
+  const callModel = options.callModel || ((messages) => callNvidia(messages, { ...options, model, startedAt: started }));
   const firstRaw = await callModel(buildMessages(contextPackage));
   let rawResponse = firstRaw;
   let repairErrors = [];
   try {
     try {
+      logStage("brain_one_json_validation_started", { attempt: 1 });
       const parsed = parseMaybeJson(firstRaw);
       const validation = validateBrainOneOutput(parsed);
       if (validation.ok) {
+        logStage("brain_one_json_validation_completed", { attempt: 1, ok: true });
         return { model, rawResponse, output: parsed, durationMs: Date.now() - started, repaired: false };
       }
+      logStage("brain_one_json_validation_completed", { attempt: 1, ok: false, errors: validation.errors.slice(0, 5) });
       repairErrors = validation.errors;
     } catch (error) {
+      logStage("brain_one_json_validation_completed", { attempt: 1, ok: false, errors: [error.message] });
       repairErrors = [error.message];
     }
     const repairedRaw = await callModel(buildMessages(contextPackage, { errors: repairErrors, rawResponse: firstRaw }));
     rawResponse = repairedRaw;
+    logStage("brain_one_json_validation_started", { attempt: 2 });
     const repaired = parseMaybeJson(repairedRaw);
     const repairedValidation = validateBrainOneOutput(repaired);
     if (!repairedValidation.ok) {
+      logStage("brain_one_json_validation_completed", { attempt: 2, ok: false, errors: repairedValidation.errors.slice(0, 5) });
       const error = new Error(`Brain One output failed validation after repair: ${repairedValidation.errors.join("; ")}`);
       error.validationErrors = repairedValidation.errors;
       error.rawResponse = repairedRaw;
+      error.failureStage = "brain_one_json_validation_completed";
       throw error;
     }
+    logStage("brain_one_json_validation_completed", { attempt: 2, ok: true });
     return { model, rawResponse, output: repaired, durationMs: Date.now() - started, repaired: true };
   } catch (error) {
     if (!error.rawResponse) error.rawResponse = rawResponse;
     if (!error.validationErrors) error.validationErrors = [error.message];
+    if (!error.failureStage) error.failureStage = "brain_one_run_failed";
+    logStage("brain_one_failed", { failureStage: error.failureStage, error: error.message });
     throw error;
   }
 }
@@ -325,6 +389,8 @@ module.exports = {
   callNvidia,
   duplicateBrainOneRun,
   parseMaybeJson,
+  resolvedNvidiaModel,
+  resolvedNvidiaTimeoutMs,
   runBrainOne,
   validateBrainOneInput,
   validateBrainOneOutput
