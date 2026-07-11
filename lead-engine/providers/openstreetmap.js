@@ -28,7 +28,7 @@ function buildQuery({ trade, bbox, limit }) {
   const box = compactBbox(bbox);
   const cappedLimit = Math.max(20, Math.min((Number(limit) || 10) * 6, 120));
 
-  return `[out:json][timeout:25];
+  return `[out:json][timeout:8];
 (
   nwr["name"~"${regex}",i](${box});
   nwr["craft"~"${regex}",i](${box});
@@ -111,9 +111,10 @@ async function requestOverpass(query) {
     try {
       return await limiter.run(() => fetchJson(endpoint, {
         method: "POST",
+        signal: AbortSignal.timeout(8000),
         headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
         body: `data=${encodeURIComponent(query)}`
-      }, { retries: 1, retryDelayMs: 1000 }));
+      }, { retries: 0, retryDelayMs: 1000, timeoutMs: 8000 }));
     } catch (error) {
       lastError = error;
       console.warn(JSON.stringify({

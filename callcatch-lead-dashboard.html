@@ -771,9 +771,9 @@
       const elapsed = Date.now() - lastAutoSyncAt;
       if (elapsed < 45000) return;
       lastAutoSyncAt = Date.now();
-      syncEverywhere(true);
+      setTimeout(() => syncEverywhere(true), 50);
     }
-    function switchView(view){ document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active",b.dataset.view===view)); document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===view)); render(); maybeAutoSync(); }
+    function switchView(view){ document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active",b.dataset.view===view)); document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id===view)); render(); }
     function selected(){ return leads.find(l=>l.id===selectedId) || leads[0]; }
     function ensureDerivedCache(){
       if (derivedCache.stamp === dataVersion) return derivedCache;
@@ -1619,10 +1619,16 @@
       document.querySelectorAll("[data-work-reply]").forEach(b=>b.onclick=()=>{ selectedId=b.dataset.workLead; switchView("automation"); });
     }
     function sendableTasks(){
-      return sortTasksForAction(mobileVisibleTasks(queue.filter(item =>
-        ["email","sms"].includes(item.channel)
-        && (/^sent$/i.test(item.status || "") || freshCampaignTask(item) || followupTask(item))
-      ))).slice(0, 800);
+      const sentKeys = sentEmailKeys();
+      const active = [];
+      for (const item of queue) {
+        if (!["email","sms"].includes(item.channel)) continue;
+        if (/^sent$/i.test(item.status || "")) continue;
+        if (freshCampaignTask(item, sentKeys) || followupTask(item)) active.push(item);
+        if (active.length >= 500) break;
+      }
+      const recentSent = sentEmailTasks().slice(0, 100);
+      return sortTasksForAction(mobileVisibleTasks([...active, ...recentSent]));
     }
     function sendMissingInfo(item){
       const lead = leads.find(candidate => candidate.id === item.leadId) || {};
@@ -1669,8 +1675,7 @@
       if (!/^approved/i.test(status)) return "approval";
       return sendReady(item) ? "ready" : "missing";
     }
-    function sendCenterStats(){
-      const tasks = sendableTasks();
+    function sendCenterStats(tasks = sendableTasks()){
       const count = category => tasks.filter(item => sendCategory(item) === category).length;
       return [
         ["Ready", count("ready")],
@@ -1731,7 +1736,7 @@
     }
     function renderSendCenter(){
       const tasks = sendableTasks();
-      $("sendCenterStats").innerHTML = sendCenterStats().map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join("");
+      $("sendCenterStats").innerHTML = sendCenterStats(tasks).map(([a,b])=>`<div class="stat"><span>${a}</span><strong>${b}</strong></div>`).join("");
       document.querySelectorAll("[data-send-filter]").forEach(button => button.classList.toggle("active", button.dataset.sendFilter === sendCenterFilter));
       const visible = tasks.filter(item => sendCenterFilter === "all" || sendCategory(item) === sendCenterFilter);
       const emptyText = {
@@ -2239,16 +2244,13 @@
     }
     function render(){
       const activeView = document.querySelector(".view.active")?.id || "assistant";
-      renderStats();
-      renderAssistant();
-      renderActionGuide();
-      renderTodayWork();
+      if (activeView === "assistant") { renderStats(); renderAssistant(); renderActionGuide(); renderTodayWork(); }
       if (activeView === "sendcenter") renderSendCenter();
       if (activeView === "finder") renderMarketSuggestions();
       if (activeView === "crm") { renderList(); renderDetail(); }
       if (activeView === "pipeline") renderPipeline();
       if (activeView === "automation") { renderQueue(); renderInbox(); renderSentHistory(); renderSendingStats(); renderFollowupCenter(); }
-      if (activeView === "analytics") renderAnalytics();
+      if (activeView === "analytics") { renderStats(); renderAnalytics(); }
       if (activeView === "territory") renderTerritory();
       if (activeView === "settings") { renderSettings(); renderAudit(); }
     }
@@ -2685,8 +2687,8 @@ Helping home service businesses recover missed revenue.`;
       $("refreshAssistantBtn").onclick=()=>syncEverywhere(false); $("themeBtn").onclick=()=>{ const dark=document.body.dataset.theme==="dark"; document.body.dataset.theme=dark?"":"dark"; $("themeBtn").textContent=dark?"Dark Mode":"Light Mode"; };
       $("saveSettingsBtn").onclick=()=>{ settings={team:$("teamMember").value,sender:$("senderName").value,demo:$("demoLink").value,mode:$("automationMode").value}; save(); toast("Settings saved"); };
       ["search","tradeFilter","stageFilter","territoryTrade","territoryStage"].forEach(id=>$(id).oninput=render);
-      document.addEventListener("visibilitychange", ()=>{ if (!document.hidden) syncEverywhere(true); });
-      window.addEventListener("focus", ()=>syncEverywhere(true));
+      document.addEventListener("visibilitychange", ()=>{ if (!document.hidden) maybeAutoSync(); });
+      window.addEventListener("focus", maybeAutoSync);
       setInterval(()=>queueAutoFollowupCheck(true), 10 * 60 * 1000);
       loadServerCrm().then(()=>Promise.all([checkEmailStatus(true), checkSmsStatus(true), refreshPipelineMemory()])).then(()=>runSetupChecks(true)).then(()=>{ render(); refreshSendingMetrics(); queueAutoFollowupCheck(true); scheduleHeavyCleanup(); }).catch(()=>{ render(); scheduleHeavyCleanup(); });
     }

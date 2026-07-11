@@ -64,7 +64,9 @@ async function geocodeArea(area, options = {}) {
   if (codes) url.searchParams.set("countrycodes", codes);
   url.searchParams.set("limit", "1");
 
-  const results = await limiter.run(() => fetchJson(url.toString()));
+  const results = await limiter.run(() => fetchJson(url.toString(), {
+    signal: AbortSignal.timeout(6000)
+  }, { retries: 1, timeoutMs: 6000 }));
   if (!Array.isArray(results) || results.length === 0) {
     throw new Error(`Could not find a city or area for "${area}" in ${country}`);
   }

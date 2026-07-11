@@ -10,8 +10,12 @@ async function fetchJson(url, options = {}, retryOptions = {}) {
 
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
+      const signal = options.signal || (typeof AbortSignal !== "undefined" && AbortSignal.timeout
+        ? AbortSignal.timeout(retryOptions.timeoutMs ?? 12000)
+        : undefined);
       const response = await fetch(url, {
         ...options,
+        signal,
         headers: {
           "User-Agent": APP_USER_AGENT,
           "Accept": "application/json",

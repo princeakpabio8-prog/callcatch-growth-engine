@@ -338,27 +338,27 @@ async function runProviders(params) {
   }
   const providers = [];
   if (location.bbox) {
-    providers.push(searchOpenStreetMap({
+    providers.push(withTimeout(searchOpenStreetMap({
       trade: params.trade,
       location,
       count: params.count
-    }));
+    }), 12000, "OpenStreetMap search"));
   } else {
     errors.push("Map search skipped because the market could not be geocoded; web search providers will still run.");
   }
   if (braveConfigured()) {
-    providers.push(searchBrave({
+    providers.push(withTimeout(searchBrave({
       trade: params.trade,
       location,
       count: params.count
-    }));
+    }), 10000, "Brave search"));
   }
   if (serperConfigured()) {
-    providers.push(searchSerper({
+    providers.push(withTimeout(searchSerper({
       trade: params.trade,
       location,
       count: params.count
-    }));
+    }), 12000, "Serper search"));
   }
 
   const settled = await Promise.allSettled(providers);
