@@ -13,6 +13,7 @@ const { buildCampaign, buildSequenceTasks } = require("./lead-engine/campaigns")
 const { DEFAULT_DAILY_GROWTH, automationCapabilities, mergeConfig, runDailyGrowth } = require("./lead-engine/dailyGrowth");
 const { activeProvider, configured: emailConfigured, emailConfig, parseEmail, sendEmail } = require("./lead-engine/emailAdapter");
 const { configured: smsConfigured, normalizePhone, sendSms, smsConfig } = require("./lead-engine/smsAdapter");
+const { applyBrainOneReviewState, buildBrainOneContextPackage, duplicateBrainOneRun, runBrainOne } = require("./lead-engine/brainOneService");
 const {
   generateFollowUps,
   metrics: sendingMetrics,
@@ -695,6 +696,12 @@ const server = http.createServer(async (req, res) => {
         ...(braveConfigured() ? ["brave-search"] : [])
       ],
       modules: ["prospect-intelligence", "website-scanner", "approval-queue"],
+      brainOne: {
+        enabled: true,
+        mode: "manual-only",
+        model: process.env.NVIDIA_MODEL || "meta/llama-3.1-70b-instruct",
+        configured: !!process.env.NVIDIA_API_KEY
+      },
       automation: ["daily-growth", "campaign-sequences", "approval-first-autopilot"],
       sendingEngine: ["send-now", "bulk-send", "scheduled-send", "rate-limits", "reply-tracking"],
       storage: storageMode(),
@@ -804,6 +811,113 @@ const server = http.createServer(async (req, res) => {
         lead,
         assets: outreachAssets(lead)
       });
+    } catch (error) {
+      return send(res, 400, { error: error.message });
+    }
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/brain-one/runs") {
+    const state = await readStore();
+    const leadId = url.searchParams.get("leadId") || "";
+    const runs = (state.brainOneRuns || [])
+      .filter(run => !leadId || run.businessId === leadId)
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    return send(res, 200, { runs });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/brain-one/analyze") {
+    const createdAt = new Date().toISOString();
+    let runId = "";
+    let contextPackage = null;
+    let modelName = process.env.NVIDIA_MODEL || "meta/llama-3.1-70b-instruct";
+    try {
+      const body = await readJson(req);
+      const state = await readStore();
+      const lead = (state.leads || []).find(item => item.id === body.leadId) || body.lead;
+      if (!lead || !lead.id) return send(res, 404, { error: "Business record not found" });
+      const duplicateRunning = duplicateBrainOneRun(state.brainOneRuns || [], lead.id);
+      if (duplicateRunning) return send(res, 409, { error: "Brain One is already analyzing this business", run: duplicateRunning });
+      let scan = null;
+      if (lead.website) {
+        try {
+          scan = await scanWebsite(lead.website);
+        } catch (error) {
+          scan = { ok: false, url: lead.website, text: "", description: `Website scan failed: ${error.message}` };
+        }
+      }
+      contextPackage = buildBrainOneContextPackage(lead, scan);
+      const run = await mutateStore(state => {
+        state.brainOneRuns = state.brainOneRuns || [];
+        runId = newId("brain1");
+        const record = {
+          id: runId,
+          businessId: lead.id,
+          inputSnapshot: contextPackage,
+          modelName,
+          rawResponse: "",
+          validatedOutput: null,
+          executionStatus: "running",
+          executionDurationMs: 0,
+          errorDetails: null,
+          approvalStatus: "pending-review",
+          createdAt
+        };
+        state.brainOneRuns.unshift(record);
+        state.auditLog.unshift({ id: newId("audit"), at: createdAt, action: "brain_one_started", details: { runId, businessId: lead.id } });
+        return record;
+      });
+      const result = await runBrainOne(contextPackage, { model: modelName });
+      const completed = await mutateStore(state => {
+        const record = (state.brainOneRuns || []).find(item => item.id === run.id);
+        if (!record) throw new Error("Brain One run log disappeared");
+        record.rawResponse = result.rawResponse;
+        record.validatedOutput = result.output;
+        record.executionStatus = "completed";
+        record.executionDurationMs = result.durationMs;
+        record.errorDetails = null;
+        record.repaired = result.repaired;
+        const lead = (state.leads || []).find(item => item.id === record.businessId);
+        if (lead) {
+          lead.brainOneLatestRunId = record.id;
+          lead.timeline = lead.timeline || [];
+          lead.timeline.unshift({ at: new Date().toISOString(), text: "Brain One analysis completed. Manual approval required." });
+        }
+        state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "brain_one_completed", details: { runId: record.id, businessId: record.businessId, durationMs: result.durationMs } });
+        return record;
+      });
+      return send(res, 200, { run: completed });
+    } catch (error) {
+      const failed = runId ? await mutateStore(state => {
+        const record = (state.brainOneRuns || []).find(item => item.id === runId);
+        if (!record) return null;
+        record.rawResponse = error.rawResponse || record.rawResponse || "";
+        record.executionStatus = "failed";
+        record.executionDurationMs = record.createdAt ? Date.now() - new Date(record.createdAt).getTime() : 0;
+        record.errorDetails = {
+          message: error.message,
+          validationErrors: error.validationErrors || []
+        };
+        state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "brain_one_failed", details: { runId, error: error.message } });
+        return record;
+      }) : null;
+      return send(res, 400, { error: error.message, run: failed });
+    }
+  }
+
+  if (req.method === "POST" && ["/api/brain-one/approve", "/api/brain-one/reject"].includes(url.pathname)) {
+    try {
+      const body = await readJson(req);
+      const approved = url.pathname.endsWith("/approve");
+      const result = await mutateStore(state => {
+        return applyBrainOneReviewState(state, {
+          runId: body.runId,
+          leadId: body.leadId,
+          approved,
+          reviewedBy: body.reviewedBy || "CallCatch user",
+          notes: body.notes || ""
+        });
+      });
+      return send(res, 200, result);
     } catch (error) {
       return send(res, 400, { error: error.message });
     }

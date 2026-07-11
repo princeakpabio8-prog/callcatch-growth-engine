@@ -6,7 +6,8 @@
   "main": "callcatch-lead-server.js",
   "scripts": {
     "start": "node callcatch-lead-server.js",
-    "check": "node --check callcatch-lead-server.js"
+    "check": "node --check callcatch-lead-server.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"

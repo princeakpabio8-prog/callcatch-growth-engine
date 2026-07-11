@@ -11,7 +11,8 @@ const initialState = {
   approvalQueue: [],
   savedSearches: [],
   auditLog: [],
-  jobs: []
+  jobs: [],
+  brainOneRuns: []
 };
 
 let writeQueue = Promise.resolve();

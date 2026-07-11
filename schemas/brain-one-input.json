@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://callcatch.site/schemas/brain-one-input.json",
+  "title": "CallCatch Brain One Input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "businessIdentity",
+    "websitePublicText",
+    "publicContactDetails",
+    "publicSocialOrDirectoryEvidence",
+    "scraperEvidence",
+    "sourceUrls",
+    "analysisTimestamp",
+    "evidenceLog"
+  ],
+  "properties": {
+    "businessIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["businessId", "businessName", "websiteUrl"],
+      "properties": {
+        "businessId": { "type": "string", "minLength": 1 },
+        "businessName": { "type": "string", "minLength": 1 },
+        "trade": { "type": "string" },
+        "city": { "type": "string" },
+        "state": { "type": "string" },
+        "country": { "type": "string" },
+        "websiteUrl": { "type": "string" },
+        "source": { "type": "string" }
+      }
+    },
+    "websitePublicText": { "type": "string" },
+    "publicContactDetails": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phone", "email", "address", "owner"],
+      "properties": {
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "owner": { "type": "string" }
+      }
+    },
+    "publicSocialOrDirectoryEvidence": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/evidenceItem" }
+    },
+    "scraperEvidence": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/evidenceItem" }
+    },
+    "sourceUrls": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "analysisTimestamp": { "type": "string", "format": "date-time" },
+    "evidenceLog": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/evidenceItem" }
+    }
+  },
+  "$defs": {
+    "evidenceItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sourceType", "sourceUrl", "excerpt", "capturedAt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "sourceType": { "type": "string", "enum": ["lead-record", "website", "directory", "social", "scraper", "manual"] },
+        "sourceUrl": { "type": "string" },
+        "excerpt": { "type": "string" },
+        "capturedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}
