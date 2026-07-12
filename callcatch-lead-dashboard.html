@@ -1257,6 +1257,7 @@
     }
     function brainZeroProviderTags(run = {}){
       const providers = run.providers || {};
+      const diagnostics = run.evidence_package?.provider_diagnostics || run.provider_diagnostics || {};
       const labels = {
         existing_lead_search: "Lead Source",
         website_crawl: "Crawl",
@@ -1268,8 +1269,11 @@
       };
       return Object.entries(labels).map(([key,label])=>{
         const item = providers[key] || {};
-        const tone = item.status === "completed" ? "hot" : item.status === "failed" ? "bad" : item.status === "skipped" ? "warn" : "";
-        return `<span class="tag ${tone}">${esc(label)}: ${esc(item.status || "pending")}</span>`;
+        const diagnostic = diagnostics[key] || {};
+        const usable = diagnostic.usable_evidence_count ?? item.usable_evidence_count ?? (item.evidence || []).length ?? 0;
+        const coverageStatus = diagnostic.coverage_status || item.coverage_status || (usable ? "contributed" : "insufficient");
+        const tone = item.status === "failed" ? "bad" : item.status === "skipped" ? "warn" : usable ? "hot" : "warn";
+        return `<span class="tag ${tone}">${esc(label)}: ${esc(item.status || "pending")} / ${esc(usable)} usable / ${esc(coverageStatus)}</span>`;
       }).join("");
     }
     function brainZeroPanelHtml(lead = {}){
@@ -1279,20 +1283,22 @@
       }
       const statusTone = run.status === "completed" ? "hot" : run.status === "failed" ? "bad" : "warn";
       const canContinue = run.status === "completed" || run.status === "partial";
+      const brainOneReady = run.evidence_package?.brain_one_ready ?? run.brain_one_ready ?? false;
       const busy = ["queued","running"].includes(run.status);
       const partial = run.status === "partial";
       const interrupted = JSON.stringify(run.errors || []).includes("run_interrupted_by_server_restart");
       return `<div class="panel"><div class="lead-top"><div><h3>Brain Zero Evidence Collection</h3><p class="sub">Run ${esc(run.run_id || run.id)} | ${esc(formatDateTime(run.started_at || run.createdAt))}</p></div><span class="tag ${statusTone}">${esc(run.status)}</span></div>
-        <div class="detail-grid"><div class="mini"><span>Evidence</span><strong>${esc(run.evidence_count ?? 0)}</strong></div><div class="mini"><span>Sources</span><strong>${esc(run.source_count ?? 0)}</strong></div><div class="mini"><span>Pages</span><strong>${esc(run.pages_scanned ?? 0)}</strong></div><div class="mini"><span>Quality</span><strong>${esc(run.overall_evidence_quality || run.evidence_package?.overall_evidence_quality || "unknown")}</strong></div></div>
+        <div class="detail-grid"><div class="mini"><span>Evidence</span><strong>${esc(run.evidence_count ?? 0)}</strong></div><div class="mini"><span>Sources</span><strong>${esc(run.source_count ?? 0)}</strong></div><div class="mini"><span>Pages</span><strong>${esc(run.pages_scanned ?? 0)}</strong></div><div class="mini"><span>Quality</span><strong>${esc(run.overall_evidence_quality || run.evidence_package?.overall_evidence_quality || "unknown")}</strong></div><div class="mini"><span>Coverage</span><strong>${esc(run.evidence_package?.evidence_coverage?.coverage_score ?? run.evidence_coverage?.coverage_score ?? "-")}</strong></div><div class="mini"><span>Brain One Ready</span><strong>${esc((run.evidence_package?.brain_one_ready ?? run.brain_one_ready) ? "Yes" : "No")}</strong></div></div>
         <div class="insights">${brainZeroProviderTags(run)}</div>
+        ${!(run.evidence_package?.brain_one_ready ?? run.brain_one_ready) ? `<p class="hint">Missing critical coverage: ${esc((run.evidence_package?.missing_critical_categories || run.missing_critical_categories || []).join(", ") || "unknown")}</p>` : ""}
         ${run.status === "running" ? `<p class="hint">Evidence collection is running in the background. You can keep using the app.</p>` : ""}
         ${run.status === "queued" ? `<p class="hint">Evidence collection will begin when the current run finishes.</p>` : ""}
         ${partial ? `<p class="hint">Partial evidence is usable, but Brain One may have more unknowns. You can still continue manually.</p>` : ""}
         ${interrupted ? `<p class="hint">Evidence collection was interrupted by a server restart. Please run it again.</p>` : ""}
         ${run.status === "failed" ? `<p class="hint">Brain Zero did not collect usable evidence. Run again or check the website/source details.</p>` : ""}
         ${(run.warnings || []).length ? `<details><summary>Collection Limitations</summary>${objectSummaryHtml((run.warnings || []).slice(0,8))}</details>` : ""}
-        <details><summary>Technical Details</summary><div class="script" style="min-height:80px;">${esc(JSON.stringify({ providers: Object.fromEntries(Object.entries(run.providers || {}).map(([key,item])=>[key,{status:item.status,duration_ms:item.duration_ms,errors:item.errors,warnings:item.warnings,evidence:item.evidence?.length || 0}])), errors: run.errors || [], hash: run.evidence_package_hash || "" }, null, 2))}</div></details>
-        <div class="actions" style="margin-top:10px;">${busy ? `<button class="btn small" disabled>Evidence running</button>` : `<button class="btn small" data-brain-zero-run="${lead.id}">Run Again</button><button class="btn small" data-brain-zero-force="${lead.id}">Force Rescan</button>`}${canContinue ? `<button class="btn primary small" data-brain-zero-continue="${lead.id}|${run.run_id || run.id}|${partial ? "1" : "0"}">Continue to Brain One</button>` : ""}</div>
+        <details><summary>Technical Details</summary><div class="script" style="min-height:80px;">${esc(JSON.stringify({ providers: Object.fromEntries(Object.entries(run.providers || {}).map(([key,item])=>[key,{status:item.status,duration_ms:item.duration_ms,usable_evidence_count:item.usable_evidence_count,coverage_status:item.coverage_status,errors:item.errors,warnings:item.warnings,evidence:item.evidence?.length || 0}])), evidence_coverage: run.evidence_package?.evidence_coverage || run.evidence_coverage || null, provider_diagnostics: run.evidence_package?.provider_diagnostics || {}, errors: run.errors || [], hash: run.evidence_package_hash || "" }, null, 2))}</div></details>
+        <div class="actions" style="margin-top:10px;">${busy ? `<button class="btn small" disabled>Evidence running</button>` : `<button class="btn small" data-brain-zero-run="${lead.id}">Run Again</button><button class="btn small" data-brain-zero-force="${lead.id}">Force Rescan</button>`}${canContinue ? `<button class="btn primary small" data-brain-zero-continue="${lead.id}|${run.run_id || run.id}|${(partial || !brainOneReady) ? "1" : "0"}">${brainOneReady ? "Continue to Brain One" : "Override to Brain One"}</button>` : ""}</div>
         <p class="hint" id="brainZeroStatus-${lead.id}"></p></div>`;
     }
     async function refreshBrainZeroRuns(leadId){
@@ -1380,7 +1386,7 @@
         <details><summary>One-Day Action Plan</summary>${objectSummaryHtml(output.one_day_action_plan || {})}</details>
         <details><summary>Risks and Unknowns</summary><h4>Risks</h4>${claimTags(risks)}<h4>Unknowns</h4>${objectSummaryHtml(output.unknowns || [])}</details>
         <details><summary>Brain Two Handoff</summary>${objectSummaryHtml(output.brain_two_handoff || {})}</details>
-        <details><summary>Technical Details</summary><div class="script" style="min-height:80px;">${esc(JSON.stringify({ overall_status: overallStatus, completed_modules: combinedOutput.completed_modules || [], failed_modules: combinedOutput.failed_modules || [], module_statuses: Object.fromEntries(Object.entries(combinedOutput.modules || {}).map(([key,item])=>[key,{status:item.status, normalized_fields:item.normalized_fields, parser_errors:item.parser_errors, validation_errors:item.validation_errors}])) }, null, 2))}</div></details>
+        <details><summary>Technical Details</summary><div class="script" style="min-height:80px;">${esc(JSON.stringify({ overall_status: overallStatus, completed_modules: combinedOutput.completed_modules || [], failed_modules: combinedOutput.failed_modules || [], module_diagnostics: combinedOutput.module_diagnostics || run.moduleDiagnostics || {}, module_statuses: Object.fromEntries(Object.entries(combinedOutput.modules || {}).map(([key,item])=>[key,{status:item.status, normalized_fields:item.normalized_fields, parser_errors:item.parser_errors, validation_errors:item.validation_errors}])) }, null, 2))}</div></details>
         <details open><summary>Full Business Growth Blueprint</summary><div class="script markdown" style="margin-top:10px;">${blueprint ? markdownToHtml(blueprint) : "<p>No founder-facing blueprint returned.</p>"}</div></details>
         <p class="hint">Phase A ${esc(run.phaseADurationMs || 0)}ms | Phase B ${esc(run.phaseBDurationMs || 0)}ms | finish ${esc(run.finishReason || "unknown")}</p>
         <p class="hint">Approval status: ${esc(approval)}. Approval does not trigger outbound email.</p>

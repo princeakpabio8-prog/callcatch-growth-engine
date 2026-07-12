@@ -986,7 +986,17 @@ function validateModuleOutput(moduleKey, output = {}, contextPackage = {}, prior
   const errors = [];
   meta.normalization_applied = !!meta.normalization_applied;
   meta.normalized_fields = meta.normalized_fields || [];
-  const foundationEvidence = priorModules.foundation?.output?.evidence_log || output.evidence_log || [];
+  const contextEvidence = Array.isArray(contextPackage.evidenceLog) ? contextPackage.evidenceLog.map(item => ({
+    id: item.id || item.evidence_id,
+    source_type: item.sourceType || item.source_type,
+    source_url: item.sourceUrl || item.source_url,
+    excerpt: item.excerpt || item.source_excerpt || ""
+  })).filter(item => item.id) : [];
+  const foundationEvidence = [
+    ...contextEvidence,
+    ...(priorModules.foundation?.output?.evidence_log || []),
+    ...(output.evidence_log || [])
+  ];
   const evidenceIds = new Set((foundationEvidence || []).map(item => item.id));
 
   if (moduleKey === "foundation") {
@@ -1300,12 +1310,56 @@ function buildMessages(contextPackage, repairContext = null) {
   ];
 }
 
+function evidenceCategoryOf(item = {}) {
+  return String(item.category || item.evidenceCategory || item.sourceCategory || item.sourceType || item.source_type || "").toLowerCase();
+}
+
+function evidenceProviderOf(item = {}) {
+  return String(item.provider || item.sourceProvider || item.sourceType || item.source_type || "").toLowerCase();
+}
+
+function evidenceFieldOf(item = {}) {
+  return String(item.field || "").toLowerCase();
+}
+
+function selectEvidenceForModule(moduleKey, contextPackage = {}, priorModules = {}) {
+  const evidence = Array.isArray(contextPackage.evidenceLog) ? contextPackage.evidenceLog : [];
+  const keepers = {
+    foundation: item => /identity|trust|existing|lead|directory|content/.test(evidenceProviderOf(item)) || /identity|trust|contact|content|lead/.test(evidenceCategoryOf(item)) || /business_name|website|location|service|phone|email|description/i.test(evidenceFieldOf(item)),
+    digital_intelligence: item => /website|feature|technical|content|crawl/.test(evidenceProviderOf(item)) || /website_page|technical|content|feature/.test(evidenceCategoryOf(item)) || /booking|form|chat|mobile|speed|metadata|heading|content/i.test(evidenceFieldOf(item)),
+    opportunities: item => /identity|trust|website|feature|technical|content|contact/.test(evidenceProviderOf(item)) || /identity|trust|website_page|technical|content|contact|feature/.test(evidenceCategoryOf(item)),
+    strategic_interpretation: item => /identity|trust|website|feature|technical|content|contact/.test(evidenceProviderOf(item)) || /identity|trust|website_page|technical|content|contact|feature/.test(evidenceCategoryOf(item)),
+    contact_decision: item => /identity|contact|trust|existing|lead/.test(evidenceProviderOf(item)) || /identity|contact|trust|lead/.test(evidenceCategoryOf(item)) || /email|phone|business_name|website|location/i.test(evidenceFieldOf(item))
+  };
+  const selected = evidence.filter(keepers[moduleKey] || (() => true));
+  return selected.length ? selected : evidence;
+}
+
+function moduleContextPackage(moduleKey, contextPackage = {}, priorModules = {}) {
+  const selectedEvidence = selectEvidenceForModule(moduleKey, contextPackage, priorModules);
+  return {
+    ...contextPackage,
+    evidenceLog: selectedEvidence,
+    moduleEvidenceCount: selectedEvidence.length,
+    totalEvidenceCount: Array.isArray(contextPackage.evidenceLog) ? contextPackage.evidenceLog.length : 0,
+    evidenceCoverage: contextPackage.brainZero?.evidenceCoverage || null,
+    moduleEvidenceSelection: {
+      module: moduleKey,
+      selectedEvidenceCount: selectedEvidence.length,
+      totalEvidenceCount: Array.isArray(contextPackage.evidenceLog) ? contextPackage.evidenceLog.length : 0,
+      selectedEvidenceCategories: [...new Set(selectedEvidence.map(evidenceCategoryOf).filter(Boolean))],
+      selectedEvidenceProviders: [...new Set(selectedEvidence.map(evidenceProviderOf).filter(Boolean))]
+    }
+  };
+}
+
 function buildModuleMessages(spec, contextPackage, priorModules = {}, repairContext = null) {
   const schemaText = compact(JSON.stringify(spec.schema), 7000);
   const priorText = compact(JSON.stringify(priorModules), 9000);
+  const moduleContext = moduleContextPackage(spec.key, contextPackage, priorModules);
   const userContent = repairContext
-    ? `Repair ${spec.label}. Return corrected JSON only.\n\nValidation or parser errors:\n${repairContext.errors.join("\n")}\n\nRequired module schema:\n${schemaText}\n\nMalformed module output:\n${repairContext.rawResponse}\n\nOriginal context package:\n${JSON.stringify(contextPackage)}\n\nValidated prior module outputs:\n${priorText}\n\nReturn exactly one corrected JSON object for this module. No markdown. No code fences.`
-    : `${spec.label}.\n${spec.prompt}\n\nRequired module schema:\n${schemaText}\n\nContext package:\n${JSON.stringify(contextPackage)}\n\nValidated prior module outputs:\n${priorText}\n\nReturn exactly one valid JSON object for this module only. No markdown. No commentary.`;
+    ? `Repair ${spec.label}. Return corrected JSON only.\n\nValidation or parser errors:\n${repairContext.errors.join("\n")}\n\nRequired module schema:\n${schemaText}\n\nModule-specific context package:\n${JSON.stringify(moduleContext)}\n\nValidated prior module outputs:\n${priorText}\n\nMalformed module output:\n${repairContext.rawResponse}\n\nReturn exactly one corrected JSON object for this module. No markdown. No code fences.`
+    : `${spec.label}.\n${spec.prompt}\n\nRequired module schema:\n${schemaText}\n\nModule-specific context package:\n${JSON.stringify(moduleContext)}\n\nValidated prior module outputs:\n${priorText}\n\nReturn exactly one valid JSON object for this module only. No markdown. No commentary.`;
   return [
     { role: "system", content: RUNTIME_PROMPT },
     { role: "user", content: userContent }
@@ -1365,6 +1419,7 @@ async function runBrainOne(contextPackage, options = {}) {
   const failed_modules = [];
   const rawResponses = {};
   const normalization_metadata = {};
+  const module_diagnostics = {};
   let finishReason = "";
   let responseCharCount = 0;
   let structuredResponseModeAccepted = false;
@@ -1380,8 +1435,16 @@ async function runBrainOne(contextPackage, options = {}) {
     let meta = { normalization_applied: false, normalized_fields: [] };
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
+        const selectedEvidence = selectEvidenceForModule(spec.key, contextPackage, priorOutputs);
         const messages = buildModuleMessages(spec, contextPackage, priorOutputs, attempt === 2 ? { errors: [...parserErrors, ...validationErrors], rawResponse: firstRaw } : null);
-        logStage("brain_one_prompt_built", { module: spec.key, attempt, messageCount: messages.length });
+        logStage("brain_one_prompt_built", { module: spec.key, attempt, messageCount: messages.length, moduleInputEvidenceCount: selectedEvidence.length });
+        module_diagnostics[spec.key] = {
+          module: spec.key,
+          input_evidence_count: selectedEvidence.length,
+          critical_fields_missing: contextPackage.brainZero?.missingCriticalCategories || [],
+          validation_errors: validationErrors,
+          final_status: "running"
+        };
         const result = modelContent(await callModel(
           messages,
           { phase: spec.key, responseFormat: true, maxTokens: spec.maxTokens, temperature: 0.1 }
@@ -1408,6 +1471,11 @@ async function runBrainOne(contextPackage, options = {}) {
         if (validation.ok) {
           const status = (attempt === 1 && !meta.normalization_applied) ? "completed" : "partial";
           logStage("brain_one_module_completed", { module: spec.key, attempt, status, durationMs: Date.now() - moduleStarted, normalized_fields: meta.normalized_fields });
+          module_diagnostics[spec.key] = {
+            ...(module_diagnostics[spec.key] || { module: spec.key }),
+            validation_errors: validationErrors,
+            final_status: status
+          };
           return moduleResult(spec.key, status, parsed, meta, {
             raw_response: raw,
             parser_errors: parserErrors,
@@ -1416,6 +1484,11 @@ async function runBrainOne(contextPackage, options = {}) {
           });
         }
         validationErrors = validation.errors;
+        module_diagnostics[spec.key] = {
+          ...(module_diagnostics[spec.key] || { module: spec.key }),
+          validation_errors: validationErrors,
+          final_status: "validation_failed"
+        };
         logStage("brain_one_module_validation_failed", { module: spec.key, attempt, errors: validationErrors.slice(0, 5) });
       } catch (error) {
         parserErrors.push(error.message);
@@ -1425,11 +1498,21 @@ async function runBrainOne(contextPackage, options = {}) {
     const salvaged = salvageModuleOutput(spec.key, lastParsed, contextPackage, modules, parserErrors, validationErrors);
     if (salvaged) {
       salvaged.raw_response = lastRaw || rawResponses[spec.key] || firstRaw;
+      module_diagnostics[spec.key] = {
+        ...(module_diagnostics[spec.key] || { module: spec.key }),
+        validation_errors: salvaged.validation_errors || validationErrors,
+        final_status: "partial"
+      };
       logStage("brain_one_module_salvaged", { module: spec.key, durationMs: Date.now() - moduleStarted, normalized_fields: salvaged.normalized_fields, validation_errors: salvaged.validation_errors.slice(0, 5) });
       return salvaged;
     }
     const fallbackMeta = { normalization_applied: true, normalized_fields: [spec.key] };
     const fallback = safeModuleFallback(spec.key, contextPackage);
+    module_diagnostics[spec.key] = {
+      ...(module_diagnostics[spec.key] || { module: spec.key }),
+      validation_errors: validationErrors,
+      final_status: "failed"
+    };
     logStage("brain_one_module_fallback", { module: spec.key, durationMs: Date.now() - moduleStarted });
     return moduleResult(spec.key, "failed", fallback, fallbackMeta, {
       raw_response: rawResponses[spec.key] || firstRaw,
@@ -1458,6 +1541,7 @@ async function runBrainOne(contextPackage, options = {}) {
     partial_modules,
     failed_modules,
     normalization_metadata,
+    module_diagnostics,
     founder_facing_blueprint: ""
   };
   calculateScoreMetadata(combined);
@@ -1511,6 +1595,7 @@ async function runBrainOne(contextPackage, options = {}) {
     repaired: Object.values(modules).some(item => item.repaired),
     normalization_applied: Object.values(normalization_metadata).some(item => item.normalization_applied),
     normalized_fields: Object.entries(normalization_metadata).flatMap(([key, value]) => (value.normalized_fields || []).map(field => `${key}.${field}`)),
+    moduleDiagnostics: module_diagnostics,
     moduleResults: modules,
     overall_status: combined.overall_status
   };

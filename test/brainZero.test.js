@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {
   brainZeroCanRunBrainOne,
   brainZeroRuntimeState,
+  calculateEvidenceCoverage,
   contextFromLead,
   dedupeEvidence,
   evidenceHash,
@@ -205,6 +206,88 @@ test("Brain One is allowed with warning after partial Brain Zero only when accep
   const gate = brainZeroCanRunBrainOne({ status: "partial" }, { acceptPartial: true });
   assert.equal(gate.allowed, true);
   assert.match(gate.warning, /partial evidence/i);
+});
+
+test("high evidence count without official identity is not Brain One ready", () => {
+  const evidence = Array.from({ length: 55 }, (_, index) => makeEvidence("technical_website_evidence", "technical", `metric_${index}`, `value ${index}`, {
+    url: `https://example.com/page-${index % 5}`,
+    excerpt: `technical value ${index}`
+  }, { index, confidence: "medium" }));
+  const coverage = calculateEvidenceCoverage({
+    providers: { technical_website_evidence: { status: "completed", evidence } },
+    evidence,
+    pagesScanned: 5
+  });
+  assert.equal(coverage.quantity_score, 100);
+  assert.equal(coverage.brain_one_ready, false);
+  assert.equal(coverage.missing_critical_categories.includes("official_business_identity"), true);
+});
+
+test("many technical records produce weak business coverage", async () => {
+  const evidence = Array.from({ length: 55 }, (_, index) => makeEvidence("technical_website_evidence", "technical", `metric_${index}`, `value ${index}`, {
+    url: `https://example.com/page-${index % 5}`,
+    excerpt: `technical value ${index}`
+  }, { index, confidence: "medium" }));
+  const packageValue = require("../lead-engine/brainZeroService").buildBrainOneEvidencePackage({
+    providers: { technical_website_evidence: { status: "completed", evidence } },
+    evidence,
+    status: "completed",
+    quality: "weak",
+    coverage: calculateEvidenceCoverage({ providers: { technical_website_evidence: { status: "completed", evidence } }, evidence, pagesScanned: 5 })
+  });
+  assert.equal(packageValue.brain_one_ready, false);
+  assert.equal(packageValue.overall_evidence_quality, "weak");
+});
+
+test("strong quantity and critical business coverage is Brain One ready", () => {
+  const evidence = [
+    makeEvidence("business_identity_evidence", "identity", "business_name", "Brain Zero HVAC", { url: "https://example.com", excerpt: "Brain Zero HVAC" }, { index: 1, confidence: "high" }),
+    makeEvidence("business_identity_evidence", "identity", "website_url", "https://example.com", { url: "https://example.com", excerpt: "https://example.com" }, { index: 2, confidence: "high" }),
+    makeEvidence("business_identity_evidence", "identity", "stated_location", "Dallas, TX", { url: "https://example.com", excerpt: "Dallas, TX" }, { index: 3, confidence: "high" }),
+    makeEvidence("business_identity_evidence", "contact", "email", ["info@example.com"], { url: "https://example.com/contact", excerpt: "info@example.com" }, { index: 4, confidence: "high" }),
+    makeEvidence("content_discoverability_evidence", "content", "content_snapshot", { service_descriptions_present: true }, { url: "https://example.com/services", excerpt: "HVAC repair and installation services" }, { index: 5, confidence: "medium" }),
+    makeEvidence("website_feature_detection", "feature", "booking_link", "https://example.com/book", { url: "https://example.com", excerpt: "Book online" }, { index: 6, confidence: "medium" }),
+    makeEvidence("public_trust_evidence", "trust", "testimonials", "reviews", { url: "https://example.com/reviews", excerpt: "Customer reviews" }, { index: 7, confidence: "medium" }),
+    makeEvidence("technical_website_evidence", "technical", "technical_snapshot", { https: true }, { url: "https://example.com", excerpt: "technical" }, { index: 8, confidence: "medium" })
+  ];
+  const coverage = calculateEvidenceCoverage({
+    providers: {
+      business_identity_evidence: { status: "completed", evidence: evidence.slice(0, 4) },
+      content_discoverability_evidence: { status: "completed", evidence: [evidence[4]] },
+      website_feature_detection: { status: "completed", evidence: [evidence[5]] },
+      public_trust_evidence: { status: "completed", evidence: [evidence[6]] },
+      technical_website_evidence: { status: "completed", evidence: [evidence[7]] }
+    },
+    evidence,
+    pagesScanned: 5
+  });
+  assert.equal(coverage.brain_one_ready, true);
+  assert.equal(coverage.missing_critical_categories.length, 0);
+});
+
+test("identity provider completed with zero usable evidence is shown insufficient", () => {
+  const coverage = calculateEvidenceCoverage({
+    providers: { business_identity_evidence: { status: "completed", evidence: [] } },
+    evidence: [],
+    pagesScanned: 0
+  });
+  assert.equal(coverage.provider_diagnostics.business_identity_evidence.execution_status, "completed");
+  assert.equal(coverage.provider_diagnostics.business_identity_evidence.usable_evidence_count, 0);
+  assert.equal(coverage.provider_diagnostics.business_identity_evidence.coverage_status, "insufficient");
+});
+
+test("Brain One readiness false when critical categories are missing", () => {
+  const run = {
+    status: "completed",
+    evidence_package: {
+      brain_one_ready: false,
+      missing_critical_categories: ["official_business_identity", "contact_path"]
+    }
+  };
+  const gate = brainZeroCanRunBrainOne(run);
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /official_business_identity/);
+  assert.equal(brainZeroCanRunBrainOne(run, { acceptPartial: true }).allowed, true);
 });
 
 test("cache hit can be detected by matching evidence package hash", async () => {

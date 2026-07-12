@@ -768,10 +768,22 @@ function brainZeroEvidenceToBrainOneContext(lead = {}, run = null) {
   const convertedEvidence = evidence.map(item => ({
     id: item.evidence_id,
     sourceType: item.provider || item.category || "brain-zero",
+    sourceProvider: item.provider || "",
+    sourceCategory: item.category || "",
+    category: item.category || "",
+    field: item.field || "",
+    confidence: item.confidence || "unknown",
+    claimType: item.claim_type || "",
     sourceUrl: item.source_url || "",
     excerpt: item.source_excerpt || (typeof item.value === "string" ? item.value : JSON.stringify(item.value || "")),
+    value: item.value,
     capturedAt: item.collected_at || run?.completed_at || new Date().toISOString()
   }));
+  const identityValue = field => (packageValue.business_identity_candidates || [])
+    .find(item => item.field === field)?.value || "";
+  const officialName = identityValue("business_name") || lead.business || "";
+  const officialWebsite = identityValue("website_url") || lead.website || packageValue.source_urls?.[0] || "";
+  const officialLocation = identityValue("stated_location") || [lead.city, lead.state, lead.country].filter(Boolean).join(", ") || lead.area || "";
   const firstEmail = (packageValue.contacts || [])
     .flatMap(item => Array.isArray(item.value) ? item.value : [item.value])
     .find(value => /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i.test(String(value || ""))) || lead.email || "";
@@ -786,12 +798,21 @@ function brainZeroEvidenceToBrainOneContext(lead = {}, run = null) {
   ].filter(Boolean).join("\n\n");
   const base = buildBrainOneContextPackage({ ...lead, email: lead.email || firstEmail, phone: lead.phone || firstPhone }, {
     ok: true,
-    url: lead.website || packageValue.source_urls?.[0] || "",
+    url: officialWebsite,
     text: websiteText,
     description: `Brain Zero evidence collection ${run?.status || "completed"} with ${evidence.length} evidence records.`
   });
   return {
     ...base,
+    businessIdentity: {
+      ...base.businessIdentity,
+      businessName: officialName || base.businessIdentity.businessName,
+      websiteUrl: officialWebsite || base.businessIdentity.websiteUrl,
+      city: lead.city || base.businessIdentity.city,
+      state: lead.state || base.businessIdentity.state,
+      country: lead.country || base.businessIdentity.country || "US",
+      location: officialLocation || base.businessIdentity.location || ""
+    },
     websitePublicText: websiteText || base.websitePublicText,
     publicContactDetails: {
       ...base.publicContactDetails,
@@ -809,6 +830,10 @@ function brainZeroEvidenceToBrainOneContext(lead = {}, run = null) {
       runId: run?.run_id || run?.id || "",
       status: run?.status || "",
       evidenceQuality: packageValue.overall_evidence_quality || run?.overall_evidence_quality || "weak",
+      evidenceCoverage: packageValue.evidence_coverage || run?.evidence_coverage || null,
+      brainOneReady: packageValue.brain_one_ready ?? run?.brain_one_ready ?? false,
+      missingCriticalCategories: packageValue.missing_critical_categories || run?.missing_critical_categories || [],
+      providerDiagnostics: packageValue.provider_diagnostics || {},
       providerStatuses: packageValue.provider_statuses || {},
       collectionLimitations: packageValue.collection_limitations || []
     }
@@ -1033,6 +1058,7 @@ async function completeBrainOneRun(runId, contextPackage, modelName, logger = lo
         record.normalization_applied = result.normalization_applied;
         record.normalized_fields = result.normalized_fields || [];
         record.moduleResults = result.moduleResults || {};
+        record.moduleDiagnostics = result.moduleDiagnostics || result.output?.module_diagnostics || {};
         record.overallStatus = result.overall_status || result.output?.overall_status || "completed";
         record.executionStatus = "completed";
         record.executionDurationMs = result.durationMs;
@@ -1479,7 +1505,17 @@ const server = http.createServer(async (req, res) => {
       log("info", "brain_one_evidence_package_validated", {
         leadId: lead.id,
         brainZeroRunId: brainZeroRun?.run_id || brainZeroRun?.id || "",
-        evidenceCount: contextPackage.evidenceLog?.length || 0
+        evidencePackageVersion: brainZeroRun?.version || "",
+        evidenceCount: contextPackage.evidenceLog?.length || 0,
+        evidenceCountsByCategory: contextPackage.brainZero?.evidenceCoverage?.evidence_counts_by_category || {},
+        evidenceCountsByConfidence: contextPackage.brainZero?.evidenceCoverage?.evidence_counts_by_confidence || {},
+        evidenceWithValidId: contextPackage.brainZero?.evidenceCoverage?.evidence_with_valid_id || 0,
+        officialBusinessIdentityPresent: !!contextPackage.businessIdentity?.businessName,
+        officialWebsitePresent: !!contextPackage.businessIdentity?.websiteUrl,
+        locationPresent: !!(contextPackage.businessIdentity?.city || contextPackage.businessIdentity?.state || contextPackage.businessIdentity?.location),
+        serviceCategoryPresent: !!contextPackage.businessIdentity?.trade,
+        brainOneReady: !!contextPackage.brainZero?.brainOneReady,
+        missingCriticalCategories: contextPackage.brainZero?.missingCriticalCategories || []
       });
       const run = await mutateStore(state => {
         state.brainOneRuns = state.brainOneRuns || [];

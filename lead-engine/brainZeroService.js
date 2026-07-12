@@ -663,6 +663,9 @@ function normalizeProviderOutput(result, providerName) {
   result.evidence = Array.isArray(result.evidence) ? result.evidence.filter(item => item && typeof item === "object") : [];
   result.errors = Array.isArray(result.errors) ? result.errors.map(error => String(error).slice(0, 500)) : [];
   result.warnings = Array.isArray(result.warnings) ? result.warnings.map(warning => String(warning).slice(0, 500)) : [];
+  result.usable_evidence_count = result.evidence.filter(isUsableEvidence).length;
+  result.execution_status = result.status;
+  result.coverage_status = result.usable_evidence_count ? "contributed" : "insufficient";
   return result;
 }
 
@@ -729,6 +732,90 @@ function dedupeEvidence(evidence = []) {
   return { evidence: kept, removed };
 }
 
+function isUsableEvidence(item = {}) {
+  if (!item || typeof item !== "object") return false;
+  if (!item.evidence_id) return false;
+  const value = typeof item.value === "string" ? item.value.trim() : item.value;
+  if (value === null || value === undefined || value === "") return false;
+  if (Array.isArray(value) && value.length === 0) return false;
+  return true;
+}
+
+function evidenceMatches(item = {}, category, fields = []) {
+  if (!isUsableEvidence(item)) return false;
+  const fieldSet = new Set(fields);
+  return item.category === category || fieldSet.has(item.field);
+}
+
+function coverageFlagsForEvidence(evidence = []) {
+  const usable = evidence.filter(isUsableEvidence);
+  return {
+    official_business_identity: usable.some(item => evidenceMatches(item, "identity", ["business_name"])),
+    official_domain: usable.some(item => ["website_url", "domain", "final_url"].includes(item.field) || (item.source_url && /^https?:\/\//i.test(item.source_url))),
+    industry_service_category: usable.some(item => ["business_category", "trade", "industry", "primary_service", "services_detected", "services"].includes(item.field) || /service|hvac|plumb|roof|electric|garage/i.test(JSON.stringify(item.value || ""))),
+    city_service_area: usable.some(item => ["stated_location", "service_area", "city", "location"].includes(item.field) || /serving|service area|located/i.test(JSON.stringify(item.value || ""))),
+    business_description: usable.some(item => ["description", "content_snapshot", "page_title"].includes(item.field) || item.category === "content"),
+    services: usable.some(item => ["services_detected", "service_descriptions_present", "services"].includes(item.field) || /repair|install|maintenance|replacement|service/i.test(JSON.stringify(item.value || ""))),
+    contact_path: usable.some(item => item.category === "contact" || ["phone", "email", "generic_inbox", "contact_form"].includes(item.field)),
+    conversion_path: usable.some(item => ["booking_link", "contact_form", "quote_form", "phone_link", "online_booking"].includes(item.field)),
+    trust_reputation: usable.some(item => item.category === "trust" || ["testimonials", "reviews", "certifications", "years_in_business", "licensed"].includes(item.field)),
+    website_usability: usable.some(item => item.provider === "website_feature_detection" || ["website_feature_snapshot", "mobile_responsive", "navigation"].includes(item.field)),
+    technical_readiness: usable.some(item => item.provider === "technical_website_evidence" || item.category === "technical"),
+    content_discoverability: usable.some(item => item.provider === "content_discoverability_evidence" || item.category === "content")
+  };
+}
+
+function calculateEvidenceCoverage({ providers = {}, evidence = [], pagesScanned = 0 } = {}) {
+  const usable = evidence.filter(isUsableEvidence);
+  const has = coverageFlagsForEvidence(usable);
+  const critical = ["official_business_identity", "official_domain", "industry_service_category", "city_service_area", "contact_path"];
+  const missing_critical_categories = critical.filter(key => !has[key]);
+  const coverageKeys = Object.keys(has);
+  const coverage_score = Math.round((coverageKeys.filter(key => has[key]).length / coverageKeys.length) * 100);
+  const quantity_score = Math.min(100, Math.round((usable.length / 40) * 100));
+  const sourceCount = unique(usable.map(item => item.source_url).filter(Boolean)).length;
+  const providerCount = unique(usable.map(item => item.provider).filter(Boolean)).length;
+  const source_diversity_score = Math.min(100, Math.round(((sourceCount * 12) + (providerCount * 8) + (pagesScanned * 5))));
+  const identity_confidence = has.official_business_identity && has.official_domain && has.city_service_area
+    ? "high"
+    : has.official_business_identity && (has.official_domain || has.city_service_area)
+      ? "medium"
+      : "low";
+  const brain_one_ready = missing_critical_categories.length === 0 && coverage_score >= 50;
+  return {
+    quantity_score,
+    coverage_score,
+    source_diversity_score,
+    identity_confidence,
+    brain_one_ready,
+    missing_critical_categories,
+    coverage: has,
+    evidence_counts_by_category: usable.reduce((acc, item) => {
+      const key = item.category || "unknown";
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {}),
+    evidence_counts_by_confidence: usable.reduce((acc, item) => {
+      const key = item.confidence || "unknown";
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {}),
+    evidence_with_valid_id: usable.length,
+    provider_diagnostics: Object.fromEntries(Object.entries(providers).map(([key, provider]) => {
+      const providerEvidence = (provider.evidence || []).filter(isUsableEvidence);
+      const providerCoverage = coverageFlagsForEvidence(providerEvidence);
+      const contributed = Object.entries(providerCoverage).filter(([, present]) => present).map(([coverageKey]) => coverageKey);
+      return [key, {
+        provider: key,
+        execution_status: provider.status || "unknown",
+        usable_evidence_count: providerEvidence.length,
+        critical_coverage_contributed: contributed,
+        coverage_status: contributed.length ? "contributed" : "insufficient"
+      }];
+    }))
+  };
+}
+
 function buildEvidenceIndex(evidence = [], providers = {}) {
   const evidence_by_id = {};
   const evidence_by_category = {};
@@ -751,24 +838,14 @@ function buildEvidenceIndex(evidence = [], providers = {}) {
   };
 }
 
-function evidenceQuality({ providers, evidence, pagesScanned }) {
-  const completed = Object.values(providers).filter(provider => provider.status === "completed").length;
-  const categories = new Set(evidence.map(item => item.category));
-  const hasIdentity = evidence.some(item => item.category === "identity");
-  const hasContact = evidence.some(item => item.category === "contact" || ["email", "phone"].includes(item.field));
-  const hasService = evidence.some(item => /service|content|website_page/.test(item.category) || /service/i.test(JSON.stringify(item.value)));
-  const score = (pagesScanned >= 3 ? 2 : pagesScanned ? 1 : 0)
-    + Math.min(3, categories.size)
-    + (hasIdentity ? 1 : 0)
-    + (hasContact ? 1 : 0)
-    + (hasService ? 1 : 0)
-    + (completed >= 5 ? 2 : completed >= 3 ? 1 : 0);
-  if (score >= 8) return "strong";
-  if (score >= 4) return "moderate";
+function evidenceQuality({ coverage }) {
+  if (!coverage?.brain_one_ready) return "weak";
+  if (coverage.coverage_score >= 70 && coverage.quantity_score >= 50 && coverage.source_diversity_score >= 35 && coverage.identity_confidence !== "low") return "strong";
+  if (coverage.coverage_score >= 50) return "moderate";
   return "weak";
 }
 
-function buildBrainOneEvidencePackage({ providers, evidence, status, quality }) {
+function buildBrainOneEvidencePackage({ providers, evidence, status, quality, coverage }) {
   const index = buildEvidenceIndex(evidence, providers);
   const pages = Object.values(index.evidence_by_id)
     .filter(item => item.provider === "website_crawl" && item.category === "website_page")
@@ -787,6 +864,10 @@ function buildBrainOneEvidencePackage({ providers, evidence, status, quality }) 
     source_urls: index.source_urls,
     collection_limitations: Object.values(providers).flatMap(provider => provider.warnings || []),
     provider_statuses: Object.fromEntries(Object.entries(providers).map(([key, provider]) => [key, provider.status])),
+    provider_diagnostics: coverage?.provider_diagnostics || {},
+    evidence_coverage: coverage || null,
+    brain_one_ready: !!coverage?.brain_one_ready,
+    missing_critical_categories: coverage?.missing_critical_categories || [],
     overall_evidence_quality: quality,
     brain_zero_status: status === "completed" ? "completed" : "partial",
     collection_summary: index.collection_summary
@@ -906,9 +987,10 @@ async function runBrainZeroEvidenceCollection(businessContext = {}, options = {}
   const status = internalError
     ? (anyEvidence ? "partial" : "failed")
     : !anyEvidence ? "failed" : failedProviders.length ? "partial" : "completed";
-  const quality = anyEvidence ? evidenceQuality({ providers, evidence, pagesScanned }) : "weak";
+  const coverage = anyEvidence ? calculateEvidenceCoverage({ providers, evidence, pagesScanned }) : calculateEvidenceCoverage({ providers, evidence: [], pagesScanned: 0 });
+  const quality = anyEvidence ? evidenceQuality({ coverage }) : "weak";
   const evidence_package = anyEvidence
-    ? buildBrainOneEvidencePackage({ providers, evidence, status, quality })
+    ? buildBrainOneEvidencePackage({ providers, evidence, status, quality, coverage })
     : {};
   if (evidence_package.evidence_log) evidence_package.evidence_package_hash = evidenceHash(evidence_package);
   logger("info", "brain_zero_run_finished", {
@@ -946,6 +1028,9 @@ async function runBrainZeroEvidenceCollection(businessContext = {}, options = {}
     evidence_package,
     evidence_package_hash: evidence_package.evidence_package_hash || "",
     overall_evidence_quality: quality,
+    evidence_coverage: coverage,
+    brain_one_ready: !!coverage.brain_one_ready,
+    missing_critical_categories: coverage.missing_critical_categories || [],
     version: VERSION,
     memory_before: options.memoryBefore || null,
     memory_after: memorySummary()
@@ -962,6 +1047,15 @@ async function runBrainZeroEvidenceCollection(businessContext = {}, options = {}
 
 function brainZeroCanRunBrainOne(run = {}, { acceptPartial = false } = {}) {
   if (!run || !run.status) return { allowed: false, warning: "", reason: "Brain Zero has not collected evidence for this business yet." };
+  const packageValue = run.evidence_package || {};
+  const readinessKnown = "brain_one_ready" in packageValue || "brain_one_ready" in run;
+  const ready = packageValue.brain_one_ready ?? run.brain_one_ready;
+  const missing = packageValue.missing_critical_categories || run.missing_critical_categories || [];
+  if (readinessKnown && !ready) {
+    const reason = `Brain Zero evidence is missing critical categories: ${missing.join(", ") || "unknown critical coverage"}.`;
+    if (acceptPartial) return { allowed: true, warning: `Manual override: ${reason}`, reason: "" };
+    return { allowed: false, warning: "Brain Zero collected records, but critical business coverage is incomplete.", reason };
+  }
   if (run.status === "completed") return { allowed: true, warning: "", reason: "" };
   if (run.status === "partial" && acceptPartial) {
     return { allowed: true, warning: "Brain One is running with partial evidence. Unknowns may be larger.", reason: "" };
@@ -979,6 +1073,7 @@ module.exports = {
   brainZeroConfig,
   brainZeroRuntimeState,
   buildBrainOneEvidencePackage,
+  calculateEvidenceCoverage,
   canStartBrainZeroRun,
   contextFromLead,
   dedupeEvidence,

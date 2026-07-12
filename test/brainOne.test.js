@@ -682,6 +682,42 @@ test("missing radar dimensions are accepted when available dimensions are unknow
   assert.equal(validation.ok, true);
 });
 
+test("Digital Intelligence validates Brain Zero website evidence IDs outside Foundation output", () => {
+  const context = sampleContext(1);
+  context.evidenceLog.push({
+    id: "ev-website-feature-detection-booking-001",
+    sourceType: "website_feature_detection",
+    sourceProvider: "website_feature_detection",
+    sourceCategory: "feature",
+    category: "feature",
+    field: "booking_link",
+    sourceUrl: "https://example1.com",
+    excerpt: "Book online",
+    capturedAt: "2026-07-12T00:00:00.000Z"
+  });
+  const foundationOutput = moduleOutput(context, "foundation");
+  foundationOutput.evidence_log = foundationOutput.evidence_log.filter(item => item.id !== "ev-website-feature-detection-booking-001");
+  const priorModules = { foundation: { output: foundationOutput } };
+  const output = moduleOutput(context, "digital_intelligence", {
+    digital_health: {
+      status: "assessed",
+      summary: "Website evidence supports a conversion-path assessment.",
+      evidence_ids: ["ev-website-feature-detection-booking-001"],
+      confidence: "medium",
+      sub_scores: {
+        website_clarity: digitalSub(10, ["ev-website-feature-detection-booking-001"]),
+        conversion_path: digitalSub(10, ["ev-website-feature-detection-booking-001"]),
+        trust_and_proof: digitalSub(8, ["ev-website-feature-detection-booking-001"]),
+        local_discoverability: digitalSub(8, ["ev-website-feature-detection-booking-001"]),
+        customer_convenience: digitalSub(8, ["ev-website-feature-detection-booking-001"]),
+        technical_readiness: digitalSub(8, ["ev-website-feature-detection-booking-001"])
+      }
+    }
+  });
+  const validation = validateModuleOutput("digital_intelligence", output, context, priorModules, { normalized_fields: [] });
+  assert.equal(validation.ok, true);
+});
+
 test("failed strategic interpretation still allows safe contact decision module", async () => {
   const context = sampleContext(1);
   let calls = 0;
