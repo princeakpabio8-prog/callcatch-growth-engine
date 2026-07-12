@@ -57,9 +57,42 @@ test("Brain One background task is guarded against sync and async failures", () 
   const worker = sectionBetween(serverSource, "async function completeBrainOneRun", "const server = http.createServer");
   assert.match(worker, /try\s*{[\s\S]*await runBrainOne/);
   assert.match(worker, /catch \(error\)/);
-  assert.match(worker, /executionStatus = error\.userMessage \? "validation_failed" : "failed"/);
+  assert.match(worker, /markBrainOneFailed/);
   assert.match(worker, /brain_one_background_failed/);
   assert.match(worker, /finally/);
+});
+
+test("Brain One worker records every major execution stage", () => {
+  const worker = sectionBetween(serverSource, "async function completeBrainOneRun", "const server = http.createServer");
+  for (const stage of [
+    "brain_one_job_started",
+    "evidence_loaded",
+    "prompt_built",
+    "nvidia_request_started",
+    "nvidia_response_received",
+    "response_parsed",
+    "validation_completed",
+    "report_generation_started",
+    "report_generation_completed",
+    "database_write_started",
+    "database_write_completed",
+    "run_marked_completed"
+  ]) {
+    assert.match(worker, new RegExp(stage));
+  }
+});
+
+test("Brain One worker has five-minute timeout protection with failed persistence", () => {
+  assert.match(serverSource, /BRAIN_ONE_MAX_DURATION_MS[\s\S]*300000/);
+  assert.match(serverSource, /function createBrainOneTimeout/);
+  assert.match(serverSource, /brain_one_timeout/);
+  assert.match(serverSource, /Promise\.race/);
+  assert.match(serverSource, /timeoutGuard\.cancel/);
+});
+
+test("Brain One failure persistence avoids overwriting completed runs", () => {
+  const failure = sectionBetween(serverSource, "async function markBrainOneFailed", "function createBrainOneTimeout");
+  assert.match(failure, /!\["queued", "running"\]\.includes\(record\.executionStatus\)/);
 });
 
 test("Brain One stale running jobs are recovered after server restart", () => {
@@ -74,6 +107,12 @@ test("frontend parser handles empty and invalid Brain One responses safely", () 
   assert.match(dashboardSource, /The server returned an empty response while starting Brain One/);
   assert.match(dashboardSource, /The server returned an invalid response while starting Brain One/);
   assert.doesNotMatch(dashboardSource, /const payload = await response\.json\(\)/);
+});
+
+test("frontend shows actual Brain One failure stage", () => {
+  assert.match(dashboardSource, /Stopped at:/);
+  assert.match(dashboardSource, /run\.errorDetails\?\.failureStage \|\| run\.currentStage/);
+  assert.match(dashboardSource, /Current step:/);
 });
 
 test("frontend handles 502 and 503 as temporary server responses", () => {

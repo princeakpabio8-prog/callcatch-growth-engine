@@ -47,6 +47,7 @@ const {
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
 const PUBLIC_DIR = __dirname;
+const BRAIN_ONE_MAX_DURATION_MS = Number(process.env.BRAIN_ONE_MAX_DURATION_MS || 300000);
 let automationRunning = false;
 
 function sanitizedError(error) {
@@ -894,91 +895,200 @@ async function completeBrainZeroRun(runId, context, logger = log) {
   }
 }
 
-async function completeBrainOneRun(runId, contextPackage, modelName, logger = log) {
-  const started = Date.now();
-  logger("info", "brain_one_background_started", {
+async function markBrainOneStage(runId, stage, logger = log, meta = {}) {
+  const at = new Date().toISOString();
+  logger("info", "brain_one_worker_stage", { runId, stage, ...meta });
+  try {
+    await mutateStore(state => {
+      state.brainOneRuns = state.brainOneRuns || [];
+      const record = state.brainOneRuns.find(item => item.id === runId);
+      if (!record || !["queued", "running"].includes(record.executionStatus)) return record || null;
+      record.currentStage = stage;
+      record.lastStageAt = at;
+      record.stageHistory = [...(record.stageHistory || []), { at, stage, meta }].slice(-80);
+      return record;
+    });
+  } catch (error) {
+    logger("error", "brain_one_stage_persist_failed", { runId, stage, error: sanitizedError(error) });
+  }
+}
+
+async function markBrainOneFailed(runId, error, stage, started, logger = log, code = "brain_one_background_failed") {
+  const clean = sanitizedError(error);
+  logger("error", "brain_one_worker_failure_stack", {
     runId,
-    model: modelName,
-    timeoutMs: resolvedNvidiaTimeoutMs()
+    stage,
+    error: clean,
+    stack: clean.stack
   });
   try {
-    const result = await runBrainOne(contextPackage, { model: modelName, logger, timeoutMs: resolvedNvidiaTimeoutMs() });
-    const completed = await mutateStore(state => {
+    return await mutateStore(state => {
       state.brainOneRuns = state.brainOneRuns || [];
       state.auditLog = state.auditLog || [];
       const record = state.brainOneRuns.find(item => item.id === runId);
-      if (!record) throw new Error("Brain One run log disappeared");
-      record.rawResponse = result.rawResponse;
-      record.validatedOutput = result.output;
-      record.phaseAOutput = result.phaseAOutput;
-      record.blueprintMarkdown = result.blueprintMarkdown;
-      record.phaseARawResponse = result.phaseARawResponse;
-      record.phaseBRawResponse = result.phaseBRawResponse;
-      record.finishReason = result.finishReason;
-      record.responseCharCount = result.responseCharCount;
-      record.structuredResponseModeAccepted = result.structuredResponseModeAccepted;
-      record.firstParseFailure = result.firstParseFailure;
-      record.phaseADurationMs = result.phaseADurationMs;
-      record.phaseBDurationMs = result.phaseBDurationMs;
-      record.normalization_applied = result.normalization_applied;
-      record.normalized_fields = result.normalized_fields || [];
-      record.moduleResults = result.moduleResults || {};
-      record.overallStatus = result.overall_status || result.output?.overall_status || "completed";
-      record.executionStatus = "completed";
-      record.executionDurationMs = result.durationMs;
-      record.errorDetails = null;
-      record.repaired = result.repaired;
-      const lead = (state.leads || []).find(item => item.id === record.businessId);
-      if (lead) {
-        lead.brainOneLatestRunId = record.id;
-        lead.timeline = lead.timeline || [];
-        lead.timeline.unshift({ at: new Date().toISOString(), text: "Brain One analysis completed. Manual approval required." });
-      }
-      state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "brain_one_completed", details: { runId: record.id, businessId: record.businessId, durationMs: result.durationMs } });
+      if (!record) return null;
+      if (!["queued", "running"].includes(record.executionStatus)) return record;
+      record.rawResponse = error.rawResponse || record.rawResponse || "";
+      record.executionStatus = error.userMessage ? "validation_failed" : "failed";
+      record.executionDurationMs = record.createdAt ? Date.now() - new Date(record.createdAt).getTime() : Date.now() - started;
+      record.currentStage = stage;
+      record.lastStageAt = new Date().toISOString();
+      record.errorDetails = {
+        code,
+        message: error.userMessage || error.message || "Brain One background task failed.",
+        validationErrors: error.validationErrors || [],
+        parserError: error.parserError || "",
+        failureStage: error.failureStage || stage,
+        upstreamStatus: error.upstreamStatus || 0,
+        upstreamBody: error.upstreamBody || ""
+      };
+      record.stageHistory = [...(record.stageHistory || []), {
+        at: record.lastStageAt,
+        stage: "failed",
+        meta: { failureStage: record.errorDetails.failureStage, code }
+      }].slice(-80);
+      state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "brain_one_failed", details: { runId, stage, error: clean.message } });
       return record;
     });
-    logger("info", "brain_one_background_completed", {
-      runId,
-      durationMs: Date.now() - started,
-      overallStatus: completed.overallStatus || ""
+  } catch (persistError) {
+    logger("error", "brain_one_failure_persist_failed", { runId, stage, error: sanitizedError(persistError) });
+    return null;
+  }
+}
+
+function createBrainOneTimeout(runId, getStage, started, logger = log) {
+  let timer = null;
+  const promise = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const stage = getStage();
+      const error = new Error(`Brain One exceeded ${BRAIN_ONE_MAX_DURATION_MS}ms at stage: ${stage}`);
+      error.failureStage = stage;
+      error.code = "brain_one_timeout";
+      markBrainOneFailed(runId, error, stage, started, logger, "brain_one_timeout")
+        .finally(() => reject(error));
+    }, BRAIN_ONE_MAX_DURATION_MS);
+    if (typeof timer.unref === "function") timer.unref();
+  });
+  return {
+    promise,
+    cancel: () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    }
+  };
+}
+
+async function completeBrainOneRun(runId, contextPackage, modelName, logger = log) {
+  const started = Date.now();
+  let currentStage = "brain_one_job_started";
+  let timedOut = false;
+  let timeoutGuard = null;
+  const setStage = async (stage, meta = {}) => {
+    currentStage = stage;
+    await markBrainOneStage(runId, stage, logger, meta);
+  };
+  const workerLogger = async (level, message, meta = {}) => {
+    if (message === "nvidia_request_started") currentStage = "nvidia_request_started";
+    if (message === "nvidia_headers_received" || message === "nvidia_response_completed") currentStage = "nvidia_response_received";
+    if (message === "brain_one_module_parsed") currentStage = "response_parsed";
+    if (message === "brain_one_module_validation_completed") currentStage = "validation_completed";
+    if (message === "brain_one_blueprint_started") currentStage = "report_generation_started";
+    if (message === "brain_one_blueprint_completed") currentStage = "report_generation_completed";
+    logger(level, message, { runId, currentStage, ...meta });
+  };
+  logger("info", "brain_one_background_started", {
+    runId,
+    model: modelName,
+    timeoutMs: resolvedNvidiaTimeoutMs(),
+    maxDurationMs: BRAIN_ONE_MAX_DURATION_MS
+  });
+  try {
+    await setStage("brain_one_job_started", { model: modelName });
+    await setStage("evidence_loaded", {
+      evidenceCount: contextPackage?.evidenceLog?.length || 0,
+      sourceCount: contextPackage?.sourceUrls?.length || 0
     });
-    return completed;
-  } catch (error) {
-    const clean = sanitizedError(error);
-    try {
-      await mutateStore(state => {
+    const analysisPromise = (async () => {
+      await setStage("prompt_built", { mode: "modular_phase_a" });
+      const result = await runBrainOne(contextPackage, { model: modelName, logger: workerLogger, timeoutMs: resolvedNvidiaTimeoutMs() });
+      await setStage("database_write_started", { outputBytes: String(result.rawResponse || "").length });
+      const completed = await mutateStore(state => {
         state.brainOneRuns = state.brainOneRuns || [];
         state.auditLog = state.auditLog || [];
         const record = state.brainOneRuns.find(item => item.id === runId);
-        if (!record) return null;
-        record.rawResponse = error.rawResponse || record.rawResponse || "";
-        record.executionStatus = error.userMessage ? "validation_failed" : "failed";
-        record.executionDurationMs = record.createdAt ? Date.now() - new Date(record.createdAt).getTime() : Date.now() - started;
-        record.errorDetails = {
-          code: error.userMessage ? "brain_one_validation_failed" : "brain_one_background_failed",
-          message: error.userMessage || error.message || "Brain One background task failed.",
-          validationErrors: error.validationErrors || [],
-          parserError: error.parserError || "",
-          failureStage: error.failureStage || "",
-          upstreamStatus: error.upstreamStatus || 0,
-          upstreamBody: error.upstreamBody || ""
-        };
-        state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "brain_one_failed", details: { runId, error: clean.message } });
+        if (!record) throw new Error("Brain One run log disappeared");
+        if (!["queued", "running"].includes(record.executionStatus)) return record;
+        record.rawResponse = result.rawResponse;
+        record.validatedOutput = result.output;
+        record.phaseAOutput = result.phaseAOutput;
+        record.blueprintMarkdown = result.blueprintMarkdown;
+        record.phaseARawResponse = result.phaseARawResponse;
+        record.phaseBRawResponse = result.phaseBRawResponse;
+        record.finishReason = result.finishReason;
+        record.responseCharCount = result.responseCharCount;
+        record.structuredResponseModeAccepted = result.structuredResponseModeAccepted;
+        record.firstParseFailure = result.firstParseFailure;
+        record.phaseADurationMs = result.phaseADurationMs;
+        record.phaseBDurationMs = result.phaseBDurationMs;
+        record.normalization_applied = result.normalization_applied;
+        record.normalized_fields = result.normalized_fields || [];
+        record.moduleResults = result.moduleResults || {};
+        record.overallStatus = result.overall_status || result.output?.overall_status || "completed";
+        record.executionStatus = "completed";
+        record.executionDurationMs = result.durationMs;
+        record.errorDetails = null;
+        record.repaired = result.repaired;
+        record.currentStage = "run_marked_completed";
+        record.lastStageAt = new Date().toISOString();
+        record.stageHistory = [...(record.stageHistory || []), {
+          at: record.lastStageAt,
+          stage: "run_marked_completed",
+          meta: { durationMs: result.durationMs }
+        }].slice(-80);
+        const lead = (state.leads || []).find(item => item.id === record.businessId);
+        if (lead) {
+          lead.brainOneLatestRunId = record.id;
+          lead.timeline = lead.timeline || [];
+          lead.timeline.unshift({ at: new Date().toISOString(), text: "Brain One analysis completed. Manual approval required." });
+        }
+        state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "brain_one_completed", details: { runId: record.id, businessId: record.businessId, durationMs: result.durationMs } });
         return record;
       });
-    } catch (persistError) {
-      logger("error", "brain_one_failure_persist_failed", { runId, error: sanitizedError(persistError) });
+      await setStage("database_write_completed", { status: completed?.executionStatus || "" });
+      currentStage = "run_marked_completed";
+      logger("info", "brain_one_run_marked_completed", { runId, durationMs: Date.now() - started });
+      return completed;
+    })();
+    timeoutGuard = createBrainOneTimeout(runId, () => currentStage, started, logger);
+    const completed = await Promise.race([
+      analysisPromise,
+      timeoutGuard.promise
+    ]);
+    timeoutGuard.cancel();
+    if (completed?.executionStatus === "failed") {
+      timedOut = completed.errorDetails?.code === "brain_one_timeout";
+      return completed;
     }
+    logger("info", "brain_one_background_completed", {
+      runId,
+      durationMs: Date.now() - started,
+      overallStatus: completed?.overallStatus || ""
+    });
+    return completed;
+  } catch (error) {
+    if (error.code === "brain_one_timeout") timedOut = true;
+    if (!timedOut) await markBrainOneFailed(runId, error, currentStage, started, logger, error.userMessage ? "brain_one_validation_failed" : "brain_one_background_failed");
     logger("error", "brain_one_background_failed", {
       runId,
       durationMs: Date.now() - started,
-      error: clean,
-      failureStage: error.failureStage || "",
+      error: sanitizedError(error),
+      failureStage: error.failureStage || currentStage,
       upstreamStatus: error.upstreamStatus || 0
     });
     return null;
   } finally {
-    logger("info", "brain_one_background_settled", { runId, durationMs: Date.now() - started });
+    if (timeoutGuard) timeoutGuard.cancel();
+    logger("info", "brain_one_background_settled", { runId, durationMs: Date.now() - started, finalStage: currentStage, timedOut });
   }
 }
 

@@ -1346,6 +1346,10 @@ function modelContent(result) {
 
 async function runBrainOne(contextPackage, options = {}) {
   const logStage = stageLogger(options);
+  logStage("brain_one_job_started", {
+    evidenceCount: contextPackage?.evidenceLog?.length || 0,
+    sourceCount: contextPackage?.sourceUrls?.length || 0
+  });
   const inputValidation = validateBrainOneInput(contextPackage);
   if (!inputValidation.ok) {
     const error = new Error(`Brain One input failed validation: ${inputValidation.errors.join("; ")}`);
@@ -1376,8 +1380,10 @@ async function runBrainOne(contextPackage, options = {}) {
     let meta = { normalization_applied: false, normalized_fields: [] };
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
+        const messages = buildModuleMessages(spec, contextPackage, priorOutputs, attempt === 2 ? { errors: [...parserErrors, ...validationErrors], rawResponse: firstRaw } : null);
+        logStage("brain_one_prompt_built", { module: spec.key, attempt, messageCount: messages.length });
         const result = modelContent(await callModel(
-          buildModuleMessages(spec, contextPackage, priorOutputs, attempt === 2 ? { errors: [...parserErrors, ...validationErrors], rawResponse: firstRaw } : null),
+          messages,
           { phase: spec.key, responseFormat: true, maxTokens: spec.maxTokens, temperature: 0.1 }
         ));
         finishReason = result.finishReason || finishReason;
@@ -1388,9 +1394,17 @@ async function runBrainOne(contextPackage, options = {}) {
         lastRaw = raw;
         rawResponses[spec.key] = raw;
         const parsed = parseMaybeJson(raw);
+        logStage("brain_one_module_parsed", { module: spec.key, attempt, rawBytes: raw.length });
         lastParsed = parsed;
         meta = { normalization_applied: false, normalized_fields: [] };
         const validation = validateModuleOutput(spec.key, parsed, contextPackage, modules, meta);
+        logStage("brain_one_module_validation_completed", {
+          module: spec.key,
+          attempt,
+          ok: validation.ok,
+          errors: (validation.errors || []).slice(0, 5),
+          normalized_fields: meta.normalized_fields
+        });
         if (validation.ok) {
           const status = (attempt === 1 && !meta.normalization_applied) ? "completed" : "partial";
           logStage("brain_one_module_completed", { module: spec.key, attempt, status, durationMs: Date.now() - moduleStarted, normalized_fields: meta.normalized_fields });
@@ -1457,13 +1471,26 @@ async function runBrainOne(contextPackage, options = {}) {
   });
 
   const phaseBStarted = Date.now();
-  const blueprintResult = modelContent(await callModel(buildBlueprintMessages(combined), { phase: "blueprint", responseFormat: false, maxTokens: 1800, temperature: 0.2 }));
-  const blueprintMarkdown = String(blueprintResult.content || "").trim();
-  const phaseBValidation = validatePhaseBMarkdownAgainstPhaseA(blueprintMarkdown, flattenCombinedOutput(combined));
-  if (!phaseBValidation.ok) {
-    combined.founder_facing_blueprint = "Brain One completed with partial intelligence, but the founder-facing report could not be safely rendered.";
-  } else {
-    combined.founder_facing_blueprint = blueprintMarkdown;
+  logStage("brain_one_blueprint_started", { mode: "phase_b_markdown" });
+  let blueprintMarkdown = "";
+  try {
+    const blueprintResult = modelContent(await callModel(buildBlueprintMessages(combined), { phase: "blueprint", responseFormat: false, maxTokens: 1800, temperature: 0.2 }));
+    blueprintMarkdown = String(blueprintResult.content || "").trim();
+    const phaseBValidation = validatePhaseBMarkdownAgainstPhaseA(blueprintMarkdown, flattenCombinedOutput(combined));
+    logStage("brain_one_blueprint_completed", {
+      ok: phaseBValidation.ok,
+      markdownBytes: blueprintMarkdown.length,
+      errors: (phaseBValidation.errors || []).slice(0, 5)
+    });
+    if (!phaseBValidation.ok) {
+      combined.founder_facing_blueprint = "Brain One completed with partial intelligence, but the founder-facing report could not be safely rendered.";
+    } else {
+      combined.founder_facing_blueprint = blueprintMarkdown;
+    }
+  } catch (error) {
+    error.failureStage = error.failureStage || "report_generation";
+    logStage("brain_one_blueprint_failed", { error: error.message, failureStage: error.failureStage });
+    throw error;
   }
   const phaseBDurationMs = Date.now() - phaseBStarted;
   return {
