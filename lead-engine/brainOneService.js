@@ -1486,15 +1486,40 @@ function scoreTrust(flat = {}) {
   });
 }
 
-function scoreOpportunity(flat = {}) {
+function scoreOpportunity(flat = {}, supportScores = {}) {
   const opportunities = Array.isArray(flat.hidden_opportunities) ? flat.hidden_opportunities : [];
-  const scores = opportunities.map(item => item.opportunity_priority_score);
-  const score = scores.length ? Math.max(...scores.map(value => clampScore(value) || 0)) : null;
+  const scores = opportunities.map(item => item.opportunity_priority_score).map(clampScore).filter(value => value !== null);
+  const radar = flat.ai_opportunity_radar || {};
+  const radarScores = Object.values(radar).map(item => levelScore(item?.status || item?.opportunity || item?.evidence)).filter(value => value !== null);
+  const supportScore = averageScore([
+    supportScores.digital_health?.value,
+    supportScores.ai_discoverability?.value,
+    supportScores.future_readiness?.value
+  ]);
+  const score = averageScore([
+    ...scores,
+    averageScore(radarScores),
+    supportScore
+  ]);
+  const radarKeys = Object.entries(radar)
+    .filter(([, item]) => item && typeof item === "object" && item.status !== "unknown")
+    .map(([key]) => key);
+  const supportEvidenceIds = [
+    ...(supportScores.digital_health?.evidence_ids || []),
+    ...(supportScores.ai_discoverability?.evidence_ids || []),
+    ...(supportScores.future_readiness?.evidence_ids || [])
+  ];
   return scoreCard("opportunity", "Opportunity", score, {
-    explanation: score === null ? "No module-specific operational or conversion opportunities were validated." : "Opportunity is scored from operational gaps, missing funnels, automation gaps, conversion friction, and customer journey friction.",
-    evidenceIds: opportunities.flatMap(evidenceIdList),
-    componentsUsed: opportunities.map(item => item.title || item.opportunity).filter(Boolean),
-    componentsMissing: score === null ? ["hidden_opportunities"] : []
+    explanation: score === null ? "No module-specific operational, conversion, digital, AI, or future-readiness opportunity signals were validated." : "Opportunity Radar is scored from hidden opportunities, AI radar dimensions, Digital Health, AI Discoverability, and Future Readiness without inventing revenue.",
+    evidenceIds: uniqueArray([...opportunities.flatMap(evidenceIdList), ...Object.values(radar).flatMap(evidenceIdList), ...supportEvidenceIds]),
+    componentsUsed: uniqueArray([
+      ...opportunities.map(item => item.title || item.opportunity).filter(Boolean),
+      ...radarKeys,
+      supportScores.digital_health?.value !== null && supportScores.digital_health?.value !== undefined ? "digital_health" : "",
+      supportScores.ai_discoverability?.value !== null && supportScores.ai_discoverability?.value !== undefined ? "ai_discoverability" : "",
+      supportScores.future_readiness?.value !== null && supportScores.future_readiness?.value !== undefined ? "future_readiness" : ""
+    ].filter(Boolean)),
+    componentsMissing: score === null ? ["opportunity_radar_signals"] : []
   });
 }
 
@@ -1573,16 +1598,15 @@ function calculateScoreMetadata(combined = {}, contextPackage = {}) {
   const opportunities = Array.isArray(flat.hidden_opportunities) ? flat.hidden_opportunities : [];
   const opportunityScores = opportunities.map(item => numberOrNull(item.opportunity_priority_score)).filter(value => value !== null);
   const contactScore = numberOrNull(flat.contact_decision?.callcatch_opportunity_score);
-  const module_scores = {
-    business_foundation: scoreBusinessFoundation(flat),
-    business_dna: scoreBusinessDna(flat),
-    digital_health: scoreDigitalHealth(flat, contextPackage),
-    ai_discoverability: scoreAiDiscoverability(flat, contextPackage),
-    future_readiness: scoreFutureReadiness(flat, contextPackage),
-    trust: scoreTrust(flat),
-    opportunity: scoreOpportunity(flat),
-    contactability: scoreContactability(flat)
-  };
+  const module_scores = {};
+  module_scores.business_foundation = scoreBusinessFoundation(flat);
+  module_scores.business_dna = scoreBusinessDna(flat);
+  module_scores.digital_health = scoreDigitalHealth(flat, contextPackage);
+  module_scores.ai_discoverability = scoreAiDiscoverability(flat, contextPackage);
+  module_scores.future_readiness = scoreFutureReadiness(flat, contextPackage);
+  module_scores.trust = scoreTrust(flat);
+  module_scores.opportunity = scoreOpportunity(flat, module_scores);
+  module_scores.contactability = scoreContactability(flat);
   module_scores.decision = scoreCard("decision", "Decision Engine", contactScore, {
     status: contactScore === null ? "needs_review" : "model_assisted",
     explanation: flat.contact_decision?.primary_reason || "Decision Engine consumes module scores without overwriting them.",
@@ -1600,11 +1624,11 @@ function calculateScoreMetadata(combined = {}, contextPackage = {}) {
       module_scores.digital_health.evidence_ids
     ),
     opportunity_priority: scoreMeta(
-      module_scores.opportunity.value ?? (opportunityScores.length ? Math.max(...opportunityScores) : null),
-      module_scores.opportunity.status,
-      module_scores.opportunity.components_used,
-      module_scores.opportunity.components_missing,
-      module_scores.opportunity.evidence_ids
+      opportunityScores.length ? Math.max(...opportunityScores) : null,
+      opportunityScores.length ? "model_assisted" : "needs_review",
+      opportunityScores.length ? ["hidden_opportunities"] : [],
+      opportunityScores.length ? [] : ["hidden_opportunity_priority_score"],
+      opportunities.flatMap(evidenceIdList)
     ),
     callcatch_opportunity: scoreMeta(
       contactScore,
