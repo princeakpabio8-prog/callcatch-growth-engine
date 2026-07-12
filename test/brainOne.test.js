@@ -748,11 +748,17 @@ test("empty Business DNA is synthesized from Brain Zero evidence before scoring"
   });
   const foundation = { foundation: { output: moduleOutput(context, "foundation") } };
   const output = moduleOutput(context, "digital_intelligence");
-  output.business_dna = {};
+  output.business_dna = {
+    status: "assessed",
+    summary: "Shopify is a commerce platform for businesses.",
+    confidence: "high",
+    evidence_ids: ["ev-lead-record"]
+  };
   const meta = { normalization_applied: false, normalized_fields: [] };
   const validation = validateModuleOutput("digital_intelligence", output, context, foundation, meta);
   assert.equal(validation.ok, true);
   assert.equal(output.business_dna.status, "assessed");
+  assert.equal(output.business_dna.summary, "Shopify is a commerce platform for businesses.");
   assert.match(output.business_dna.business_model, /platform|software/i);
   assert.ok(output.business_dna.primary_services.includes("Commerce platform"));
   assert.ok(output.business_dna.evidence_ids.includes("ev-shopify-commerce-platform"));

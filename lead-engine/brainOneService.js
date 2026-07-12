@@ -32,6 +32,20 @@ const LEGACY_OUTPUT_REQUIRED = [
   "contact_decision",
   "brain_two_handoff"
 ];
+const BUSINESS_DNA_SCORING_FIELDS = [
+  "business_model",
+  "primary_services",
+  "likely_customer_segments",
+  "geographic_market",
+  "value_proposition",
+  "likely_revenue_drivers",
+  "customer_journey",
+  "current_digital_maturity",
+  "operational_complexity",
+  "trust_signals",
+  "differentiators",
+  "growth_stage"
+];
 
 function resolvedNvidiaTimeoutMs(value = process.env.NVIDIA_TIMEOUT_MS) {
   const parsed = Number(value);
@@ -602,6 +616,10 @@ function hasUsefulAnalyticalFields(section = {}) {
     const text = String(value || "").trim().toLowerCase();
     return !!text && !["unknown", "n/a", "null", "insufficient evidence"].includes(text);
   });
+}
+
+function hasBusinessDnaScoringFields(dna = {}) {
+  return BUSINESS_DNA_SCORING_FIELDS.some(key => hasUsefulValue(dna?.[key]));
 }
 
 function normalizeDigitalHealth(section = {}, meta = null) {
@@ -1192,10 +1210,16 @@ function validateModuleOutput(moduleKey, output = {}, contextPackage = {}, prior
     ensureObjectField(output, "ai_discoverability", fallback.ai_discoverability, meta);
     ensureObjectField(output, "future_readiness", fallback.future_readiness, meta);
     output.business_dna = normalizeAssessment(output.business_dna, "business_dna", meta, "Insufficient public evidence was available for business DNA.");
-    if (!hasUsefulValue(output.business_dna) || output.business_dna.status === "insufficient_evidence") {
+    if (!hasUsefulValue(output.business_dna) || output.business_dna.status === "insufficient_evidence" || !hasBusinessDnaScoringFields(output.business_dna)) {
       const evidenceBackedDna = synthesizeBusinessDnaFromEvidence(contextPackage, priorModules);
       if (evidenceBackedDna) {
-        output.business_dna = evidenceBackedDna;
+        const existingEvidenceIds = evidenceIdList(output.business_dna);
+        output.business_dna = {
+          ...evidenceBackedDna,
+          ...output.business_dna,
+          status: "assessed",
+          evidence_ids: uniqueArray([...evidenceBackedDna.evidence_ids, ...existingEvidenceIds])
+        };
         recordNormalization(meta, "business_dna.evidence_backed_synthesis");
       }
     }
@@ -1542,7 +1566,7 @@ function scoreBusinessFoundation(flat = {}) {
 
 function scoreBusinessDna(flat = {}) {
   const dna = flat.business_dna || {};
-  const fields = ["business_model", "primary_services", "likely_customer_segments", "geographic_market", "value_proposition", "likely_revenue_drivers", "customer_journey", "current_digital_maturity", "operational_complexity", "trust_signals", "differentiators", "growth_stage"];
+  const fields = BUSINESS_DNA_SCORING_FIELDS;
   const present = fields.filter(key => hasUsefulValue(dna[key]));
   const score = present.length ? Math.round((present.length / fields.length) * 100) : null;
   return scoreCard("business_dna", "Business DNA", score, {
