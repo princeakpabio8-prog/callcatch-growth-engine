@@ -3,6 +3,7 @@ const { normalizePhone, sendSms } = require("./smsAdapter");
 const { outreachAssets } = require("./prospectIntelligence");
 const { scanWebsite } = require("./websiteScanner");
 const { newId } = require("./dataStore");
+const { outreachDisabled } = require("./manualProspect");
 
 const DEFAULT_LIMITS = {
   maxPerHour: 20,
@@ -245,6 +246,13 @@ async function sendTaskNow(state, taskId) {
   }
 
   const lead = findLead(state, task);
+  if (outreachDisabled(lead)) {
+    task.status = "Blocked - Manual Test";
+    task.error = "Manual Test prospects cannot send email, SMS, or follow-ups until converted to Real Prospect.";
+    addTimeline(lead, "Outbound send blocked because this is a Manual Test prospect.");
+    state.auditLog.unshift({ id: newId("audit"), at: nowIso(), action: "manual_test_outreach_blocked", details: { taskId: task.id, leadId: lead.id } });
+    return { sent: false, blocked: true, error: task.error, task };
+  }
   const duplicate = duplicateSentTask(state, lead, task);
   task.sendFingerprint = duplicate.fingerprint;
   if (duplicate.duplicate) {
@@ -410,6 +418,7 @@ function generateFollowUps(state, { autoPilot = false, now = new Date() } = {}) 
   for (const initial of queue.filter(isInitialEmail)) {
     if (!initial.sentAt) continue;
     const lead = findLead(state, initial);
+    if (outreachDisabled(lead) || lead.followUpsDisabled) continue;
     if (!lead.id || hasLeadReply(lead)) continue;
 
     const firstDue = new Date(addDaysIso(initial.sentAt, SEQUENCE_STEPS[0].waitDays));

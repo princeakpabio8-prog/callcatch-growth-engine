@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const { scanWebsite, normalizeUrl } = require("./websiteScanner");
 const { APP_USER_AGENT } = require("./httpClient");
+const { assertSafeHttpUrl } = require("./manualProspect");
 
 const VERSION = "brain-zero-v1";
 const DEFAULT_MAX_RESPONSE_BYTES = 1_000_000;
@@ -237,9 +238,10 @@ async function withTimeout(promise, timeoutMs, label) {
 async function fetchText(url, { timeoutMs, fetchImpl = fetch, method = "GET", maxResponseBytes } = {}) {
   let parsed;
   try {
+    assertSafeHttpUrl(url);
     parsed = new URL(url);
   } catch {
-    throw new Error("Invalid URL");
+    throw new Error("Invalid or unsafe URL");
   }
   if (!/^https?:$/i.test(parsed.protocol)) throw new Error("Unsupported URL protocol");
   const maxBytes = maxResponseBytes || brainZeroConfig().maxResponseBytes;
@@ -253,6 +255,11 @@ async function fetchText(url, { timeoutMs, fetchImpl = fetch, method = "GET", ma
       "Accept": method === "HEAD" ? "*/*" : "text/html,application/xhtml+xml,text/plain;q=0.8"
     }
   });
+  try {
+    assertSafeHttpUrl(response.url || url);
+  } catch {
+    throw new Error("Redirect destination rejected as unsafe");
+  }
   const contentType = response.headers?.get?.("content-type") || "";
   const contentLength = Number(response.headers?.get?.("content-length") || 0);
   if (contentLength > maxBytes) throw new Error(`Response body rejected for excessive size (${contentLength} bytes)`);

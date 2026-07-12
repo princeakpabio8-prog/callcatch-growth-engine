@@ -131,6 +131,15 @@ test("website redirect is recorded in technical evidence", async () => {
   assert.match(JSON.stringify(tech.value), /www\.example\.com\/home/);
 });
 
+test("website redirect to private network is blocked", async () => {
+  const result = await run({}, fetchMap({
+    "https://example.com": response("https://example.com", html(), { finalUrl: "http://127.0.0.1/admin" })
+  }));
+  assert.equal(result.status, "partial");
+  assert.equal(result.providers.website_crawl.status, "failed");
+  assert.match(JSON.stringify(result.errors), /Redirect destination rejected as unsafe|Invalid or unsafe URL/);
+});
+
 test("unavailable website causes partial run while preserving lead evidence", async () => {
   const result = await run({}, fetchMap({
     "https://example.com": response("https://example.com", "down", { status: 503 })

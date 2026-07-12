@@ -43,6 +43,12 @@ const {
   sendApprovedBatch,
   sendTaskNow
 } = require("./lead-engine/sendingEngine");
+const {
+  buildManualLead,
+  convertManualProspectToReal,
+  findDuplicateManualLead,
+  validateManualProspectInput
+} = require("./lead-engine/manualProspect");
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
@@ -762,6 +768,85 @@ function freshBrainZeroRun(runs = [], businessId = "") {
   return latest;
 }
 
+async function startBrainZeroForLead(lead, { force = false } = {}) {
+  if (!lead || !lead.id) {
+    const error = new Error("Lead not found");
+    error.statusCode = 404;
+    throw error;
+  }
+  const state = await readStore();
+  const duplicate = duplicateBrainZeroRun(state.brainZeroRuns || [], lead.id);
+  if (duplicate) return { statusCode: 409, body: { error: "Brain Zero is already collecting evidence for this business", run: duplicate } };
+  if (!canStartBrainZeroRun(brainZeroConfig())) {
+    return {
+      statusCode: 202,
+      body: {
+        queued: true,
+        run: {
+          id: "",
+          run_id: "",
+          business_id: lead.id,
+          status: "queued",
+          message: "Evidence collection will begin when the current run finishes."
+        },
+        message: "Evidence collection will begin when the current run finishes."
+      }
+    };
+  }
+  const cached = force ? null : freshBrainZeroRun(state.brainZeroRuns || [], lead.id);
+  if (cached) {
+    return {
+      statusCode: 200,
+      body: {
+        cached: true,
+        run: cached,
+        message: `Using Brain Zero evidence collected ${cached.completed_at || cached.completedAt || "recently"}.`
+      }
+    };
+  }
+  const runId = newId("bz");
+  const started = new Date().toISOString();
+  const context = contextFromLead(lead);
+  const run = await mutateStore(store => {
+    store.brainZeroRuns = store.brainZeroRuns || [];
+    const record = {
+      id: runId,
+      run_id: runId,
+      business_id: lead.id,
+      businessId: lead.id,
+      status: "running",
+      providers: {},
+      evidence_count: 0,
+      source_count: 0,
+      pages_scanned: 0,
+      started_at: started,
+      completed_at: null,
+      duration_ms: null,
+      errors: [],
+      warnings: [],
+      evidence_package: {},
+      version: "brain-zero-v1",
+      force: !!force
+    };
+    store.brainZeroRuns.unshift(record);
+    store.brainZeroRuns = store.brainZeroRuns.slice(0, 300);
+    store.auditLog = store.auditLog || [];
+    store.auditLog.unshift({
+      id: newId("audit"),
+      at: started,
+      action: "brain_zero_started",
+      details: { runId, businessId: lead.id, force: !!force }
+    });
+    return record;
+  });
+  setTimeout(() => {
+    completeBrainZeroRun(runId, context).catch(error => {
+      log("error", "brain_zero_background_unhandled", { runId, error: sanitizedError(error) });
+    });
+  }, 0);
+  return { statusCode: 202, body: { run, message: "Brain Zero evidence collection started." } };
+}
+
 function brainZeroEvidenceToBrainOneContext(lead = {}, run = null) {
   const packageValue = run?.evidence_package || {};
   const evidence = Array.isArray(packageValue.evidence_log) ? packageValue.evidence_log : [];
@@ -1247,6 +1332,70 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (req.method === "POST" && url.pathname === "/api/leads/manual") {
+    try {
+      const body = await readJson(req);
+      const input = validateManualProspectInput(body);
+      const duplicateMode = String(body.duplicateMode || "").toLowerCase();
+      const collectEvidence = body.action === "collect" || body.collectEvidence === true;
+      const now = new Date().toISOString();
+      let duplicate = null;
+      const lead = await mutateStore(state => {
+        state.leads = state.leads || [];
+        duplicate = findDuplicateManualLead(state.leads, input.canonicalDomain);
+        if (duplicate && duplicateMode !== "separate_test_copy") return null;
+        const created = buildManualLead(input, {
+          id: newId("lead"),
+          now,
+          testCopy: duplicateMode === "separate_test_copy"
+        });
+        state.leads.unshift(created);
+        state.auditLog = state.auditLog || [];
+        state.auditLog.unshift({
+          id: newId("audit"),
+          at: now,
+          action: "manual_prospect_created",
+          details: {
+            leadId: created.id,
+            canonicalDomain: created.canonical_domain,
+            testProspect: created.testProspect,
+            duplicateCopy: duplicateMode === "separate_test_copy"
+          }
+        });
+        return created;
+      });
+      if (!lead && duplicate) {
+        return send(res, 409, {
+          ok: false,
+          status: "duplicate_domain",
+          error: "A lead with this website domain already exists.",
+          duplicateDomain: input.canonicalDomain,
+          existingLead: {
+            id: duplicate.id,
+            business: duplicate.business,
+            website: duplicate.website,
+            email: duplicate.email,
+            source: duplicate.source
+          },
+          choices: ["open_existing_lead", "create_separate_test_copy"]
+        });
+      }
+      if (!collectEvidence) return send(res, 201, { ok: true, status: "saved", leadId: lead.id, lead });
+      const started = await startBrainZeroForLead(lead, { force: false });
+      return send(res, started.statusCode, {
+        ok: true,
+        status: started.body.cached ? "evidence_cached" : started.body.queued ? "queued" : "evidence_started",
+        leadId: lead.id,
+        lead,
+        brain_zero_run_id: started.body.run?.run_id || started.body.run?.id || "",
+        ...started.body
+      });
+    } catch (error) {
+      log("error", "manual_prospect_create_failed", { error: error.message });
+      return send(res, 400, { ok: false, error: error.message });
+    }
+  }
+
   if (req.method === "POST" && url.pathname === "/api/scan-website") {
     try {
       const body = await readJson(req);
@@ -1304,73 +1453,45 @@ const server = http.createServer(async (req, res) => {
       const state = await readStore();
       const lead = (state.leads || []).find(item => item.id === body.leadId) || body.lead;
       if (!lead || !lead.id) return send(res, 404, { error: "Lead not found" });
-      const duplicate = duplicateBrainZeroRun(state.brainZeroRuns || [], lead.id);
-      if (duplicate) return send(res, 409, { error: "Brain Zero is already collecting evidence for this business", run: duplicate });
-      if (!canStartBrainZeroRun(brainZeroConfig())) {
-        return send(res, 202, {
-          queued: true,
-          run: {
-            id: "",
-            run_id: "",
-            business_id: lead.id,
-            status: "queued",
-            message: "Evidence collection will begin when the current run finishes."
-          },
-          message: "Evidence collection will begin when the current run finishes."
-        });
-      }
-      const cached = body.force ? null : freshBrainZeroRun(state.brainZeroRuns || [], lead.id);
-      if (cached) {
-        return send(res, 200, {
-          cached: true,
-          run: cached,
-          message: `Using Brain Zero evidence collected ${cached.completed_at || cached.completedAt || "recently"}.`
-        });
-      }
-      const runId = newId("bz");
-      const started = new Date().toISOString();
-      const context = contextFromLead(lead);
-      const run = await mutateStore(store => {
-        store.brainZeroRuns = store.brainZeroRuns || [];
-        const record = {
-          id: runId,
-          run_id: runId,
-          business_id: lead.id,
-          businessId: lead.id,
-          status: "running",
-          providers: {},
-          evidence_count: 0,
-          source_count: 0,
-          pages_scanned: 0,
-          started_at: started,
-          completed_at: null,
-          duration_ms: null,
-          errors: [],
-          warnings: [],
-          evidence_package: {},
-          version: "brain-zero-v1",
-          force: !!body.force
-        };
-        store.brainZeroRuns.unshift(record);
-        store.brainZeroRuns = store.brainZeroRuns.slice(0, 300);
-        store.auditLog = store.auditLog || [];
-        store.auditLog.unshift({
-          id: newId("audit"),
-          at: started,
-          action: "brain_zero_started",
-          details: { runId, businessId: lead.id, force: !!body.force }
-        });
-        return record;
-      });
-      setTimeout(() => {
-        completeBrainZeroRun(runId, context).catch(error => {
-          log("error", "brain_zero_background_unhandled", { runId, error: sanitizedError(error) });
-        });
-      }, 0);
-      return send(res, 202, { run, message: "Brain Zero evidence collection started." });
+      const started = await startBrainZeroForLead(lead, { force: !!body.force });
+      return send(res, started.statusCode, started.body);
     } catch (error) {
       log("error", "brain_zero_start_failed", { error: error.message });
       return send(res, 400, { error: error.message });
+    }
+  }
+
+  const leadBrainZeroMatch = req.method === "POST" && url.pathname.match(/^\/api\/leads\/([^/]+)\/brain-zero$/);
+  if (leadBrainZeroMatch) {
+    try {
+      const body = await readJson(req);
+      const state = await readStore();
+      const leadId = decodeURIComponent(leadBrainZeroMatch[1]);
+      const lead = (state.leads || []).find(item => item.id === leadId);
+      if (!lead) return send(res, 404, { ok: false, error: "Lead not found" });
+      const started = await startBrainZeroForLead(lead, { force: !!body.force });
+      return send(res, started.statusCode, { ok: started.statusCode < 400, leadId, ...started.body });
+    } catch (error) {
+      return send(res, 400, { ok: false, error: error.message });
+    }
+  }
+
+  const convertManualMatch = req.method === "POST" && url.pathname.match(/^\/api\/leads\/([^/]+)\/convert-real$/);
+  if (convertManualMatch) {
+    try {
+      const body = await readJson(req);
+      const leadId = decodeURIComponent(convertManualMatch[1]);
+      const updated = await mutateStore(state => {
+        const lead = (state.leads || []).find(item => item.id === leadId);
+        if (!lead) throw new Error("Lead not found");
+        const converted = convertManualProspectToReal(lead, { confirmed: body.confirm === true });
+        state.auditLog = state.auditLog || [];
+        state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "manual_prospect_converted", details: { leadId } });
+        return converted;
+      });
+      return send(res, 200, { ok: true, lead: updated });
+    } catch (error) {
+      return send(res, 400, { ok: false, error: error.message });
     }
   }
 
