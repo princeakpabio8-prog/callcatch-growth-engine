@@ -1203,9 +1203,22 @@ function clampScore(value) {
   return number === null ? null : clampNumber(number, 0, 100);
 }
 
-function scoreCard(key, label, value, { status = "", confidence = "", explanation = "", evidenceIds = [], componentsUsed = [], componentsMissing = [] } = {}) {
+function scoreCard(key, label, value, {
+  status = "",
+  confidence = "",
+  explanation = "",
+  evidenceIds = [],
+  evidenceCategories = [],
+  evidenceReceived = null,
+  expectedEvidence = [],
+  componentsUsed = [],
+  componentsMissing = []
+} = {}) {
   const numeric = clampScore(value);
   const finalStatus = status || (numeric === null ? "insufficient_evidence" : "assessed");
+  const normalizedEvidenceCategories = uniqueArray((evidenceCategories || []).filter(Boolean));
+  const receivedCount = numberOrNull(evidenceReceived);
+  const evidenceUsed = evidenceIds.length;
   return {
     key,
     label,
@@ -1214,9 +1227,145 @@ function scoreCard(key, label, value, { status = "", confidence = "", explanatio
     confidence: confidence || (numeric === null ? "low" : numeric >= 80 ? "high" : numeric >= 55 ? "medium" : "low"),
     explanation: explanation || (numeric === null ? "Insufficient module-specific evidence." : `${label} was scored from its own module evidence.`),
     evidence_ids: uniqueArray(evidenceIds),
+    evidence_count_used: evidenceUsed,
+    evidence_categories_used: normalizedEvidenceCategories,
     components_used: componentsUsed,
-    components_missing: componentsMissing
+    components_missing: componentsMissing,
+    diagnostics: {
+      module_name: label,
+      expected_evidence: expectedEvidence,
+      evidence_received: receivedCount === null ? 0 : receivedCount,
+      evidence_actually_used: evidenceUsed,
+      evidence_categories_used: normalizedEvidenceCategories,
+      reason_score_could_not_be_generated: numeric === null ? (componentsMissing.length ? componentsMissing.join(", ") : "No usable module-specific evidence was available.") : ""
+    }
   };
+}
+
+function evidenceText(item = {}) {
+  const value = item.value;
+  const valueText = value && typeof value === "object" ? JSON.stringify(value) : String(value || "");
+  return [
+    item.field,
+    item.category,
+    item.sourceCategory,
+    item.sourceType,
+    item.sourceProvider,
+    item.provider,
+    item.sourceUrl,
+    item.source_url,
+    item.excerpt,
+    item.source_excerpt,
+    valueText
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function evidenceCategories(items = []) {
+  return uniqueArray(items.flatMap(item => [
+    evidenceCategoryOf(item),
+    evidenceProviderOf(item),
+    evidenceFieldOf(item)
+  ]).filter(Boolean));
+}
+
+function evidenceIds(items = []) {
+  return uniqueArray(items.map(item => item.id || item.evidence_id).filter(Boolean));
+}
+
+function evidenceHas(item = {}, patterns = []) {
+  const text = evidenceText(item);
+  return patterns.some(pattern => pattern.test(text));
+}
+
+function evidenceMatchesScoringModule(moduleKey, item = {}) {
+  const provider = evidenceProviderOf(item);
+  const category = evidenceCategoryOf(item);
+  const field = evidenceFieldOf(item);
+  if (moduleKey === "digital_health") {
+    return /website|feature|technical|content|crawl/.test(provider)
+      || /website_page|technical|content|feature|access/.test(category)
+      || /booking|form|chat|mobile|speed|metadata|heading|content|page_text|snapshot|robots|https|navigation|accessibility|schema/i.test(field);
+  }
+  if (moduleKey === "ai_discoverability") {
+    return /content|website|technical|crawl|trust|identity/.test(provider)
+      || /content|website_page|technical|identity|trust/.test(category)
+      || /schema|metadata|heading|content|page_text|faq|api|developer|documentation|robots|sitemap|description/i.test(field);
+  }
+  if (moduleKey === "future_readiness") {
+    return /content|website|technical|feature|identity|trust/.test(provider)
+      || /content|website_page|technical|feature|identity|trust/.test(category)
+      || /api|developer|integration|automation|cloud|ai|platform|roadmap|booking|chat|metadata|content/i.test(field)
+      || evidenceHas(item, [/api/, /developer/, /integration/, /automation/, /\bai\b/, /artificial intelligence/, /cloud/, /platform/, /ecosystem/, /roadmap/]);
+  }
+  return false;
+}
+
+function moduleEvidenceForScoring(moduleKey, contextPackage = {}) {
+  const evidence = Array.isArray(contextPackage.evidenceLog) ? contextPackage.evidenceLog : [];
+  const hasBrainZeroContract = !!contextPackage.brainZero || evidence.some(item => item.sourceProvider || item.sourceCategory || item.category || item.field);
+  if (!hasBrainZeroContract) return [];
+  return evidence.filter(item => evidenceMatchesScoringModule(moduleKey, item));
+}
+
+function confidenceFromEvidence(count = 0, signalCount = 0) {
+  if (count >= 8 && signalCount >= 5) return "high";
+  if (count >= 3 && signalCount >= 2) return "medium";
+  return "low";
+}
+
+function scoreFromEvidenceSignals(evidence = [], signalMap = []) {
+  const signals = signalMap
+    .filter(signal => evidence.some(item => evidenceHas(item, signal.patterns)))
+    .map(signal => signal.name);
+  if (!evidence.length || !signals.length) {
+    return { score: null, signals, confidence: "low" };
+  }
+  const score = Math.min(95, 34 + (signals.length * 9) + Math.min(18, evidence.length * 2));
+  return {
+    score,
+    signals,
+    confidence: confidenceFromEvidence(evidence.length, signals.length)
+  };
+}
+
+function evidenceBackedDigitalHealth(contextPackage = {}) {
+  const evidence = moduleEvidenceForScoring("digital_health", contextPackage);
+  const signalMap = [
+    { name: "https", patterns: [/https:\/\//, /"https"\s*:\s*true/, /\bhttps\b/] },
+    { name: "crawl_success", patterns: [/website_crawl/, /page_text/, /crawl completed/, /status["']?\s*:\s*200/] },
+    { name: "technical_implementation", patterns: [/technical_website_evidence/, /technical_snapshot/, /robots/, /metadata/, /final_url/] },
+    { name: "ux_navigation", patterns: [/navigation/, /menu/, /heading/, /responsive/, /mobile/] },
+    { name: "conversion_path", patterns: [/booking/, /contact_form/, /quote_form/, /schedule/, /demo/, /contact/] },
+    { name: "structured_content", patterns: [/content_snapshot/, /structured/, /schema/, /faq/, /service_descriptions_present/] },
+    { name: "accessibility_or_performance", patterns: [/accessibility/, /performance/, /speed/, /alt text/, /viewport/] }
+  ];
+  return { ...scoreFromEvidenceSignals(evidence, signalMap), evidence };
+}
+
+function evidenceBackedAiDiscoverability(contextPackage = {}) {
+  const evidence = moduleEvidenceForScoring("ai_discoverability", contextPackage);
+  const signalMap = [
+    { name: "semantic_content", patterns: [/heading/, /page_text/, /content_snapshot/, /description/, /service_descriptions_present/] },
+    { name: "structured_metadata", patterns: [/schema/, /metadata/, /json-ld/, /open graph/, /title/, /meta/] },
+    { name: "crawlability", patterns: [/robots/, /sitemap/, /crawl/, /index/] },
+    { name: "answer_ready_content", patterns: [/faq/, /documentation/, /help center/, /guide/, /resources/] },
+    { name: "developer_or_api_content", patterns: [/\bapi\b/, /developer/, /docs/, /integration/] },
+    { name: "public_knowledge_signals", patterns: [/reviews/, /testimonials/, /trust/, /partners/, /case stud/] }
+  ];
+  return { ...scoreFromEvidenceSignals(evidence, signalMap), evidence };
+}
+
+function evidenceBackedFutureReadiness(contextPackage = {}) {
+  const evidence = moduleEvidenceForScoring("future_readiness", contextPackage);
+  const signalMap = [
+    { name: "ai_or_automation", patterns: [/\bai\b/, /artificial intelligence/, /automation/, /machine learning/, /workflow/] },
+    { name: "api_or_developer_ecosystem", patterns: [/\bapi\b/, /developer/, /sdk/, /docs/, /webhook/] },
+    { name: "integrations", patterns: [/integration/, /connectors?/, /marketplace/, /app ecosystem/] },
+    { name: "cloud_or_platform", patterns: [/cloud/, /platform/, /infrastructure/, /enterprise/] },
+    { name: "digital_maturity", patterns: [/online booking/, /chat/, /customer portal/, /self-service/, /metadata/, /structured/] },
+    { name: "roadmap_or_innovation", patterns: [/roadmap/, /innovation/, /new product/, /release/, /beta/] }
+  ];
+  return { ...scoreFromEvidenceSignals(evidence, signalMap), evidence };
 }
 
 function scoreBusinessFoundation(flat = {}) {
@@ -1254,42 +1403,71 @@ function scoreBusinessDna(flat = {}) {
   });
 }
 
-function scoreDigitalHealth(flat = {}) {
+function scoreDigitalHealth(flat = {}, contextPackage = {}) {
   const digital = flat.digital_health || {};
-  const score = clampScore(digital.total_score ?? digital.score ?? averageScore(Object.values(digital.sub_scores || {}).map(item => item?.score)));
+  const evidenceScore = evidenceBackedDigitalHealth(contextPackage);
+  const modelScore = clampScore(digital.total_score ?? digital.score ?? averageScore(Object.values(digital.sub_scores || {}).map(item => item?.score)));
+  const score = modelScore ?? evidenceScore.score;
+  const usedEvidenceIds = uniqueArray([...evidenceIdList(digital), ...evidenceIds(evidenceScore.evidence)]);
+  const components = uniqueArray([
+    ...Object.keys(digital.sub_scores || {}),
+    ...evidenceScore.signals
+  ]);
   return scoreCard("digital_health", "Digital Health", score, {
-    status: digital.status === "insufficient_evidence" && score === null ? "insufficient_evidence" : "assessed",
-    confidence: digital.confidence,
-    explanation: score === null ? "Website and UX evidence was not sufficient for a digital health score." : "Digital Health is scored from website, UX, SEO, structure, accessibility, and conversion-path evidence only.",
-    evidenceIds: evidenceIdList(digital),
-    componentsUsed: Object.keys(digital.sub_scores || {}),
-    componentsMissing: score === null ? ["website_or_digital_subscores"] : []
+    status: score === null ? "insufficient_evidence" : "assessed",
+    confidence: digital.confidence || evidenceScore.confidence,
+    explanation: score === null ? "Website and UX evidence was not sufficient for a digital health score." : "Digital Health is scored from website, HTTPS, crawl, UX, structure, accessibility, technical, and conversion-path evidence only.",
+    evidenceIds: usedEvidenceIds,
+    evidenceCategories: evidenceCategories(evidenceScore.evidence),
+    evidenceReceived: moduleEvidenceForScoring("digital_health", contextPackage).length,
+    expectedEvidence: ["HTTPS", "technical implementation", "crawl success", "UX/navigation", "responsiveness", "accessibility", "structured content", "performance indicators"],
+    componentsUsed: components,
+    componentsMissing: score === null ? ["website_or_digital_evidence"] : []
   });
 }
 
-function scoreAiDiscoverability(flat = {}) {
+function scoreAiDiscoverability(flat = {}, contextPackage = {}) {
   const ai = flat.ai_discoverability || {};
   const subScore = averageScore(Object.values(ai.sub_scores || {}));
-  const score = clampScore(ai.score ?? subScore ?? levelScore(ai.summary || ai.status));
+  const evidenceScore = evidenceBackedAiDiscoverability(contextPackage);
+  const score = clampScore(ai.score ?? subScore ?? levelScore(ai.summary || ai.status)) ?? evidenceScore.score;
+  const usedEvidenceIds = uniqueArray([...evidenceIdList(ai), ...evidenceIds(evidenceScore.evidence)]);
+  const components = uniqueArray([
+    ...(Object.keys(ai.sub_scores || {}).length ? Object.keys(ai.sub_scores) : []),
+    ...evidenceScore.signals,
+    ...(hasUsefulValue(ai.improvement_actions) ? ["improvement_actions"] : [])
+  ]);
   return scoreCard("ai_discoverability", "AI Discoverability", score, {
-    status: ai.status === "insufficient_evidence" && score === null ? "insufficient_evidence" : "assessed",
-    confidence: ai.confidence,
-    explanation: score === null ? "AI-readable content evidence was not sufficient." : "AI Discoverability is scored from structured content, FAQ/schema, semantic clarity, and answer-ready public information only.",
-    evidenceIds: evidenceIdList(ai),
-    componentsUsed: Object.keys(ai.sub_scores || {}).length ? Object.keys(ai.sub_scores) : ["summary", "improvement_actions"],
+    status: score === null ? "insufficient_evidence" : "assessed",
+    confidence: ai.confidence || evidenceScore.confidence,
+    explanation: score === null ? "AI-readable content evidence was not sufficient." : "AI Discoverability is scored from semantic HTML/content, schema or metadata, crawlability, documentation, API/developer content, and public knowledge signals only.",
+    evidenceIds: usedEvidenceIds,
+    evidenceCategories: evidenceCategories(evidenceScore.evidence),
+    evidenceReceived: moduleEvidenceForScoring("ai_discoverability", contextPackage).length,
+    expectedEvidence: ["semantic HTML", "structured content", "schema/metadata", "robots/crawlability", "FAQ/documentation", "API/developer documentation", "AI-readable public knowledge"],
+    componentsUsed: components,
     componentsMissing: score === null ? ["ai_readable_content"] : []
   });
 }
 
-function scoreFutureReadiness(flat = {}) {
+function scoreFutureReadiness(flat = {}, contextPackage = {}) {
   const future = flat.future_readiness || {};
-  const score = clampScore(future.score ?? levelScore(future.readiness_level || future.status || future.summary) ?? (hasUsefulValue(future.fastest_improvement) ? confidencePercent(future.confidence) : null));
+  const evidenceScore = evidenceBackedFutureReadiness(contextPackage);
+  const score = clampScore(future.score ?? levelScore(future.readiness_level || future.status || future.summary) ?? (hasUsefulValue(future.fastest_improvement) ? confidencePercent(future.confidence) : null)) ?? evidenceScore.score;
+  const usedEvidenceIds = uniqueArray([...evidenceIdList(future), ...evidenceIds(evidenceScore.evidence)]);
+  const components = uniqueArray([
+    ...["readiness_level", "fastest_improvement", "blockers"].filter(key => hasUsefulValue(future[key])),
+    ...evidenceScore.signals
+  ]);
   return scoreCard("future_readiness", "Future Readiness", score, {
-    status: future.status === "insufficient_evidence" && score === null ? "insufficient_evidence" : "assessed",
-    confidence: future.confidence,
-    explanation: score === null ? "Innovation, automation, or roadmap signals were not sufficient." : "Future Readiness is scored from innovation, automation, integrations, digital maturity, and roadmap signals only.",
-    evidenceIds: evidenceIdList(future),
-    componentsUsed: ["readiness_level", "fastest_improvement", "blockers"].filter(key => hasUsefulValue(future[key])),
+    status: score === null ? "insufficient_evidence" : "assessed",
+    confidence: future.confidence || evidenceScore.confidence,
+    explanation: score === null ? "Innovation, automation, or roadmap signals were not sufficient." : "Future Readiness is scored from AI, automation, APIs, cloud infrastructure, integrations, digital maturity, developer ecosystem, and roadmap signals only.",
+    evidenceIds: usedEvidenceIds,
+    evidenceCategories: evidenceCategories(evidenceScore.evidence),
+    evidenceReceived: moduleEvidenceForScoring("future_readiness", contextPackage).length,
+    expectedEvidence: ["AI products", "automation", "APIs", "cloud infrastructure", "integrations", "developer ecosystem", "innovation signals", "roadmap indicators"],
+    componentsUsed: components,
     componentsMissing: score === null ? ["future_readiness_signals"] : []
   });
 }
@@ -1367,7 +1545,28 @@ function decisionEngineFromScores(moduleScores = {}, flat = {}) {
   };
 }
 
-function calculateScoreMetadata(combined = {}) {
+function hydrateScoreCardDiagnostics(moduleScores = {}, contextPackage = {}) {
+  const evidence = Array.isArray(contextPackage.evidenceLog) ? contextPackage.evidenceLog : [];
+  const byId = new Map(evidence.map(item => [item.id || item.evidence_id, item]));
+  for (const item of Object.values(moduleScores)) {
+    if (!item || typeof item !== "object") continue;
+    const used = (item.evidence_ids || []).map(id => byId.get(id)).filter(Boolean);
+    if (!item.evidence_categories_used?.length && used.length) item.evidence_categories_used = evidenceCategories(used);
+    item.evidence_count_used = item.evidence_ids?.length || used.length || item.evidence_count_used || 0;
+    item.diagnostics = {
+      ...(item.diagnostics || {}),
+      evidence_received: item.diagnostics?.evidence_received || evidence.length,
+      evidence_actually_used: item.evidence_count_used,
+      evidence_categories_used: item.evidence_categories_used || [],
+      reason_score_could_not_be_generated: item.value === null
+        ? (item.components_missing?.length ? item.components_missing.join(", ") : item.diagnostics?.reason_score_could_not_be_generated || "No usable module-specific evidence was available.")
+        : ""
+    };
+  }
+  return moduleScores;
+}
+
+function calculateScoreMetadata(combined = {}, contextPackage = {}) {
   const flat = flattenCombinedOutput(combined);
   const digital = flat.digital_health || {};
   const digitalValue = numberOrNull(digital.total_score ?? digital.score);
@@ -1377,9 +1576,9 @@ function calculateScoreMetadata(combined = {}) {
   const module_scores = {
     business_foundation: scoreBusinessFoundation(flat),
     business_dna: scoreBusinessDna(flat),
-    digital_health: scoreDigitalHealth(flat),
-    ai_discoverability: scoreAiDiscoverability(flat),
-    future_readiness: scoreFutureReadiness(flat),
+    digital_health: scoreDigitalHealth(flat, contextPackage),
+    ai_discoverability: scoreAiDiscoverability(flat, contextPackage),
+    future_readiness: scoreFutureReadiness(flat, contextPackage),
     trust: scoreTrust(flat),
     opportunity: scoreOpportunity(flat),
     contactability: scoreContactability(flat)
@@ -1389,8 +1588,10 @@ function calculateScoreMetadata(combined = {}) {
     explanation: flat.contact_decision?.primary_reason || "Decision Engine consumes module scores without overwriting them.",
     evidenceIds: evidenceIdList(flat.contact_decision || {})
   });
+  hydrateScoreCardDiagnostics(module_scores, contextPackage);
   const score_metadata = {
     module_scores,
+    module_diagnostics: Object.fromEntries(Object.entries(module_scores).map(([key, value]) => [key, value.diagnostics])),
     digital_health: scoreMeta(
       module_scores.digital_health.value ?? digitalValue,
       module_scores.digital_health.status,
@@ -1415,6 +1616,10 @@ function calculateScoreMetadata(combined = {}) {
   };
   combined.decision_engine = decisionEngineFromScores(module_scores, flat);
   combined.score_metadata = score_metadata;
+  combined.module_diagnostics = {
+    ...(combined.module_diagnostics || {}),
+    score_layer: score_metadata.module_diagnostics
+  };
   return score_metadata;
 }
 
@@ -1506,9 +1711,57 @@ function actionPlanLines(plan = {}, flat = {}) {
   return fallback;
 }
 
+function scoreStrength(score) {
+  if (score === null || score === undefined) return "unknown";
+  if (score >= 85) return "strong";
+  if (score >= 65) return "moderate";
+  if (score >= 35) return "limited";
+  return "weak";
+}
+
+function executiveSummaryLines(moduleScores = {}, decisionEngine = {}) {
+  const foundation = moduleScores.business_foundation?.value;
+  const dna = moduleScores.business_dna?.value;
+  const digital = moduleScores.digital_health?.value;
+  const ai = moduleScores.ai_discoverability?.value;
+  const future = moduleScores.future_readiness?.value;
+  const contactability = moduleScores.contactability?.value;
+  const lines = [];
+  if ([foundation, dna].some(value => value !== null && value !== undefined)) {
+    lines.push(`This company demonstrates ${scoreStrength(averageScore([foundation, dna]))} business fundamentals. Business identity, services, value proposition, and market position were assessed independently from outreach feasibility.`);
+  }
+  const digitalParts = [
+    digital !== null && digital !== undefined ? `Digital Health is ${scoreStrength(digital)} (${digital}/100)` : "",
+    ai !== null && ai !== undefined ? `AI Discoverability is ${scoreStrength(ai)} (${ai}/100)` : "",
+    future !== null && future !== undefined ? `Future Readiness is ${scoreStrength(future)} (${future}/100)` : ""
+  ].filter(Boolean);
+  if (digitalParts.length) lines.push(`${digitalParts.join("; ")}.`);
+  if (contactability !== null && contactability !== undefined) {
+    lines.push(`Outreach feasibility is ${scoreStrength(contactability)} (${contactability}/100), so the final recommendation can remain ${decisionEngine.decision || "manual review"} even when business quality is high.`);
+  }
+  if (decisionEngine.decision) lines.push(`Final recommendation: ${decisionEngine.decision}. ${decisionEngine.reason || ""}`.trim());
+  return lines;
+}
+
+function radarLinesFromModuleScores(moduleScores = {}) {
+  const mapping = [
+    ["digital_health", "digital health"],
+    ["ai_discoverability", "AI discoverability"],
+    ["future_readiness", "future readiness"],
+    ["opportunity", "opportunity"],
+    ["contactability", "contactability"]
+  ];
+  return mapping.map(([key, label]) => {
+    const score = moduleScores[key]?.value;
+    if (score === null || score === undefined) return "";
+    return `${label}: ${scoreStrength(score)} (${score}/100). ${moduleScores[key]?.explanation || ""}`;
+  }).filter(Boolean);
+}
+
 function buildFounderBlueprintFromOutput(combined = {}) {
   const flat = flattenCombinedOutput(combined);
   const moduleScores = combined.score_metadata?.module_scores || {};
+  const decisionEngine = combined.decision_engine || {};
   const identity = flat.business_identity || {};
   const business = identityName(identity);
   const dna = flat.business_dna || {};
@@ -1523,7 +1776,7 @@ function buildFounderBlueprintFromOutput(combined = {}) {
   const money = flat.money_left_on_table || safeMoneyFallback();
   const contact = flat.contact_decision || {};
 
-  const opportunitySummary = [];
+  const opportunitySummary = executiveSummaryLines(moduleScores, decisionEngine);
   if (hasUsefulValue(dna.business_model)) opportunitySummary.push(`Inferred: ${business} appears to operate as ${dna.business_model}.`);
   if (hasUsefulValue(dna.primary_services)) opportunitySummary.push(`Inferred: Core services include ${listField(dna.primary_services).join(", ")}.`);
   if (hasUsefulValue(dna.geographic_market)) opportunitySummary.push(`Inferred: The visible market focus is ${dna.geographic_market}.`);
@@ -1552,7 +1805,7 @@ function buildFounderBlueprintFromOutput(combined = {}) {
 
   const moneyLines = money.status === "estimated"
     ? [`Estimated range: ${money.currency || ""}${money.low_estimate} to ${money.currency || ""}${money.high_estimate} ${money.time_period || ""}.`, `Assumptions: ${listField(money.assumptions).join("; ") || "Scenario assumptions were supplied by Brain One."}`, `Method: ${money.calculation_method || "scenario estimate"}. Confidence: ${money.confidence || "low"}.`]
-    : ["Insufficient public evidence was available to produce a responsible monetary estimate.", ...(opportunities.length ? ["However, non-monetary opportunity signals were still found above, so this should be treated as upside to measure rather than a confirmed revenue loss."] : [])];
+    : ["Unable to responsibly estimate financial opportunity from available public evidence.", ...(opportunities.length ? ["However the following opportunity signals were detected:"] : []), ...opportunities.slice(0, 3).map(item => item.title || item.opportunity || item.specific_observed_problem).filter(Boolean)];
 
   const whyLines = [];
   if (why.status !== "insufficient_evidence") {
@@ -1571,11 +1824,12 @@ function buildFounderBlueprintFromOutput(combined = {}) {
   if (!whyLines.length) whyLines.push("Insufficient public evidence was available to explain why this business deserves attention.");
 
   const actions = actionPlanLines(flat.one_day_action_plan, flat);
-  const radarLines = radar.length ? radar : [
+  const radarBaseLines = radar.length ? radar : [
     digital.summary ? `digital health: ${digital.summary}` : "",
     aiDiscoverability.summary ? `AI discoverability: ${aiDiscoverability.summary}` : "",
     future.readiness_level || future.summary ? `future readiness: ${future.readiness_level || future.summary}` : ""
   ].filter(Boolean);
+  const radarLines = uniqueArray([...radarBaseLines, ...radarLinesFromModuleScores(moduleScores)]);
 
   const contactLines = [
     contact.recommendation_status || contact.decision ? `Recommendation: ${contact.recommendation_status || contact.decision}` : "",
@@ -1585,8 +1839,10 @@ function buildFounderBlueprintFromOutput(combined = {}) {
   ].filter(Boolean);
   const scoreLines = Object.values(moduleScores)
     .filter(item => item && item.key !== "decision")
-    .map(item => `${item.label}: ${item.value === null ? "Not scored" : `${item.value}/100`} (${item.status}; confidence ${item.confidence}). ${item.explanation}`);
-  const decisionEngine = combined.decision_engine || {};
+    .map(item => {
+      const categories = item.evidence_categories_used?.length ? ` Categories: ${item.evidence_categories_used.slice(0, 5).join(", ")}.` : "";
+      return `${item.label}: ${item.value === null ? "Not scored" : `${item.value}/100`}. Confidence: ${item.confidence}. Evidence Used: ${item.evidence_count_used || 0}.${categories} Reason: ${item.explanation}`;
+    });
   if (decisionEngine.decision) {
     contactLines.unshift(`Decision Engine: ${decisionEngine.decision}. ${decisionEngine.reason || ""}`.trim());
     if (decisionEngine.business_quality_score !== null && decisionEngine.business_quality_score !== undefined) {
@@ -1963,7 +2219,7 @@ async function runBrainOne(contextPackage, options = {}) {
     module_diagnostics,
     founder_facing_blueprint: ""
   };
-  calculateScoreMetadata(combined);
+  calculateScoreMetadata(combined, contextPackage);
   const phaseADurationMs = Date.now() - phaseAStarted;
   logStage("brain_one_phase_a_completed", {
     mode: "modular",

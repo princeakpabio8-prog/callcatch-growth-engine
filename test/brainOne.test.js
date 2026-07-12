@@ -47,6 +47,64 @@ function sampleContext(index = 1) {
   });
 }
 
+function enterpriseEvidenceContext(name, website, trade = "Technology Platform") {
+  const capturedAt = new Date().toISOString();
+  const ev = (id, provider, category, field, value, excerpt) => ({
+    id,
+    sourceType: provider,
+    sourceProvider: provider,
+    sourceCategory: category,
+    category,
+    field,
+    value,
+    sourceUrl: website,
+    excerpt,
+    capturedAt
+  });
+  const evidenceLog = [
+    ev("ev-enterprise-identity-001", "business_identity_evidence", "identity", "business_name", name, `${name} official business identity and platform website.`),
+    ev("ev-enterprise-website-001", "website_crawl", "website_page", "page_text", { title: `${name} platform`, url: website }, `${name} public site includes product pages, platform positioning, customer resources, guides, and navigation.`),
+    ev("ev-enterprise-technical-001", "technical_website_evidence", "technical", "technical_snapshot", { https: true, final_url: website, robots_accessible: true, status: 200 }, "HTTPS, robots access, metadata, and successful crawl were observed."),
+    ev("ev-enterprise-features-001", "website_feature_detection", "feature", "website_feature_snapshot", { navigation: true, responsive: true, contact_form: true, structured_content: true }, "Responsive navigation, contact forms, structured content, and conversion paths are visible."),
+    ev("ev-enterprise-content-001", "content_discoverability_evidence", "content", "content_snapshot", { headings_present: true, faq_signals: true, schema_signals: true, service_descriptions_present: true }, "Semantic headings, FAQ-style explanations, structured metadata, and service descriptions are present."),
+    ev("ev-enterprise-docs-001", "content_discoverability_evidence", "content", "developer_documentation", ["API documentation", "developer docs", "integrations", "guides"], `${name} has API documentation, developer documentation, integrations, and public guides.`),
+    ev("ev-enterprise-future-001", "content_discoverability_evidence", "content", "innovation_signals", ["AI", "automation", "cloud platform", "developer ecosystem", "roadmap"], `${name} references AI, automation, cloud platform capabilities, developer ecosystem, and innovation signals.`),
+    ev("ev-enterprise-trust-001", "public_trust_evidence", "trust", "trust_snapshot", ["enterprise customers", "partners", "case studies", "security"], `${name} shows enterprise trust, partners, customer proof, case studies, and security signals.`)
+  ];
+  return {
+    businessIdentity: {
+      businessId: `enterprise-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      businessName: name,
+      trade,
+      city: "",
+      state: "",
+      country: "US",
+      websiteUrl: website,
+      source: "test-brain-zero-fixture"
+    },
+    websitePublicText: evidenceLog.map(item => item.excerpt).join("\n"),
+    publicContactDetails: { phone: "", email: "", address: "", owner: "" },
+    publicSocialOrDirectoryEvidence: evidenceLog.filter(item => ["identity", "trust"].includes(item.category)),
+    scraperEvidence: evidenceLog,
+    sourceUrls: [website],
+    analysisTimestamp: capturedAt,
+    evidenceLog,
+    brainZero: {
+      runId: `brain0-${name.toLowerCase()}`,
+      status: "completed",
+      evidenceQuality: "strong",
+      brainOneReady: true,
+      missingCriticalCategories: [],
+      evidenceCoverage: {
+        coverage_score: 100,
+        evidence_counts_by_category: { identity: 1, website_page: 1, technical: 1, feature: 1, content: 3, trust: 1 },
+        evidence_counts_by_confidence: { medium: 8 },
+        evidence_with_valid_id: evidenceLog.length
+      }
+    }
+  };
+}
+
 function evidenceFromContext(context) {
   return context.evidenceLog.map(item => ({
     id: item.id,
@@ -994,6 +1052,85 @@ test("independent module scores preserve strong business quality when contactabi
   assert.match(result.blueprintMarkdown, /Business Foundation: \d+\/100/);
   assert.match(result.blueprintMarkdown, /Contactability: 0\/100/);
   assert.doesNotMatch(result.blueprintMarkdown, /Business Foundation: Not scored|Business Foundation: Failed/i);
+});
+
+test("Brain Zero evidence powers digital, AI, and future scores for enterprise validation fixtures", async () => {
+  const fixtures = [
+    ["Stripe", "https://stripe.com"],
+    ["HubSpot", "https://hubspot.com"],
+    ["Microsoft", "https://microsoft.com"],
+    ["Shopify", "https://shopify.com"]
+  ];
+  for (const [name, website] of fixtures) {
+    const context = enterpriseEvidenceContext(name, website);
+    assert.equal(validateBrainOneInput(context).ok, true);
+    let calls = 0;
+    const result = await runBrainOne(context, {
+      model: "test-model",
+      callModel: async () => {
+        calls += 1;
+        const full = sampleOutput(context);
+        const richDna = {
+          ...full.business_dna,
+          business_model: "B2B platform business",
+          primary_services: ["software platform", "APIs", "developer tools", "business operations"],
+          likely_customer_segments: ["businesses", "developers", "enterprise teams"],
+          geographic_market: "global",
+          value_proposition: `${name} provides a public platform with strong product, developer, and trust signals.`,
+          likely_revenue_drivers: ["platform usage", "subscriptions", "enterprise adoption", "integrations"],
+          customer_journey: "Research online, compare platform capability, review documentation, evaluate trust, then contact sales or self-serve.",
+          current_digital_maturity: "advanced",
+          operational_complexity: "high",
+          trust_signals: ["enterprise customers", "partners", "case studies", "security"],
+          differentiators: ["developer ecosystem", "platform depth", "public documentation"],
+          growth_stage: "mature",
+          confidence: "high",
+          evidence_ids: context.evidenceLog.map(item => item.id)
+        };
+        if (calls === 1) return JSON.stringify({ ...moduleOutput(context, "foundation"), contacts: [] });
+        if (calls === 2) return JSON.stringify({
+          business_dna: richDna,
+          digital_health: { status: "insufficient_evidence", summary: "Model did not produce a digital score.", evidence_ids: [], confidence: "low", sub_scores: null, total_score: null },
+          ai_discoverability: { status: "insufficient_evidence", summary: "Model did not produce an AI discoverability score.", evidence_ids: [], confidence: "low" },
+          future_readiness: { status: "insufficient_evidence", summary: "Model did not produce a future readiness score.", evidence_ids: [], confidence: "low" }
+        });
+        if (calls === 3) return moduleJson(context, "opportunities", { hidden_opportunities: [] });
+        if (calls === 4) return moduleJson(context, "strategic_interpretation");
+        if (calls === 5) return JSON.stringify({
+          contact_decision: {
+            ...full.contact_decision,
+            decision: "DO NOT CONTACT",
+            decision_confidence: "low",
+            primary_reason: "Excellent company quality, but no verified outbound contact path was provided in the evidence package.",
+            supporting_evidence: [],
+            disqualifying_factors: ["No verified contact path."],
+            information_gaps: ["No verified email or phone."],
+            callcatch_opportunity_score: null,
+            evidence_ids: []
+          },
+          brain_two_handoff: full.brain_two_handoff
+        });
+        return "# Business Growth Blueprint\n\n## Opportunity Summary\nUse deterministic rendering.";
+      }
+    });
+    const scores = result.output.score_metadata.module_scores;
+    assert.ok(scores.business_foundation.value >= 90, `${name} foundation`);
+    assert.ok(scores.business_dna.value >= 90, `${name} DNA`);
+    assert.ok(scores.trust.value >= 80, `${name} trust`);
+    assert.ok(result.output.decision_engine.business_quality_score >= 80, `${name} quality`);
+    assert.ok(scores.digital_health.value >= 80, `${name} digital`);
+    assert.ok(scores.ai_discoverability.value >= 80, `${name} AI`);
+    assert.ok(scores.future_readiness.value >= 80, `${name} future`);
+    assert.equal(scores.contactability.value, 0, `${name} contactability`);
+    assert.equal(result.output.decision_engine.decision, "DO NOT CONTACT", `${name} decision`);
+    assert.ok(scores.digital_health.diagnostics.evidence_actually_used > 0, `${name} digital diagnostics`);
+    assert.ok(scores.ai_discoverability.diagnostics.evidence_actually_used > 0, `${name} AI diagnostics`);
+    assert.ok(scores.future_readiness.diagnostics.evidence_actually_used > 0, `${name} future diagnostics`);
+    assert.match(result.blueprintMarkdown, /Digital Health: \d+\/100/);
+    assert.match(result.blueprintMarkdown, /AI Discoverability: \d+\/100/);
+    assert.match(result.blueprintMarkdown, /Future Readiness: \d+\/100/);
+    assert.doesNotMatch(result.blueprintMarkdown, /Digital Health: Not scored|AI Discoverability: Not scored|Future Readiness: Not scored/i);
+  }
 });
 
 test("weak forum-only evidence stays needs review instead of forced contact", async () => {
