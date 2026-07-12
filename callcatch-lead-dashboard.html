@@ -654,6 +654,7 @@
     let queue = JSON.parse(localStorage.getItem("ccApprovalQueueV2") || "[]");
     let brainOneRuns = [];
     let brainZeroRuns = [];
+    const brainOneStarting = new Set();
     let auditLog = [];
     let lastGrowthRun = null;
     let emailReady = false;
@@ -691,6 +692,36 @@
 
     function markDirty(){ dataVersion += 1; derivedCache.stamp = -1; }
     function save(){ markDirty(); localStorage.setItem("ccProspectsV2", JSON.stringify(leads)); localStorage.setItem("ccApprovalQueueV2", JSON.stringify(queue)); localStorage.setItem("ccSettingsV2", JSON.stringify(settings)); }
+    async function parseApiResponse(response, path){
+      const contentType = response.headers.get("content-type") || "";
+      const text = await response.text();
+      if (!text.trim()) {
+        const message = path.includes("/api/brain-one/analyze")
+          ? "The server returned an empty response while starting Brain One. Please try again."
+          : "The server returned an empty response. Please try again.";
+        const error = new Error(message);
+        error.status = response.status;
+        error.emptyResponse = true;
+        throw error;
+      }
+      if (!contentType.includes("application/json")) {
+        console.warn("Non-JSON API response", { path, status: response.status, preview: text.slice(0, 180) });
+      }
+      try {
+        return JSON.parse(text);
+      } catch (parseError) {
+        console.warn("Invalid API JSON response", { path, status: response.status, preview: text.slice(0, 180), error: parseError.message });
+        const message = path.includes("/api/brain-one/analyze")
+          ? "The server returned an invalid response while starting Brain One."
+          : response.status === 502 || response.status === 503
+            ? "The server is temporarily unavailable. Please try again."
+            : "The server returned an invalid response.";
+        const error = new Error(message);
+        error.status = response.status;
+        error.invalidJson = true;
+        throw error;
+      }
+    }
     async function api(path, options = {}) {
       let response;
       try {
@@ -702,10 +733,11 @@
         const target = apiUrl("/health");
         throw new Error(`Cannot reach CallCatch backend at ${target}. Open https://callcatch-growth-engine.onrender.com/ directly, or wait for Render to finish waking up, then try again.`);
       }
-      const payload = await response.json();
+      const payload = await parseApiResponse(response, path);
       if (!response.ok) {
         const detail = [
-          payload.error || "Server request failed",
+          payload.error?.message || payload.error || "Server request failed",
+          payload.error?.code ? `Code: ${payload.error.code}` : "",
           payload.failureStage ? `Stage: ${payload.failureStage}` : "",
           payload.upstreamStatus ? `NVIDIA status: ${payload.upstreamStatus}` : "",
           payload.upstreamBody ? `Body: ${String(payload.upstreamBody).slice(0, 500)}` : ""
@@ -1355,10 +1387,35 @@
         <div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-one-approve="${run.id}|${lead.id}">Approve for CRM/Brain Two</button><button class="btn small" data-brain-one-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-one-analyze="${lead.id}">Analyze Again</button></div>` : `<div class="actions" style="margin-top:10px;"><button class="btn small" data-brain-one-analyze="${lead.id}">Run Again</button></div>`}
         <p class="hint" id="brainOneStatus-${lead.id}"></p></div>`;
     }
+    async function refreshBrainOneRuns(leadId){
+      const result = await api(`/api/brain-one/runs${leadId ? `?leadId=${encodeURIComponent(leadId)}` : ""}`);
+      const incoming = result.runs || [];
+      const byId = new Map((brainOneRuns || []).map(run=>[run.id, run]));
+      incoming.forEach(run=>byId.set(run.id, run));
+      brainOneRuns = [...byId.values()];
+      return incoming[0] || null;
+    }
+    async function pollBrainOne(leadId, runId, attempts = 80){
+      for (let index = 0; index < attempts; index += 1) {
+        await new Promise(resolve=>setTimeout(resolve, index < 4 ? 1500 : 3000));
+        const latest = await refreshBrainOneRuns(leadId);
+        render();
+        const run = (brainOneRuns || []).find(item=>item.id === runId) || latest;
+        if (run && !["queued","running"].includes(run.executionStatus)) return run;
+      }
+      return (brainOneRuns || []).find(item=>item.id === runId) || brainOneLatestRun(leadId);
+    }
     async function analyzeBrainOne(leadId, options = {}){
       const status = $(`brainOneStatus-${leadId}`);
-      if (status) status.textContent = "Analyzing business with Brain One...";
-      toast("Brain One analysis started");
+      if (brainOneStarting.has(leadId)) return;
+      brainOneStarting.add(leadId);
+      document.querySelectorAll(`[data-brain-one-analyze="${leadId}"], [data-brain-zero-continue^="${leadId}|"]`).forEach(button=>{
+        button.disabled = true;
+        button.dataset.originalText = button.textContent;
+        button.textContent = "Starting Brain One...";
+      });
+      if (status) status.textContent = "Starting Brain One...";
+      toast("Starting Brain One");
       try {
         const result = await api("/api/brain-one/analyze", {
           method:"POST",
@@ -1369,18 +1426,43 @@
             requireBrainZero: !!options.requireBrainZero
           })
         });
-        const crm = await api("/api/crm");
-        applyServerState(crm);
+        const runId = result.brain_one_run_id || result.run?.id;
+        if (result.run) {
+          const byId = new Map((brainOneRuns || []).map(run=>[run.id, run]));
+          byId.set(result.run.id, result.run);
+          brainOneRuns = [...byId.values()];
+        }
         render();
-        toast(result.run?.executionStatus === "completed" ? "Brain One report ready" : "Brain One saved status");
+        if (status) status.textContent = result.status === "already_running" ? "Brain One is already running. Watching progress..." : "Brain One started. Watching progress...";
+        toast(result.status === "already_running" ? "Brain One already running" : "Brain One started");
+        if (runId) {
+          const finalRun = await pollBrainOne(leadId, runId);
+          try {
+            const crm = await api("/api/crm");
+            applyServerState(crm);
+          } catch {}
+          render();
+          if (finalRun?.executionStatus === "completed") {
+            toast("Brain One report ready");
+          } else if (finalRun?.executionStatus) {
+            toast(`Brain One ${finalRun.executionStatus}`);
+          }
+        }
       } catch(error) {
-        if (status) status.textContent = `Brain One could not complete: ${error.message}`;
+        if (status) status.textContent = `Brain One could not start: ${error.message}`;
         toast("Brain One failed");
         try {
           const crm = await api("/api/crm");
           applyServerState(crm);
           render();
         } catch {}
+      } finally {
+        brainOneStarting.delete(leadId);
+        document.querySelectorAll(`[data-brain-one-analyze="${leadId}"], [data-brain-zero-continue^="${leadId}|"]`).forEach(button=>{
+          button.disabled = false;
+          if (button.dataset.originalText) button.textContent = button.dataset.originalText;
+          delete button.dataset.originalText;
+        });
       }
     }
     async function reviewBrainOne(runId, leadId, approved){

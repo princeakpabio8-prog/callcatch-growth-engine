@@ -670,6 +670,14 @@ function send(res, status, payload) {
     "Access-Control-Allow-Headers": "Content-Type"
   });
   res.end(body);
+  return { status, bodyLength: Buffer.byteLength(body) };
+}
+
+function brainOneStartResponse(status, payload) {
+  return {
+    ok: status >= 200 && status < 300 && payload.ok !== false,
+    ...payload
+  };
 }
 
 async function sendFile(res, filePath, contentType) {
@@ -883,6 +891,94 @@ async function completeBrainZeroRun(runId, context, logger = log) {
       activeRunCount: brainZeroRuntimeState().activeRunCount,
       memory: memorySummary()
     });
+  }
+}
+
+async function completeBrainOneRun(runId, contextPackage, modelName, logger = log) {
+  const started = Date.now();
+  logger("info", "brain_one_background_started", {
+    runId,
+    model: modelName,
+    timeoutMs: resolvedNvidiaTimeoutMs()
+  });
+  try {
+    const result = await runBrainOne(contextPackage, { model: modelName, logger, timeoutMs: resolvedNvidiaTimeoutMs() });
+    const completed = await mutateStore(state => {
+      state.brainOneRuns = state.brainOneRuns || [];
+      state.auditLog = state.auditLog || [];
+      const record = state.brainOneRuns.find(item => item.id === runId);
+      if (!record) throw new Error("Brain One run log disappeared");
+      record.rawResponse = result.rawResponse;
+      record.validatedOutput = result.output;
+      record.phaseAOutput = result.phaseAOutput;
+      record.blueprintMarkdown = result.blueprintMarkdown;
+      record.phaseARawResponse = result.phaseARawResponse;
+      record.phaseBRawResponse = result.phaseBRawResponse;
+      record.finishReason = result.finishReason;
+      record.responseCharCount = result.responseCharCount;
+      record.structuredResponseModeAccepted = result.structuredResponseModeAccepted;
+      record.firstParseFailure = result.firstParseFailure;
+      record.phaseADurationMs = result.phaseADurationMs;
+      record.phaseBDurationMs = result.phaseBDurationMs;
+      record.normalization_applied = result.normalization_applied;
+      record.normalized_fields = result.normalized_fields || [];
+      record.moduleResults = result.moduleResults || {};
+      record.overallStatus = result.overall_status || result.output?.overall_status || "completed";
+      record.executionStatus = "completed";
+      record.executionDurationMs = result.durationMs;
+      record.errorDetails = null;
+      record.repaired = result.repaired;
+      const lead = (state.leads || []).find(item => item.id === record.businessId);
+      if (lead) {
+        lead.brainOneLatestRunId = record.id;
+        lead.timeline = lead.timeline || [];
+        lead.timeline.unshift({ at: new Date().toISOString(), text: "Brain One analysis completed. Manual approval required." });
+      }
+      state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "brain_one_completed", details: { runId: record.id, businessId: record.businessId, durationMs: result.durationMs } });
+      return record;
+    });
+    logger("info", "brain_one_background_completed", {
+      runId,
+      durationMs: Date.now() - started,
+      overallStatus: completed.overallStatus || ""
+    });
+    return completed;
+  } catch (error) {
+    const clean = sanitizedError(error);
+    try {
+      await mutateStore(state => {
+        state.brainOneRuns = state.brainOneRuns || [];
+        state.auditLog = state.auditLog || [];
+        const record = state.brainOneRuns.find(item => item.id === runId);
+        if (!record) return null;
+        record.rawResponse = error.rawResponse || record.rawResponse || "";
+        record.executionStatus = error.userMessage ? "validation_failed" : "failed";
+        record.executionDurationMs = record.createdAt ? Date.now() - new Date(record.createdAt).getTime() : Date.now() - started;
+        record.errorDetails = {
+          code: error.userMessage ? "brain_one_validation_failed" : "brain_one_background_failed",
+          message: error.userMessage || error.message || "Brain One background task failed.",
+          validationErrors: error.validationErrors || [],
+          parserError: error.parserError || "",
+          failureStage: error.failureStage || "",
+          upstreamStatus: error.upstreamStatus || 0,
+          upstreamBody: error.upstreamBody || ""
+        };
+        state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "brain_one_failed", details: { runId, error: clean.message } });
+        return record;
+      });
+    } catch (persistError) {
+      logger("error", "brain_one_failure_persist_failed", { runId, error: sanitizedError(persistError) });
+    }
+    logger("error", "brain_one_background_failed", {
+      runId,
+      durationMs: Date.now() - started,
+      error: clean,
+      failureStage: error.failureStage || "",
+      upstreamStatus: error.upstreamStatus || 0
+    });
+    return null;
+  } finally {
+    logger("info", "brain_one_background_settled", { runId, durationMs: Date.now() - started });
   }
 }
 
@@ -1205,25 +1301,58 @@ const server = http.createServer(async (req, res) => {
     let runId = "";
     let contextPackage = null;
     let modelName = resolvedNvidiaModel();
+    let responseMeta = null;
     try {
       const body = await readJson(req);
       modelName = resolvedNvidiaModel();
       log("info", "brain_one_request_received", {
         leadId: body.leadId || "",
+        brainZeroRunId: body.brainZeroRunId || "",
         model: modelName,
         timeoutMs: resolvedNvidiaTimeoutMs()
       });
       const state = await readStore();
       const lead = (state.leads || []).find(item => item.id === body.leadId) || body.lead;
-      if (!lead || !lead.id) return send(res, 404, { error: "Business record not found" });
+      if (!lead || !lead.id) {
+        responseMeta = send(res, 404, brainOneStartResponse(404, {
+          ok: false,
+          status: "failed",
+          error: { code: "business_not_found", message: "Business record not found." }
+        }));
+        log("info", "brain_one_json_response_sent", { status: responseMeta.status, bodyLength: responseMeta.bodyLength });
+        return;
+      }
       const duplicateRunning = duplicateBrainOneRun(state.brainOneRuns || [], lead.id);
-      if (duplicateRunning) return send(res, 409, { error: "Brain One is already analyzing this business", run: duplicateRunning });
+      if (duplicateRunning) {
+        responseMeta = send(res, 200, brainOneStartResponse(200, {
+          ok: true,
+          status: "already_running",
+          brain_one_run_id: duplicateRunning.id,
+          message: "Brain One analysis is already running.",
+          run: duplicateRunning
+        }));
+        log("info", "brain_one_json_response_sent", { status: responseMeta.status, bodyLength: responseMeta.bodyLength, runId: duplicateRunning.id });
+        return;
+      }
       const requestedBrainZeroRun = body.brainZeroRunId
         ? (state.brainZeroRuns || []).find(item => item.run_id === body.brainZeroRunId || item.id === body.brainZeroRunId)
         : null;
       const brainZeroRun = requestedBrainZeroRun || latestBrainZeroRun(state.brainZeroRuns || [], lead.id);
       const gate = brainZeroCanRunBrainOne(brainZeroRun, { acceptPartial: !!body.acceptPartial && !!requestedBrainZeroRun });
-      if (!gate.allowed) return send(res, 409, { error: gate.reason, warning: gate.warning, brainZeroRun });
+      if (!gate.allowed) {
+        responseMeta = send(res, 409, brainOneStartResponse(409, {
+          ok: false,
+          status: "blocked",
+          error: {
+            code: "evidence_not_ready",
+            message: "The evidence package is not ready."
+          },
+          warning: gate.warning || "",
+          brainZeroRun
+        }));
+        log("info", "brain_one_json_response_sent", { status: responseMeta.status, bodyLength: responseMeta.bodyLength, leadId: lead.id });
+        return;
+      }
       if (brainZeroRun && ["completed", "partial"].includes(brainZeroRun.status)) {
         contextPackage = brainZeroEvidenceToBrainOneContext(lead, brainZeroRun);
       } else {
@@ -1237,8 +1366,14 @@ const server = http.createServer(async (req, res) => {
         }
         contextPackage = buildBrainOneContextPackage(lead, scan);
       }
+      log("info", "brain_one_evidence_package_validated", {
+        leadId: lead.id,
+        brainZeroRunId: brainZeroRun?.run_id || brainZeroRun?.id || "",
+        evidenceCount: contextPackage.evidenceLog?.length || 0
+      });
       const run = await mutateStore(state => {
         state.brainOneRuns = state.brainOneRuns || [];
+        state.auditLog = state.auditLog || [];
         runId = newId("brain1");
         const record = {
           id: runId,
@@ -1259,48 +1394,32 @@ const server = http.createServer(async (req, res) => {
         state.auditLog.unshift({ id: newId("audit"), at: createdAt, action: "brain_one_started", details: { runId, businessId: lead.id } });
         return record;
       });
-      const result = await runBrainOne(contextPackage, { model: modelName, logger: log, timeoutMs: resolvedNvidiaTimeoutMs() });
-      const completed = await mutateStore(state => {
-        const record = (state.brainOneRuns || []).find(item => item.id === run.id);
-        if (!record) throw new Error("Brain One run log disappeared");
-        record.rawResponse = result.rawResponse;
-        record.validatedOutput = result.output;
-        record.phaseAOutput = result.phaseAOutput;
-        record.blueprintMarkdown = result.blueprintMarkdown;
-        record.phaseARawResponse = result.phaseARawResponse;
-        record.phaseBRawResponse = result.phaseBRawResponse;
-        record.finishReason = result.finishReason;
-        record.responseCharCount = result.responseCharCount;
-        record.structuredResponseModeAccepted = result.structuredResponseModeAccepted;
-        record.firstParseFailure = result.firstParseFailure;
-        record.phaseADurationMs = result.phaseADurationMs;
-        record.phaseBDurationMs = result.phaseBDurationMs;
-        record.normalization_applied = result.normalization_applied;
-        record.normalized_fields = result.normalized_fields || [];
-        record.moduleResults = result.moduleResults || {};
-        record.overallStatus = result.overall_status || result.output?.overall_status || "completed";
-        record.executionStatus = "completed";
-        record.executionDurationMs = result.durationMs;
-        record.errorDetails = null;
-        record.repaired = result.repaired;
-        const lead = (state.leads || []).find(item => item.id === record.businessId);
-        if (lead) {
-          lead.brainOneLatestRunId = record.id;
-          lead.timeline = lead.timeline || [];
-          lead.timeline.unshift({ at: new Date().toISOString(), text: "Brain One analysis completed. Manual approval required." });
-        }
-        state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "brain_one_completed", details: { runId: record.id, businessId: record.businessId, durationMs: result.durationMs } });
-        return record;
-      });
-      return send(res, 200, { run: completed });
+      log("info", "brain_one_run_created", { runId: run.id, leadId: lead.id, brainZeroRunId: run.brainZeroRunId || "" });
+      setTimeout(() => {
+        completeBrainOneRun(run.id, contextPackage, modelName, log).catch(error => {
+          log("error", "brain_one_background_unhandled", { runId: run.id, error: sanitizedError(error) });
+        });
+      }, 0);
+      responseMeta = send(res, 202, brainOneStartResponse(202, {
+        ok: true,
+        status: "started",
+        brain_one_run_id: run.id,
+        message: "Brain One analysis started.",
+        run
+      }));
+      log("info", "brain_one_json_response_sent", { status: responseMeta.status, bodyLength: responseMeta.bodyLength, runId: run.id });
+      return;
     } catch (error) {
+      log("error", "brain_one_start_failed", { runId, error: sanitizedError(error) });
       const failed = runId ? await mutateStore(state => {
+        state.auditLog = state.auditLog || [];
         const record = (state.brainOneRuns || []).find(item => item.id === runId);
         if (!record) return null;
         record.rawResponse = error.rawResponse || record.rawResponse || "";
         record.executionStatus = error.userMessage ? "validation_failed" : "failed";
         record.executionDurationMs = record.createdAt ? Date.now() - new Date(record.createdAt).getTime() : 0;
         record.errorDetails = {
+          code: "brain_one_start_failed",
           message: error.userMessage || error.message,
           validationErrors: error.validationErrors || [],
           parserError: error.parserError || "",
@@ -1311,14 +1430,19 @@ const server = http.createServer(async (req, res) => {
         state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "brain_one_failed", details: { runId, error: error.message } });
         return record;
       }) : null;
-      return send(res, error.upstreamStatus ? 502 : 400, {
-        error: error.userMessage || error.message,
-        parserError: error.parserError || "",
+      responseMeta = send(res, error.upstreamStatus ? 502 : 400, brainOneStartResponse(error.upstreamStatus ? 502 : 400, {
+        ok: false,
+        status: "failed",
+        error: {
+          code: "brain_one_start_failed",
+          message: "Brain One could not be started."
+        },
         failureStage: error.failureStage || "",
         upstreamStatus: error.upstreamStatus || 0,
-        upstreamBody: error.upstreamBody || "",
         run: failed
-      });
+      }));
+      log("info", "brain_one_json_response_sent", { status: responseMeta.status, bodyLength: responseMeta.bodyLength, runId });
+      return;
     }
   }
 
@@ -1956,6 +2080,44 @@ async function recoverStaleBrainZeroRuns() {
   }
 }
 
+async function recoverStaleBrainOneRuns() {
+  try {
+    const recovered = await mutateStore(state => {
+      state.brainOneRuns = state.brainOneRuns || [];
+      state.auditLog = state.auditLog || [];
+      const stale = state.brainOneRuns.filter(run => ["queued", "running"].includes(run.executionStatus));
+      const at = new Date().toISOString();
+      for (const run of stale) {
+        run.executionStatus = "failed";
+        run.executionDurationMs = run.createdAt ? Date.parse(at) - Date.parse(run.createdAt) : 0;
+        run.errorDetails = {
+          code: "run_interrupted_by_server_restart",
+          message: "Brain One analysis was interrupted by a server restart. The saved evidence can be reused; please start Brain One again.",
+          validationErrors: [],
+          parserError: "",
+          failureStage: "server_restart_recovery",
+          upstreamStatus: 0,
+          upstreamBody: ""
+        };
+      }
+      if (stale.length) {
+        state.auditLog.unshift({
+          id: newId("audit"),
+          at,
+          action: "brain_one_stale_runs_recovered",
+          details: { recovered: stale.length }
+        });
+      }
+      return stale.length;
+    });
+    log("info", "brain_one_stale_run_recovery_complete", { recovered });
+    return recovered;
+  } catch (error) {
+    log("error", "brain_one_stale_run_recovery_failed", { error: sanitizedError(error) });
+    return 0;
+  }
+}
+
 server.listen(PORT, HOST, () => {
   log("info", "server_started", {
     url: HOST === "0.0.0.0" ? `http://0.0.0.0:${PORT}` : `http://127.0.0.1:${PORT}`,
@@ -1971,6 +2133,7 @@ server.listen(PORT, HOST, () => {
     timeoutMs: resolvedNvidiaTimeoutMs()
   });
   recoverStaleBrainZeroRuns();
+  recoverStaleBrainOneRuns();
   runBackgroundAutomation();
   setInterval(runBackgroundAutomation, 30 * 60 * 1000);
 });
