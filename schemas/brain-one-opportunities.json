@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://callcatch.site/schemas/brain-one-opportunities.json",
+  "title": "Brain One Module 3 - Opportunity Intelligence",
+  "type": "object",
+  "required": ["hidden_opportunities", "money_left_on_table", "ai_opportunity_radar", "risks"],
+  "properties": {
+    "hidden_opportunities": { "type": "array", "maxItems": 5 },
+    "money_left_on_table": { "type": "object" },
+    "ai_opportunity_radar": { "type": "object" },
+    "risks": { "type": "array" }
+  }
+}

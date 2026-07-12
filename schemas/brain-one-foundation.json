@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://callcatch.site/schemas/brain-one-foundation.json",
+  "title": "Brain One Module 1 - Business Foundation",
+  "type": "object",
+  "required": ["business_identity", "contacts", "evidence_log", "confirmed_facts", "inferences", "unknowns"],
+  "properties": {
+    "business_identity": { "type": "object" },
+    "contacts": { "type": "array" },
+    "evidence_log": { "type": "array" },
+    "confirmed_facts": { "type": "array" },
+    "inferences": { "type": "array" },
+    "unknowns": { "type": "array" }
+  }
+}

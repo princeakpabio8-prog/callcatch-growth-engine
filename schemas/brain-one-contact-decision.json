@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://callcatch.site/schemas/brain-one-contact-decision.json",
+  "title": "Brain One Module 5 - Contact Decision and Handoff",
+  "type": "object",
+  "required": ["contact_decision", "brain_two_handoff"],
+  "properties": {
+    "contact_decision": { "type": "object" },
+    "brain_two_handoff": { "type": "object" }
+  }
+}

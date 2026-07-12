@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://callcatch.site/schemas/brain-one-digital-intelligence.json",
+  "title": "Brain One Module 2 - Business and Digital Intelligence",
+  "type": "object",
+  "required": ["business_dna", "digital_health", "ai_discoverability", "future_readiness"],
+  "properties": {
+    "business_dna": { "type": "object" },
+    "digital_health": { "type": "object" },
+    "ai_discoverability": { "type": "object" },
+    "future_readiness": { "type": "object" }
+  }
+}

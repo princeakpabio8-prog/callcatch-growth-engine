@@ -934,6 +934,8 @@ const server = http.createServer(async (req, res) => {
         record.phaseBDurationMs = result.phaseBDurationMs;
         record.normalization_applied = result.normalization_applied;
         record.normalized_fields = result.normalized_fields || [];
+        record.moduleResults = result.moduleResults || {};
+        record.overallStatus = result.overall_status || result.output?.overall_status || "completed";
         record.executionStatus = "completed";
         record.executionDurationMs = result.durationMs;
         record.errorDetails = null;

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://callcatch.site/schemas/brain-one-combined-output.json",
+  "title": "Brain One Combined Modular Output",
+  "type": "object",
+  "required": ["modules", "overall_status", "completed_modules", "failed_modules", "normalization_metadata", "founder_facing_blueprint"],
+  "properties": {
+    "modules": { "type": "object" },
+    "overall_status": { "enum": ["completed", "partial"] },
+    "completed_modules": { "type": "array" },
+    "failed_modules": { "type": "array" },
+    "normalization_metadata": { "type": "object" },
+    "founder_facing_blueprint": { "type": "string" }
+  }
+}

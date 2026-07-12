@@ -2,11 +2,36 @@ const fs = require("fs");
 const path = require("path");
 
 const inputSchema = require("../schemas/brain-one-input.json");
-const outputSchema = require("../schemas/brain-one-output.json");
+const foundationSchema = require("../schemas/brain-one-foundation.json");
+const digitalSchema = require("../schemas/brain-one-digital-intelligence.json");
+const opportunitiesSchema = require("../schemas/brain-one-opportunities.json");
+const strategicSchema = require("../schemas/brain-one-strategic-interpretation.json");
+const contactDecisionSchema = require("../schemas/brain-one-contact-decision.json");
+const combinedSchema = require("../schemas/brain-one-combined-output.json");
 
 const DEFAULT_MODEL = process.env.NVIDIA_MODEL || "meta/llama-3.1-8b-instruct";
 const NVIDIA_URL = process.env.NVIDIA_API_URL || "https://integrate.api.nvidia.com/v1/chat/completions";
 const RUNTIME_PROMPT = fs.readFileSync(path.join(__dirname, "..", "brains", "brain-one-runtime.md"), "utf8");
+const LEGACY_OUTPUT_REQUIRED = [
+  "business_identity",
+  "contacts",
+  "business_dna",
+  "evidence_log",
+  "confirmed_facts",
+  "inferences",
+  "unknowns",
+  "digital_health",
+  "ai_discoverability",
+  "future_readiness",
+  "hidden_opportunities",
+  "money_left_on_table",
+  "ai_opportunity_radar",
+  "why_we_chose_you",
+  "one_day_action_plan",
+  "risks",
+  "contact_decision",
+  "brain_two_handoff"
+];
 
 function resolvedNvidiaTimeoutMs(value = process.env.NVIDIA_TIMEOUT_MS) {
   const parsed = Number(value);
@@ -191,6 +216,43 @@ const RADAR_DIMENSIONS = [
   "future_readiness"
 ];
 const MONEY_FALLBACK_DISCLAIMER = "Insufficient evidence for a responsible monetary estimate.";
+const MODULE_SPECS = [
+  {
+    key: "foundation",
+    label: "Module 1 - Business Foundation",
+    schema: foundationSchema,
+    maxTokens: 1800,
+    prompt: "Return business_identity, contacts, evidence_log, confirmed_facts, inferences, and unknowns only. Missing location is valid and must be null. Owner/contact names must be null unless verified."
+  },
+  {
+    key: "digital_intelligence",
+    label: "Module 2 - Business and Digital Intelligence",
+    schema: digitalSchema,
+    maxTokens: 2200,
+    prompt: "Return business_dna, digital_health, ai_discoverability, and future_readiness only. Each section supports status assessed or insufficient_evidence. Do not require sub-scores when digital_health.status is insufficient_evidence."
+  },
+  {
+    key: "opportunities",
+    label: "Module 3 - Opportunity Intelligence",
+    schema: opportunitiesSchema,
+    maxTokens: 2200,
+    prompt: "Return hidden_opportunities, money_left_on_table, ai_opportunity_radar, and risks only. Money may use insufficient_evidence. Radar dimensions may be unknown."
+  },
+  {
+    key: "strategic_interpretation",
+    label: "Module 4 - Strategic Interpretation",
+    schema: strategicSchema,
+    maxTokens: 1600,
+    prompt: "Return why_we_chose_you and one_day_action_plan only. Both support status complete or insufficient_evidence."
+  },
+  {
+    key: "contact_decision",
+    label: "Module 5 - Contact Decision and Handoff",
+    schema: contactDecisionSchema,
+    maxTokens: 1400,
+    prompt: "Return contact_decision and brain_two_handoff only. Use only validated outputs from Modules 1-4. CONTACT requires meaningful opportunity, usable contact data, active business evidence, and specific value."
+  }
+];
 
 function safeMoneyFallback() {
   return {
@@ -225,11 +287,113 @@ function safeEvidenceSectionFallback(summary = "Insufficient public evidence was
   };
 }
 
+function claimFallback(text = "Insufficient public evidence was available.") {
+  return {
+    claim: text,
+    evidence_ids: [],
+    confidence: "low",
+    status: "unknown",
+    reasoning: "The module did not return enough validated evidence.",
+    limitation: "More public evidence is required."
+  };
+}
+
+function safeModuleFallback(moduleKey, contextPackage = {}) {
+  const identity = contextPackage.businessIdentity || {};
+  if (moduleKey === "foundation") {
+    return {
+      business_identity: {
+        name: identity.businessName || "",
+        website: identity.websiteUrl || null,
+        industry: identity.trade || null,
+        location: [identity.city, identity.state, identity.country].filter(Boolean).join(", ") || null,
+        summary: "Insufficient public evidence was available for a full foundation analysis."
+      },
+      contacts: [],
+      evidence_log: [],
+      confirmed_facts: [],
+      inferences: [],
+      unknowns: ["Foundation module returned insufficient validated evidence."]
+    };
+  }
+  if (moduleKey === "digital_intelligence") {
+    return {
+      business_dna: safeEvidenceSectionFallback("Insufficient public evidence was available for business DNA."),
+      digital_health: {
+        status: "insufficient_evidence",
+        summary: "Insufficient public evidence was available for a reliable assessment.",
+        evidence_ids: [],
+        confidence: "low",
+        sub_scores: null,
+        total_score: null
+      },
+      ai_discoverability: safeEvidenceSectionFallback("Insufficient public evidence was available for AI discoverability."),
+      future_readiness: safeEvidenceSectionFallback("Insufficient public evidence was available for future readiness.")
+    };
+  }
+  if (moduleKey === "opportunities") {
+    return {
+      hidden_opportunities: [],
+      money_left_on_table: safeMoneyFallback(),
+      ai_opportunity_radar: safeRadarFallback(),
+      risks: []
+    };
+  }
+  if (moduleKey === "strategic_interpretation") {
+    return {
+      why_we_chose_you: safeEvidenceSectionFallback("Insufficient public evidence was available to explain why this business deserves attention."),
+      one_day_action_plan: safeEvidenceSectionFallback("Insufficient public evidence was available to create a responsible one-day action plan.")
+    };
+  }
+  return {
+    contact_decision: {
+      decision: "DO NOT CONTACT",
+      decision_confidence: "low",
+      primary_reason: "Insufficient validated evidence for a responsible contact recommendation.",
+      supporting_evidence: [],
+      disqualifying_factors: ["Insufficient validated evidence."],
+      information_gaps: ["Validated opportunity and contact data are incomplete."],
+      recommended_outreach_angle: "Do not proceed until better evidence is available.",
+      prohibited_claims_for_brain_two: ["Do not contact yet.", "Do not claim specific missed revenue."],
+      callcatch_opportunity_score: 0,
+      evidence_ids: []
+    },
+    brain_two_handoff: {
+      approved_for_handoff: false,
+      summary: "Manual approval required. Brain Two should not proceed because evidence is insufficient.",
+      evidence_ids: [],
+      do_not_automate_outbound: true
+    }
+  };
+}
+
 function recordNormalization(meta, field) {
   if (!meta) return;
   meta.normalization_applied = true;
   meta.normalized_fields = meta.normalized_fields || [];
   if (!meta.normalized_fields.includes(field)) meta.normalized_fields.push(field);
+}
+
+function cleanModuleContacts(output = {}, meta = null) {
+  if (!Array.isArray(output.contacts)) return output;
+  for (const [index, contact] of output.contacts.entries()) {
+    if (!contact || typeof contact !== "object") continue;
+    if (isEmailLike(contact.contact_name)) {
+      if (!contact.contact_email) contact.contact_email = String(contact.contact_name).trim();
+      contact.contact_name = null;
+      recordNormalization(meta, `contacts[${index}].contact_name`);
+    }
+    if (isEmailLike(contact.owner_name)) {
+      if (!contact.contact_email) contact.contact_email = String(contact.owner_name).trim();
+      contact.owner_name = null;
+      recordNormalization(meta, `contacts[${index}].owner_name`);
+    }
+    if (genericMailboxName(contact.contact_name)) {
+      contact.contact_name = null;
+      recordNormalization(meta, `contacts[${index}].contact_name`);
+    }
+  }
+  return output;
 }
 
 function isEmailLike(value = "") {
@@ -518,7 +682,7 @@ function validateBrainOneOutput(output, options = {}) {
       normalized_fields: normalizationMeta.normalized_fields
     });
   }
-  validateRequiredObject(output, "output", outputSchema.required, errors);
+  validateRequiredObject(output, "output", LEGACY_OUTPUT_REQUIRED, errors);
   if (errors.length) return { ok: false, errors };
   validateRequiredObject(output.business_identity, "business_identity", ["business_name", "website_url", "trade", "location"], errors);
   validateEvidenceItems(output.evidence_log, "evidence_log", errors, "snake");
@@ -547,6 +711,172 @@ function validateBrainOneOutput(output, options = {}) {
   }
   if (!Array.isArray(output.unknowns)) errors.push("unknowns must be an array");
   return { ok: errors.length === 0, errors };
+}
+
+function ensureArrayField(output, field, meta) {
+  if (!Array.isArray(output[field])) {
+    output[field] = [];
+    recordNormalization(meta, field);
+  }
+}
+
+function ensureObjectField(output, field, fallback, meta) {
+  if (!output[field] || typeof output[field] !== "object" || Array.isArray(output[field])) {
+    output[field] = fallback;
+    recordNormalization(meta, field);
+  }
+}
+
+function validateSimpleEvidenceRefs(ids = [], evidenceIds = new Set(), pathName, errors, allowEmpty = true) {
+  if (!Array.isArray(ids)) {
+    errors.push(`${pathName}.evidence_ids must be an array`);
+    return;
+  }
+  if (!allowEmpty && ids.length === 0) errors.push(`${pathName} must include evidence_ids`);
+  for (const id of ids) {
+    if (!evidenceIds.has(id)) errors.push(`${pathName} references unknown evidence id ${id}`);
+  }
+}
+
+function validateFlexibleClaims(items = [], pathName, evidenceIds, errors) {
+  if (!Array.isArray(items)) {
+    errors.push(`${pathName} must be an array`);
+    return;
+  }
+  for (const [index, item] of items.entries()) {
+    if (!item || typeof item !== "object") {
+      errors.push(`${pathName}[${index}] must be an object`);
+      continue;
+    }
+    const status = item.status || "inferred";
+    const ids = evidenceIdList(item);
+    if (status === "confirmed" && ids.length === 0) errors.push(`${pathName}[${index}] confirmed claim requires evidence`);
+    validateSimpleEvidenceRefs(ids, evidenceIds, `${pathName}[${index}]`, errors, true);
+    const claimText = String(item.claim || item.inference || item.risk || "").toLowerCase();
+    if (status === "confirmed" && ["does not", "no online", "no booking", "not have"].some(word => claimText.includes(word))) {
+      errors.push(`${pathName}[${index}] cannot state absence as a confirmed fact`);
+    }
+  }
+}
+
+function validateAssessmentSection(section, pathName, evidenceIds, errors) {
+  if (!section || typeof section !== "object" || Array.isArray(section)) {
+    errors.push(`${pathName} must be an object`);
+    return;
+  }
+  const status = section.status || "assessed";
+  if (!["assessed", "insufficient_evidence", "complete"].includes(status)) errors.push(`${pathName}.status is invalid`);
+  if (typeof section.summary !== "string") errors.push(`${pathName}.summary is required`);
+  validateSimpleEvidenceRefs(evidenceIdList(section), evidenceIds, pathName, errors, status !== "assessed");
+  if (section.confidence && !CLAIM_CONFIDENCE.has(section.confidence)) errors.push(`${pathName}.confidence must be high, medium, or low`);
+}
+
+function validateModuleOutput(moduleKey, output = {}, contextPackage = {}, priorModules = {}, meta = {}) {
+  const errors = [];
+  meta.normalization_applied = !!meta.normalization_applied;
+  meta.normalized_fields = meta.normalized_fields || [];
+  const foundationEvidence = priorModules.foundation?.output?.evidence_log || output.evidence_log || [];
+  const evidenceIds = new Set((foundationEvidence || []).map(item => item.id));
+
+  if (moduleKey === "foundation") {
+    ensureObjectField(output, "business_identity", {}, meta);
+    ensureArrayField(output, "contacts", meta);
+    ensureArrayField(output, "evidence_log", meta);
+    ensureArrayField(output, "confirmed_facts", meta);
+    ensureArrayField(output, "inferences", meta);
+    ensureArrayField(output, "unknowns", meta);
+    cleanModuleContacts(output, meta);
+    const identity = output.business_identity || {};
+    if (typeof identity.name !== "string") errors.push("business_identity.name must be a string");
+    if (!("website" in identity)) identity.website = null;
+    if (!("industry" in identity)) identity.industry = null;
+    if (!("location" in identity)) identity.location = null;
+    if (!("summary" in identity)) identity.summary = null;
+    validateEvidenceItems(output.evidence_log, "evidence_log", errors, "snake");
+    const localEvidenceIds = new Set((output.evidence_log || []).map(item => item.id));
+    validateContacts(output.contacts, localEvidenceIds, errors);
+    validateFlexibleClaims(output.confirmed_facts, "confirmed_facts", localEvidenceIds, errors);
+    validateFlexibleClaims(output.inferences, "inferences", localEvidenceIds, errors);
+  } else if (moduleKey === "digital_intelligence") {
+    const fallback = safeModuleFallback(moduleKey, contextPackage);
+    ensureObjectField(output, "business_dna", fallback.business_dna, meta);
+    ensureObjectField(output, "digital_health", fallback.digital_health, meta);
+    ensureObjectField(output, "ai_discoverability", fallback.ai_discoverability, meta);
+    ensureObjectField(output, "future_readiness", fallback.future_readiness, meta);
+    for (const key of ["business_dna", "digital_health", "ai_discoverability", "future_readiness"]) {
+      validateAssessmentSection(output[key], key, evidenceIds, errors);
+    }
+    if (output.digital_health.status === "assessed") {
+      const subScores = output.digital_health.sub_scores;
+      if (!subScores || typeof subScores !== "object") errors.push("digital_health.sub_scores is required when assessed");
+    } else {
+      output.digital_health.sub_scores = output.digital_health.sub_scores || null;
+      output.digital_health.total_score = output.digital_health.total_score ?? null;
+    }
+  } else if (moduleKey === "opportunities") {
+    ensureArrayField(output, "hidden_opportunities", meta);
+    ensureObjectField(output, "money_left_on_table", safeMoneyFallback(), meta);
+    ensureObjectField(output, "ai_opportunity_radar", safeRadarFallback(), meta);
+    ensureArrayField(output, "risks", meta);
+    validateHiddenOpportunities(output.hidden_opportunities, evidenceIds, errors);
+    validateMoneyLeftOnTable(output.money_left_on_table, evidenceIds, errors);
+    for (const [key, item] of Object.entries(output.ai_opportunity_radar || {})) {
+      if (!item || typeof item !== "object") {
+        errors.push(`ai_opportunity_radar.${key} must be an object`);
+        continue;
+      }
+      if (!["strong", "moderate", "weak", "unknown"].includes(item.status || "unknown")) errors.push(`ai_opportunity_radar.${key}.status is invalid`);
+      validateSimpleEvidenceRefs(evidenceIdList(item), evidenceIds, `ai_opportunity_radar.${key}`, errors, true);
+    }
+    validateFlexibleClaims(output.risks, "risks", evidenceIds, errors);
+  } else if (moduleKey === "strategic_interpretation") {
+    ensureObjectField(output, "why_we_chose_you", safeEvidenceSectionFallback("Insufficient public evidence was available to explain why this business deserves attention."), meta);
+    ensureObjectField(output, "one_day_action_plan", safeEvidenceSectionFallback("Insufficient public evidence was available to create a responsible one-day action plan."), meta);
+    for (const key of ["why_we_chose_you", "one_day_action_plan"]) {
+      const status = output[key].status || "complete";
+      if (!["complete", "insufficient_evidence"].includes(status)) errors.push(`${key}.status is invalid`);
+      validateSimpleEvidenceRefs(evidenceIdList(output[key]), evidenceIds, key, errors, true);
+    }
+  } else if (moduleKey === "contact_decision") {
+    ensureObjectField(output, "contact_decision", safeModuleFallback(moduleKey, contextPackage).contact_decision, meta);
+    ensureObjectField(output, "brain_two_handoff", safeModuleFallback(moduleKey, contextPackage).brain_two_handoff, meta);
+    const decision = output.contact_decision;
+    validateContactDecision(decision, evidenceIds, errors);
+    if (output.brain_two_handoff?.do_not_automate_outbound !== true) errors.push("brain_two_handoff.do_not_automate_outbound must be true");
+    if (output.brain_two_handoff?.approved_for_handoff !== false) errors.push("brain_two_handoff.approved_for_handoff must remain false");
+    const opportunities = priorModules.opportunities?.output?.hidden_opportunities || [];
+    const contacts = priorModules.foundation?.output?.contacts || [];
+    const hasOpportunity = opportunities.some(item => evidenceIdList(item).length > 0 && String(item.confidence || "").toLowerCase() !== "low");
+    const hasContact = contacts.some(item => item.contact_email || item.contact_phone);
+    if (decision?.decision === "CONTACT" && (!hasOpportunity || !hasContact)) {
+      errors.push("CONTACT decision requires validated opportunity evidence and usable contact data");
+    }
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+function moduleResult(moduleKey, status, output, meta = {}, extra = {}) {
+  return {
+    status,
+    output,
+    normalization_applied: !!meta.normalization_applied,
+    normalized_fields: meta.normalized_fields || [],
+    parser_errors: extra.parser_errors || [],
+    validation_errors: extra.validation_errors || [],
+    raw_response: extra.raw_response || "",
+    repaired: !!extra.repaired
+  };
+}
+
+function flattenCombinedOutput(combined = {}) {
+  if (!combined.modules) return combined;
+  return {
+    ...(combined.modules.foundation?.output || {}),
+    ...(combined.modules.digital_intelligence?.output || {}),
+    ...(combined.modules.opportunities?.output || {}),
+    ...(combined.modules.strategic_interpretation?.output || {}),
+    ...(combined.modules.contact_decision?.output || {})
+  };
 }
 
 function stageLogger(options = {}) {
@@ -639,10 +969,22 @@ async function callNvidia(messages, options = {}) {
 }
 
 function buildMessages(contextPackage, repairContext = null) {
-  const schemaText = compact(JSON.stringify(outputSchema), 9000);
+  const schemaText = compact(JSON.stringify(combinedSchema), 9000);
   const userContent = repairContext
     ? `Repair the previous Brain One PHASE A JSON output. Return corrected JSON only.\n\nExact parser or validation error:\n${repairContext.errors.join("\n")}\n\nRequired schema:\n${schemaText}\n\nMalformed model output:\n${repairContext.rawResponse}\n\nOriginal context package:\n${JSON.stringify(contextPackage)}\n\nReturn exactly one corrected JSON object. No markdown. No code fences.`
     : `PHASE A - Structured Intelligence.\nReturn compact JSON only matching this schema exactly.\nDo not include the long-form Business Growth Blueprint.\n\nOutput schema:\n${schemaText}\n\nContext package:\n${JSON.stringify(contextPackage)}`;
+  return [
+    { role: "system", content: RUNTIME_PROMPT },
+    { role: "user", content: userContent }
+  ];
+}
+
+function buildModuleMessages(spec, contextPackage, priorModules = {}, repairContext = null) {
+  const schemaText = compact(JSON.stringify(spec.schema), 7000);
+  const priorText = compact(JSON.stringify(priorModules), 9000);
+  const userContent = repairContext
+    ? `Repair ${spec.label}. Return corrected JSON only.\n\nValidation or parser errors:\n${repairContext.errors.join("\n")}\n\nRequired module schema:\n${schemaText}\n\nMalformed module output:\n${repairContext.rawResponse}\n\nOriginal context package:\n${JSON.stringify(contextPackage)}\n\nValidated prior module outputs:\n${priorText}\n\nReturn exactly one corrected JSON object for this module. No markdown. No code fences.`
+    : `${spec.label}.\n${spec.prompt}\n\nRequired module schema:\n${schemaText}\n\nContext package:\n${JSON.stringify(contextPackage)}\n\nValidated prior module outputs:\n${priorText}\n\nReturn exactly one valid JSON object for this module only. No markdown. No commentary.`;
   return [
     { role: "system", content: RUNTIME_PROMPT },
     { role: "user", content: userContent }
@@ -653,11 +995,11 @@ function buildBlueprintMessages(phaseAOutput) {
   return [
     {
       role: "system",
-      content: "You are CALLCATCH BRAIN ONE Phase B. Render a polished founder-facing Business Growth Blueprint in Markdown using only the provided validated Phase A JSON. Do not add facts, figures, contacts, or claims that are not in Phase A. Do not expose evidence IDs. Do not use model terminology. Do not write outreach email copy or sell CallCatch."
+      content: "You are CALLCATCH BRAIN ONE Phase B. Render a polished founder-facing Business Growth Blueprint in Markdown using only the provided validated combined modular Phase A JSON. Do not add facts, figures, contacts, or claims that are not in Phase A. Do not expose evidence IDs. Do not use model terminology. Do not write outreach email copy or sell CallCatch."
     },
     {
       role: "user",
-      content: `PHASE B - Founder-Facing Blueprint Rendering.\nUse this validated Phase A JSON as the only factual source:\n${JSON.stringify(phaseAOutput)}\n\nReturn Markdown with these sections only:\n# Business Growth Blueprint\n## Opportunity Summary\n## What We Noticed\n## Hidden Opportunities\n## Money Left on the Table\n## AI Opportunity Radar\n## Why This Business Deserves Attention\n## If CallCatch Owned This Business For One Day\n## Contact Decision\n\nIf money_left_on_table.status is "insufficient_evidence", write exactly this idea in plain language: "Insufficient public evidence was available to produce a responsible monetary estimate." Do not show $0, £0, zero loss, or an invented range.\n\nDo not include internal evidence IDs, JSON, validation terms, or unsupported claims.`
+      content: `PHASE B - Founder-Facing Blueprint Rendering.\nUse this validated combined modular Phase A JSON as the only factual source:\n${JSON.stringify(phaseAOutput)}\n\nReturn Markdown with these sections only:\n# Business Growth Blueprint\n## Opportunity Summary\n## What We Noticed\n## Hidden Opportunities\n## Money Left on the Table\n## AI Opportunity Radar\n## Why This Business Deserves Attention\n## If CallCatch Owned This Business For One Day\n## Contact Decision\n\nIf money_left_on_table.status is "insufficient_evidence", write exactly this idea in plain language: "Insufficient public evidence was available to produce a responsible monetary estimate." Do not show $0, GBP 0, zero loss, or an invented range.\n\nIf a module is partial or insufficient evidence, say so naturally. Do not include internal evidence IDs, parser errors, validation errors, JSON, model terminology, or unsupported claims.`
     }
   ];
 }
@@ -692,127 +1034,123 @@ async function runBrainOne(contextPackage, options = {}) {
   const model = options.model || resolvedNvidiaModel();
   const started = Date.now();
   const callModel = options.callModel || ((messages, callOptions = {}) => callNvidia(messages, { ...options, ...callOptions, model, startedAt: started }));
-  const phaseAStarted = Date.now();
-  const firstResult = modelContent(await callModel(buildMessages(contextPackage)));
-  const firstRaw = firstResult.content;
-  let rawResponse = firstRaw;
-  let repairErrors = [];
-  let firstParseFailure = "";
-  let phaseAOutput = null;
-  let phaseAMeta = firstResult;
-  let normalizationMeta = { normalization_applied: false, normalized_fields: [] };
-  try {
-    try {
-      logStage("brain_one_json_validation_started", { attempt: 1 });
-      const parsed = parseMaybeJson(firstRaw);
-      const attemptNormalizationMeta = { normalization_applied: false, normalized_fields: [] };
-      const validation = validateBrainOneOutput(parsed, { normalizationMeta: attemptNormalizationMeta });
-      if (attemptNormalizationMeta.normalization_applied) {
-        logStage("brain_one_output_normalized", { attempt: 1, normalized_fields: attemptNormalizationMeta.normalized_fields });
-      }
-      if (validation.ok) {
-        phaseAOutput = parsed;
-        normalizationMeta = attemptNormalizationMeta;
-        logStage("brain_one_json_validation_completed", { attempt: 1, ok: true });
-      } else {
-        firstParseFailure = validation.errors.join("; ");
-        logStage("brain_one_json_validation_completed", { attempt: 1, ok: false, errors: validation.errors.slice(0, 5) });
-        repairErrors = validation.errors;
-      }
-    } catch (error) {
-      firstParseFailure = error.message;
-      logStage("brain_one_json_validation_completed", { attempt: 1, ok: false, errors: [error.message] });
-      repairErrors = [error.message];
-    }
-    let repairedMeta = null;
-    if (!phaseAOutput) {
-      const repairedResult = modelContent(await callModel(buildMessages(contextPackage, { errors: repairErrors, rawResponse: firstRaw })));
-      repairedMeta = repairedResult;
-      const repairedRaw = repairedResult.content;
-      rawResponse = repairedRaw;
-      logStage("brain_one_json_validation_started", { attempt: 2 });
-      let repaired = null;
-      let repairedValidation = null;
+  const modules = {};
+  const completed_modules = [];
+  const failed_modules = [];
+  const rawResponses = {};
+  const normalization_metadata = {};
+  let finishReason = "";
+  let responseCharCount = 0;
+  let structuredResponseModeAccepted = false;
+
+  async function runOneModule(spec) {
+    const moduleStarted = Date.now();
+    const priorOutputs = Object.fromEntries(Object.entries(modules).map(([key, value]) => [key, value.output]));
+    let firstRaw = "";
+    let parserErrors = [];
+    let validationErrors = [];
+    let meta = { normalization_applied: false, normalized_fields: [] };
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        repaired = parseMaybeJson(repairedRaw);
-        const attemptNormalizationMeta = { normalization_applied: false, normalized_fields: [] };
-        repairedValidation = validateBrainOneOutput(repaired, { normalizationMeta: attemptNormalizationMeta });
-        if (attemptNormalizationMeta.normalization_applied) {
-          logStage("brain_one_output_normalized", { attempt: 2, normalized_fields: attemptNormalizationMeta.normalized_fields });
+        const result = modelContent(await callModel(
+          buildModuleMessages(spec, contextPackage, priorOutputs, attempt === 2 ? { errors: [...parserErrors, ...validationErrors], rawResponse: firstRaw } : null),
+          { phase: spec.key, responseFormat: true, maxTokens: spec.maxTokens, temperature: 0.1 }
+        ));
+        finishReason = result.finishReason || finishReason;
+        responseCharCount += Number(result.responseCharCount || 0);
+        structuredResponseModeAccepted = structuredResponseModeAccepted || result.structuredResponseModeAccepted;
+        const raw = result.content || "";
+        if (attempt === 1) firstRaw = raw;
+        rawResponses[spec.key] = raw;
+        const parsed = parseMaybeJson(raw);
+        meta = { normalization_applied: false, normalized_fields: [] };
+        const validation = validateModuleOutput(spec.key, parsed, contextPackage, modules, meta);
+        if (validation.ok) {
+          const status = (attempt === 1 && !meta.normalization_applied) ? "completed" : "partial";
+          logStage("brain_one_module_completed", { module: spec.key, attempt, status, durationMs: Date.now() - moduleStarted, normalized_fields: meta.normalized_fields });
+          return moduleResult(spec.key, status, parsed, meta, {
+            raw_response: raw,
+            parser_errors: parserErrors,
+            validation_errors: validationErrors,
+            repaired: attempt === 2
+          });
         }
-        if (repairedValidation.ok) normalizationMeta = attemptNormalizationMeta;
+        validationErrors = validation.errors;
+        logStage("brain_one_module_validation_failed", { module: spec.key, attempt, errors: validationErrors.slice(0, 5) });
       } catch (error) {
-        repairedValidation = { ok: false, errors: [error.message] };
+        parserErrors.push(error.message);
+        logStage("brain_one_module_parse_failed", { module: spec.key, attempt, error: error.message });
       }
-      if (!repairedValidation.ok) {
-        logStage("brain_one_json_validation_completed", { attempt: 2, ok: false, repairAttemptResult: "failed", errors: repairedValidation.errors.slice(0, 5) });
-        const error = new Error(`Brain One output failed validation after repair: ${repairedValidation.errors.join("; ")}`);
-        error.validationErrors = repairedValidation.errors;
-        error.rawResponse = repairedRaw;
-        error.parserError = firstParseFailure;
-        error.failureStage = "brain_one_json_validation_completed";
-        error.userMessage = "Brain One completed its analysis, but the structured report could not be validated. Please run again.";
-        throw error;
-      }
-      phaseAOutput = repaired;
-      phaseAMeta = repairedMeta;
-      logStage("brain_one_json_validation_completed", { attempt: 2, ok: true });
     }
-    const phaseADurationMs = Date.now() - phaseAStarted;
-    logStage("brain_one_phase_a_completed", {
-      durationMs: phaseADurationMs,
-      finishReason: phaseAMeta.finishReason,
-      responseCharCount: phaseAMeta.responseCharCount,
-      structuredResponseModeAccepted: phaseAMeta.structuredResponseModeAccepted,
-      firstParseFailure: firstParseFailure || "",
-      repairAttemptResult: firstParseFailure ? "succeeded" : "not-needed"
+    const fallbackMeta = { normalization_applied: true, normalized_fields: [spec.key] };
+    const fallback = safeModuleFallback(spec.key, contextPackage);
+    logStage("brain_one_module_fallback", { module: spec.key, durationMs: Date.now() - moduleStarted });
+    return moduleResult(spec.key, "failed", fallback, fallbackMeta, {
+      raw_response: rawResponses[spec.key] || firstRaw,
+      parser_errors: parserErrors,
+      validation_errors: validationErrors
     });
-    const phaseBStarted = Date.now();
-    const blueprintResult = modelContent(await callModel(buildBlueprintMessages(phaseAOutput), { phase: "blueprint", responseFormat: false, maxTokens: 1800, temperature: 0.2 }));
-    const blueprintMarkdown = String(blueprintResult.content || "").trim();
-    const phaseBValidation = validatePhaseBMarkdownAgainstPhaseA(blueprintMarkdown, phaseAOutput);
-    if (!phaseBValidation.ok) {
-      const error = new Error(`Brain One Phase B failed validation: ${phaseBValidation.errors.join("; ")}`);
-      error.validationErrors = phaseBValidation.errors;
-      error.rawResponse = rawResponse;
-      error.parserError = phaseBValidation.errors.join("; ");
-      error.failureStage = "brain_one_phase_b_validation_completed";
-      error.userMessage = "Brain One completed its analysis, but the founder-facing report could not be validated. Please run again.";
-      throw error;
-    }
-    const phaseBDurationMs = Date.now() - phaseBStarted;
-    logStage("brain_one_phase_b_completed", {
-      durationMs: phaseBDurationMs,
-      finishReason: blueprintResult.finishReason,
-      responseCharCount: blueprintResult.responseCharCount
-    });
-    return {
-      model,
-      rawResponse,
-      output: phaseAOutput,
-      phaseAOutput,
-      blueprintMarkdown,
-      phaseARawResponse: rawResponse,
-      phaseBRawResponse: blueprintMarkdown,
-      finishReason: phaseAMeta.finishReason,
-      responseCharCount: phaseAMeta.responseCharCount,
-      structuredResponseModeAccepted: phaseAMeta.structuredResponseModeAccepted,
-      firstParseFailure: firstParseFailure || "",
-      phaseADurationMs,
-      phaseBDurationMs,
-      durationMs: Date.now() - started,
-      repaired: !!firstParseFailure,
-      normalization_applied: normalizationMeta.normalization_applied,
-      normalized_fields: normalizationMeta.normalized_fields || []
-    };
-  } catch (error) {
-    if (!error.rawResponse) error.rawResponse = rawResponse;
-    if (!error.validationErrors) error.validationErrors = [error.message];
-    if (!error.parserError) error.parserError = firstParseFailure || error.message;
-    if (!error.failureStage) error.failureStage = "brain_one_run_failed";
-    logStage("brain_one_failed", { failureStage: error.failureStage, error: error.message });
-    throw error;
   }
+
+  const phaseAStarted = Date.now();
+  for (const spec of MODULE_SPECS) {
+    const result = await runOneModule(spec);
+    modules[spec.key] = result;
+    normalization_metadata[spec.key] = {
+      normalization_applied: result.normalization_applied,
+      normalized_fields: result.normalized_fields
+    };
+    if (result.status === "completed") completed_modules.push(spec.key);
+    else failed_modules.push(spec.key);
+  }
+
+  const combined = {
+    modules,
+    overall_status: failed_modules.length ? "partial" : "completed",
+    completed_modules,
+    failed_modules,
+    normalization_metadata,
+    founder_facing_blueprint: ""
+  };
+  const phaseADurationMs = Date.now() - phaseAStarted;
+  logStage("brain_one_phase_a_completed", {
+    mode: "modular",
+    durationMs: phaseADurationMs,
+    completed_modules,
+    failed_modules
+  });
+
+  const phaseBStarted = Date.now();
+  const blueprintResult = modelContent(await callModel(buildBlueprintMessages(combined), { phase: "blueprint", responseFormat: false, maxTokens: 1800, temperature: 0.2 }));
+  const blueprintMarkdown = String(blueprintResult.content || "").trim();
+  const phaseBValidation = validatePhaseBMarkdownAgainstPhaseA(blueprintMarkdown, flattenCombinedOutput(combined));
+  if (!phaseBValidation.ok) {
+    combined.founder_facing_blueprint = "Brain One completed with partial intelligence, but the founder-facing report could not be safely rendered.";
+  } else {
+    combined.founder_facing_blueprint = blueprintMarkdown;
+  }
+  const phaseBDurationMs = Date.now() - phaseBStarted;
+  return {
+    model,
+    rawResponse: JSON.stringify(rawResponses),
+    output: combined,
+    phaseAOutput: combined,
+    blueprintMarkdown: combined.founder_facing_blueprint,
+    phaseARawResponse: JSON.stringify(rawResponses),
+    phaseBRawResponse: blueprintMarkdown,
+    finishReason,
+    responseCharCount,
+    structuredResponseModeAccepted,
+    firstParseFailure: "",
+    phaseADurationMs,
+    phaseBDurationMs,
+    durationMs: Date.now() - started,
+    repaired: Object.values(modules).some(item => item.repaired),
+    normalization_applied: Object.values(normalization_metadata).some(item => item.normalization_applied),
+    normalized_fields: Object.entries(normalization_metadata).flatMap(([key, value]) => (value.normalized_fields || []).map(field => `${key}.${field}`)),
+    moduleResults: modules,
+    overall_status: combined.overall_status
+  };
 }
 
 function evidenceItem(id, sourceType, sourceUrl, excerpt, capturedAt = nowIso()) {
@@ -923,12 +1261,14 @@ module.exports = {
   buildBrainOneContextPackage,
   callNvidia,
   duplicateBrainOneRun,
+  flattenCombinedOutput,
   parseMaybeJson,
   resolvedNvidiaModel,
   resolvedNvidiaTimeoutMs,
   runBrainOne,
   normalizeBrainOneOutput,
   markdownToSafeHtml,
+  validateModuleOutput,
   validatePhaseBMarkdownAgainstPhaseA,
   validateBrainOneInput,
   validateBrainOneOutput

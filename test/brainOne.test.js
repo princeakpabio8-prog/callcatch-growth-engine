@@ -1,11 +1,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 
 const {
   applyBrainOneReviewState,
   buildBrainOneContextPackage,
   callNvidia,
   duplicateBrainOneRun,
+  flattenCombinedOutput,
   markdownToSafeHtml,
   normalizeBrainOneOutput,
   parseMaybeJson,
@@ -13,6 +15,7 @@ const {
   runBrainOne,
   validateBrainOneInput,
   validateBrainOneOutput,
+  validateModuleOutput,
   validatePhaseBMarkdownAgainstPhaseA
 } = require("../lead-engine/brainOneService");
 
@@ -258,15 +261,61 @@ function compactJson(context = sampleContext(1), overrides = {}) {
   return JSON.stringify(sampleOutput(context, overrides));
 }
 
+function moduleOutput(context = sampleContext(1), moduleKey, overrides = {}) {
+  const full = sampleOutput(context);
+  const modules = {
+    foundation: {
+      business_identity: {
+        name: full.business_identity.business_name,
+        website: full.business_identity.website_url,
+        industry: full.business_identity.trade,
+        location: full.business_identity.location,
+        summary: "Public business foundation is available."
+      },
+      contacts: full.contacts,
+      evidence_log: full.evidence_log,
+      confirmed_facts: full.confirmed_facts,
+      inferences: full.inferences,
+      unknowns: full.unknowns
+    },
+    digital_intelligence: {
+      business_dna: { status: "assessed", summary: "Inbound local service provider.", evidence_ids: ["ev-lead-record"], confidence: "medium" },
+      digital_health: { status: "insufficient_evidence", summary: "Insufficient public evidence was available for a reliable assessment.", evidence_ids: [], confidence: "low", sub_scores: null, total_score: null },
+      ai_discoverability: { status: "assessed", summary: "Basic entity clarity exists.", evidence_ids: ["ev-lead-record"], confidence: "medium" },
+      future_readiness: { status: "assessed", summary: "Some response-readiness opportunity exists.", evidence_ids: ["ev-lead-record"], confidence: "medium" }
+    },
+    opportunities: {
+      hidden_opportunities: full.hidden_opportunities,
+      money_left_on_table: full.money_left_on_table,
+      ai_opportunity_radar: { discoverability: full.ai_opportunity_radar.discoverability },
+      risks: full.risks
+    },
+    strategic_interpretation: {
+      why_we_chose_you: { status: "complete", summary: "The business has relevant public service signals.", evidence_ids: ["ev-lead-record"] },
+      one_day_action_plan: { status: "complete", summary: "Start with response-path verification.", evidence_ids: ["ev-lead-record"] }
+    },
+    contact_decision: {
+      contact_decision: full.contact_decision,
+      brain_two_handoff: full.brain_two_handoff
+    }
+  };
+  return { ...modules[moduleKey], ...overrides };
+}
+
+function moduleJson(context, moduleKey, overrides = {}) {
+  return JSON.stringify(moduleOutput(context, moduleKey, overrides));
+}
+
 async function runWithFirstResponse(firstResponse, context = sampleContext(1)) {
-  const valid = compactJson(context);
+  const order = ["foundation", "digital_intelligence", "opportunities", "strategic_interpretation", "contact_decision"];
   let calls = 0;
   const result = await runBrainOne(context, {
     model: "test-model",
     callModel: async () => {
       calls += 1;
       if (calls === 1) return firstResponse;
-      if (calls === 2) return valid;
+      if (calls === 2) return moduleJson(context, "foundation");
+      if (calls <= 6) return moduleJson(context, order[calls - 2]);
       return "# Business Growth Blueprint\n\n## Opportunity Summary\nUseful manual review only.";
     }
   });
@@ -284,19 +333,21 @@ test("valid Brain One output passes strict evidence validation across five sampl
 
 test("malformed JSON retries once and accepts repaired Brain One output", async () => {
   const context = sampleContext(1);
+  const order = ["foundation", "digital_intelligence", "opportunities", "strategic_interpretation", "contact_decision"];
   let calls = 0;
   const result = await runBrainOne(context, {
     model: "test-model",
     callModel: async () => {
       calls += 1;
       if (calls === 1) return "{ bad json";
-      if (calls === 2) return compactJson(context);
+      if (calls === 2) return moduleJson(context, "foundation");
+      if (calls <= 6) return moduleJson(context, order[calls - 2]);
       return "# Business Growth Blueprint\n\n## Opportunity Summary\nManual review only.";
     }
   });
-  assert.equal(calls, 3);
+  assert.equal(calls, 7);
   assert.equal(result.repaired, true);
-  assert.equal(result.output.business_identity.business_name, context.businessIdentity.businessName);
+  assert.equal(result.output.modules.foundation.output.business_identity.name, context.businessIdentity.businessName);
   assert.match(result.blueprintMarkdown, /Business Growth Blueprint/);
 });
 
@@ -444,21 +495,21 @@ test("missing hidden opportunities normalize to empty array", () => {
 
 test("normalization metadata and raw response are preserved during run", async () => {
   const context = sampleContext(1);
-  const modelOutput = sampleOutput(context);
-  delete modelOutput.money_left_on_table;
-  const raw = JSON.stringify(modelOutput);
+  const raw = moduleJson(context, "opportunities", { money_left_on_table: null });
+  const order = ["foundation", "digital_intelligence", "opportunities", "strategic_interpretation", "contact_decision"];
   let calls = 0;
   const result = await runBrainOne(context, {
     model: "test-model",
     callModel: async () => {
       calls += 1;
-      return calls === 1 ? raw : "# Business Growth Blueprint\n\n## Money Left on the Table\nInsufficient public evidence was available to produce a responsible monetary estimate.";
+      if (calls <= 5) return calls === 3 ? raw : moduleJson(context, order[calls - 1]);
+      return "# Business Growth Blueprint\n\n## Money Left on the Table\nInsufficient public evidence was available to produce a responsible monetary estimate.";
     }
   });
-  assert.equal(result.rawResponse, raw);
+  assert.match(result.rawResponse, /opportunities/);
   assert.equal(result.normalization_applied, true);
-  assert.deepEqual(result.normalized_fields, ["money_left_on_table"]);
-  assert.equal(result.phaseAOutput.money_left_on_table.status, "insufficient_evidence");
+  assert.equal(result.normalized_fields.includes("opportunities.money_left_on_table"), true);
+  assert.equal(result.phaseAOutput.modules.opportunities.output.money_left_on_table.status, "insufficient_evidence");
 });
 
 test("founder-facing Blueprint displays insufficient-evidence money statement", () => {
@@ -551,6 +602,155 @@ test("internal and founder-facing reports remain separated", () => {
   assert.equal(validatePhaseBMarkdownAgainstPhaseA(`${founderReport}\n${internalEvidence}`, output).ok, false);
 });
 
+test("one module missing nested fields becomes partial without discarding successful modules", async () => {
+  const context = sampleContext(1);
+  const order = ["foundation", "digital_intelligence", "opportunities", "strategic_interpretation", "contact_decision"];
+  let calls = 0;
+  const result = await runBrainOne(context, {
+    callModel: async () => {
+      calls += 1;
+      if (calls === 2) return JSON.stringify({ business_dna: {}, digital_health: { status: "assessed" } });
+      if (calls <= 6) return moduleJson(context, order[calls - 1]);
+      return "# Business Growth Blueprint\n\nPartial but useful.";
+    }
+  });
+  assert.equal(result.output.overall_status, "partial");
+  assert.equal(result.output.modules.foundation.status, "completed");
+  assert.equal(result.output.modules.digital_intelligence.status, "partial");
+});
+
+test("one malformed module retries only that failed module", async () => {
+  const context = sampleContext(1);
+  const order = ["foundation", "digital_intelligence", "opportunities", "strategic_interpretation", "contact_decision"];
+  let calls = 0;
+  const result = await runBrainOne(context, {
+    callModel: async () => {
+      calls += 1;
+      if (calls === 3) return "{ malformed";
+      if (calls === 4) return moduleJson(context, "opportunities");
+      if (calls <= 6) return moduleJson(context, order[calls - 1 > 2 ? calls - 2 : calls - 1]);
+      return "# Business Growth Blueprint\n\nRecovered.";
+    }
+  });
+  assert.equal(result.output.modules.opportunities.repaired, true);
+  assert.equal(result.output.modules.foundation.status, "completed");
+});
+
+test("email returned as contact_name is moved to contact_email before validation", () => {
+  const context = sampleContext(1);
+  const output = moduleOutput(context, "foundation");
+  output.contacts[0].contact_name = "info@example.com";
+  output.contacts[0].contact_email = "";
+  const meta = { normalization_applied: false, normalized_fields: [] };
+  const validation = validateModuleOutput("foundation", output, context, {}, meta);
+  assert.equal(validation.ok, true);
+  assert.equal(output.contacts[0].contact_name, null);
+  assert.equal(output.contacts[0].contact_email, "info@example.com");
+  assert.equal(meta.normalization_applied, true);
+});
+
+test("missing business location is valid for foundation", () => {
+  const context = sampleContext(1);
+  const output = moduleOutput(context, "foundation");
+  output.business_identity.location = null;
+  const validation = validateModuleOutput("foundation", output, context, {}, { normalized_fields: [] });
+  assert.equal(validation.ok, true);
+});
+
+test("missing Digital Health sub-scores are accepted with insufficient evidence status", () => {
+  const context = sampleContext(1);
+  const foundation = { foundation: { output: moduleOutput(context, "foundation") } };
+  const output = moduleOutput(context, "digital_intelligence");
+  output.digital_health = {
+    status: "insufficient_evidence",
+    summary: "Insufficient public evidence was available for a reliable assessment.",
+    evidence_ids: [],
+    confidence: "low",
+    sub_scores: null,
+    total_score: null
+  };
+  const validation = validateModuleOutput("digital_intelligence", output, context, foundation, { normalized_fields: [] });
+  assert.equal(validation.ok, true);
+});
+
+test("missing radar dimensions are accepted when available dimensions are unknown", () => {
+  const context = sampleContext(1);
+  const foundation = { foundation: { output: moduleOutput(context, "foundation") } };
+  const output = moduleOutput(context, "opportunities");
+  output.ai_opportunity_radar = { conversion: { status: "unknown", evidence_ids: [], opportunity: null, confidence: "low" } };
+  const validation = validateModuleOutput("opportunities", output, context, foundation, { normalized_fields: [] });
+  assert.equal(validation.ok, true);
+});
+
+test("failed strategic interpretation still allows safe contact decision module", async () => {
+  const context = sampleContext(1);
+  let calls = 0;
+  const result = await runBrainOne(context, {
+    callModel: async () => {
+      calls += 1;
+      if (calls === 1) return moduleJson(context, "foundation");
+      if (calls === 2) return moduleJson(context, "digital_intelligence");
+      if (calls === 3) return moduleJson(context, "opportunities");
+      if (calls === 4 || calls === 5) return "{ bad strategy";
+      if (calls === 6) return moduleJson(context, "contact_decision", {
+        contact_decision: { ...moduleOutput(context, "contact_decision").contact_decision, decision: "DO NOT CONTACT", decision_confidence: "low", evidence_ids: ["ev-lead-record"] }
+      });
+      return "# Business Growth Blueprint\n\nStrategic section had insufficient evidence.";
+    }
+  });
+  assert.equal(result.output.modules.strategic_interpretation.status, "failed");
+  assert.equal(result.output.modules.contact_decision.output.contact_decision.decision, "DO NOT CONTACT");
+});
+
+test("CONTACT is blocked when opportunity evidence is weak", () => {
+  const context = sampleContext(1);
+  const priorModules = {
+    foundation: { output: moduleOutput(context, "foundation") },
+    opportunities: { output: { hidden_opportunities: [] } }
+  };
+  const output = moduleOutput(context, "contact_decision");
+  const validation = validateModuleOutput("contact_decision", output, context, priorModules, { normalized_fields: [] });
+  assert.equal(validation.ok, false);
+  assert.match(validation.errors.join("\n"), /CONTACT decision requires/);
+});
+
+test("Phase B validates against flattened combined output only", () => {
+  const context = sampleContext(1);
+  const combined = {
+    modules: {
+      foundation: { output: moduleOutput(context, "foundation") },
+      opportunities: { output: moduleOutput(context, "opportunities") }
+    }
+  };
+  const flattened = flattenCombinedOutput(combined);
+  assert.equal(validatePhaseBMarkdownAgainstPhaseA("Owner says $20,000 is missing.", flattened).ok, false);
+});
+
+test("technical errors are hidden behind Technical Details in UI", () => {
+  const html = fs.readFileSync("callcatch-lead-dashboard.html", "utf8");
+  assert.match(html, /Technical Details/);
+  assert.doesNotMatch(html, /hundreds of raw validation errors/i);
+});
+
+test("successful modules are preserved when another module fails", async () => {
+  const context = sampleContext(1);
+  let calls = 0;
+  const result = await runBrainOne(context, {
+    callModel: async () => {
+      calls += 1;
+      if (calls === 1) return moduleJson(context, "foundation");
+      if (calls === 2 || calls === 3) return "{ bad digital";
+      if (calls === 4) return moduleJson(context, "opportunities");
+      if (calls === 5) return moduleJson(context, "strategic_interpretation");
+      if (calls === 6) return moduleJson(context, "contact_decision");
+      return "# Business Growth Blueprint\n\nPartial.";
+    }
+  });
+  assert.equal(result.output.modules.foundation.status, "completed");
+  assert.equal(result.output.modules.digital_intelligence.status, "failed");
+  assert.equal(result.output.modules.opportunities.status, "completed");
+});
+
 test("API timeout from model call is surfaced as a failed Brain One run", async () => {
   const context = sampleContext(3);
   await assert.rejects(
@@ -623,25 +823,25 @@ test("JSON extractor ignores commentary after a complete JSON object", () => {
 
 test("missing comma JSON is repaired once", async () => {
   const { result, calls } = await runWithFirstResponse(`{"business_identity":{"business_name":"Broken" "website_url":"https://x.test"}}`);
-  assert.equal(calls, 3);
+  assert.equal(calls, 7);
   assert.equal(result.repaired, true);
 });
 
 test("unescaped quotation mark JSON is repaired once", async () => {
   const { result, calls } = await runWithFirstResponse(`{"business_identity":{"business_name":"Bob's "Best" HVAC","website_url":"https://x.test"}}`);
-  assert.equal(calls, 3);
+  assert.equal(calls, 7);
   assert.equal(result.repaired, true);
 });
 
 test("trailing comma JSON is repaired once", async () => {
   const { result, calls } = await runWithFirstResponse(`{"business_identity":{"business_name":"Broken","website_url":"https://x.test",}}`);
-  assert.equal(calls, 3);
+  assert.equal(calls, 7);
   assert.equal(result.repaired, true);
 });
 
 test("truncated JSON is repaired once", async () => {
   const { result, calls } = await runWithFirstResponse(compactJson().slice(0, 600));
-  assert.equal(calls, 3);
+  assert.equal(calls, 7);
   assert.equal(result.repaired, true);
 });
 

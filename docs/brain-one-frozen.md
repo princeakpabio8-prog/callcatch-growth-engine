@@ -32,36 +32,32 @@ No private inbox content, secret keys, or sender credentials are included.
 
 ## Output Contract
 
-Brain One now runs in two phases.
+Brain One now runs in two phases. Phase A is modular so a weak or malformed section does not discard the whole analysis.
 
-Phase A returns compact JSON only, matching `/schemas/brain-one-output.json`.
+Phase A returns compact JSON only, using these module schemas:
 
-Required sections:
+- `/schemas/brain-one-foundation.json`
+- `/schemas/brain-one-digital-intelligence.json`
+- `/schemas/brain-one-opportunities.json`
+- `/schemas/brain-one-strategic-interpretation.json`
+- `/schemas/brain-one-contact-decision.json`
+- `/schemas/brain-one-combined-output.json`
 
-- business identity
-- contacts with strict owner/contact separation
-- business DNA
-- evidence log
-- confirmed facts
-- inferences
-- unknowns
-- digital health assessment with calculated sub-score total
-- AI discoverability assessment
-- future readiness
-- hidden opportunities
-- money left on the table
-- AI opportunity radar
-- why we chose you
-- one-day action plan
-- risks
-- CONTACT or DO NOT CONTACT decision
-- Brain Two handoff context
+Required modules:
+
+- Foundation: business identity, contacts with strict owner/contact separation, business DNA, evidence log, confirmed facts, inferences, and unknowns.
+- Digital Intelligence: digital health assessment, AI discoverability assessment, and future readiness.
+- Opportunities: hidden opportunities, money left on the table, AI opportunity radar, and risks.
+- Strategic Interpretation: why we chose you, one-day action plan, and Brain Two handoff context.
+- Contact Decision: CONTACT or DO NOT CONTACT decision.
+
+If a module still fails after one repair attempt, Brain One stores a safe failed-module fallback and continues with the remaining modules. The combined report records completed modules, failed modules, module status, parser errors, validation errors, normalization metadata, and the raw model response for audit.
 
 Phase B renders the long-form Business Growth Blueprint as Markdown using only the validated Phase A JSON as its factual source. Phase B output is stored separately from the Phase A JSON.
 
 ## Evidence Standard
 
-Evidence IDs in the output must match evidence IDs from `evidenceLog`.
+Evidence IDs in the output must match evidence IDs from the module evidence log.
 
 Confirmed facts require direct evidence. Inferences require evidence plus reasoning. Monetary estimates require clear assumptions and evidence. If evidence is weak or missing, the output must say unknown or insufficient evidence rather than guessing.
 

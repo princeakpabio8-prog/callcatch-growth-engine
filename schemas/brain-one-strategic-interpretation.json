@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://callcatch.site/schemas/brain-one-strategic-interpretation.json",
+  "title": "Brain One Module 4 - Strategic Interpretation",
+  "type": "object",
+  "required": ["why_we_chose_you", "one_day_action_plan"],
+  "properties": {
+    "why_we_chose_you": { "type": "object" },
+    "one_day_action_plan": { "type": "object" }
+  }
+}
