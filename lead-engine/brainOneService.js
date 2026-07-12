@@ -878,7 +878,7 @@ function validatePhaseBMarkdownAgainstPhaseA(markdown = "", phaseA = {}) {
   if ((phaseA.money_left_on_table?.status === "insufficient_evidence") && unsupportedMoney.length) {
     errors.push("Phase B introduced a monetary figure absent from Phase A");
   }
-  if (/owner|founder|president/i.test(text) && !(phaseA.contacts || []).some(item => item.owner_name || item.contact_name)) {
+  if (/\b(owner|founder|president)\b/i.test(text) && !(phaseA.contacts || []).some(item => item.owner_name || item.contact_name)) {
     errors.push("Phase B introduced a person/contact fact absent from Phase A");
   }
   return { ok: errors.length === 0, errors, allowedFacts: allowedNames };
@@ -1208,6 +1208,189 @@ function flattenCombinedOutput(combined = {}) {
     ...(combined.modules.strategic_interpretation?.output || {}),
     ...(combined.modules.contact_decision?.output || {})
   };
+}
+
+function hasUsefulValue(value) {
+  if (Array.isArray(value)) return value.some(hasUsefulValue);
+  if (value && typeof value === "object") {
+    if (value.status === "insufficient_evidence") return false;
+    return Object.entries(value).some(([key, child]) => key !== "evidence_ids" && hasUsefulValue(child));
+  }
+  const text = compact(value, 300).toLowerCase();
+  return !!text && !["unknown", "null", "n/a", "insufficient public evidence was available.", "insufficient evidence"].includes(text);
+}
+
+function identityName(identity = {}) {
+  return identity.business_name || identity.name || identity.businessName || "This business";
+}
+
+function lineFromClaim(item) {
+  if (!item) return "";
+  if (typeof item === "string") return item;
+  return item.claim || item.summary || item.reasoning || item.value || "";
+}
+
+function sectionSummary(section = {}) {
+  if (!section || typeof section !== "object") return "";
+  return section.summary
+    || section.what_the_business_does_well
+    || section.why_improvements_matter
+    || section.potential_fit
+    || section.fastest_improvement
+    || section.evidence
+    || "";
+}
+
+function markdownBullets(items = [], { inferred = false } = {}) {
+  return items
+    .map(item => compact(item, 300))
+    .filter(Boolean)
+    .map(item => `- ${inferred ? "Inferred: " : ""}${item}`)
+    .join("\n");
+}
+
+function listField(value) {
+  if (Array.isArray(value)) return value.map(item => typeof item === "string" ? item : compact(JSON.stringify(item), 160)).filter(Boolean);
+  if (value === null || value === undefined || value === "") return [];
+  return [String(value)];
+}
+
+function usefulRadarItems(radar = {}) {
+  return Object.entries(radar || {})
+    .filter(([, item]) => item && typeof item === "object" && item.status !== "unknown" && hasUsefulValue(item.opportunity || item.evidence))
+    .map(([key, item]) => {
+      const status = item.status || "observed";
+      const opportunity = item.opportunity || item.evidence || "";
+      const confidence = item.confidence ? ` Confidence: ${item.confidence}.` : "";
+      return `${key.replace(/_/g, " ")}: ${status}. ${opportunity}${confidence}`;
+    });
+}
+
+function actionPlanLines(plan = {}, flat = {}) {
+  if (plan && typeof plan === "object" && plan.status !== "insufficient_evidence") {
+    const lines = [
+      ...listField(plan.first_2_hours).map(item => `First 2 hours: ${item}`),
+      ...listField(plan.by_midday).map(item => `By midday: ${item}`),
+      ...listField(plan.before_end_of_day).map(item => `Before end of day: ${item}`),
+      ...listField(plan.what_to_measure_next_30_days).map(item => `Measure next 30 days: ${item}`)
+    ];
+    if (lines.length) return lines;
+    const summary = sectionSummary(plan);
+    if (summary) return [summary];
+  }
+  const opportunities = Array.isArray(flat.hidden_opportunities) ? flat.hidden_opportunities : [];
+  const digital = flat.digital_health || {};
+  const fallback = [];
+  if (opportunities[0]?.recommended_first_test) fallback.push(`Run this first test: ${opportunities[0].recommended_first_test}`);
+  if (digital.summary) fallback.push(`Review the digital path: ${digital.summary}`);
+  if (flat.contact_decision?.recommended_outreach_angle) fallback.push(`Use this manual angle: ${flat.contact_decision.recommended_outreach_angle}`);
+  return fallback;
+}
+
+function buildFounderBlueprintFromOutput(combined = {}) {
+  const flat = flattenCombinedOutput(combined);
+  const identity = flat.business_identity || {};
+  const business = identityName(identity);
+  const dna = flat.business_dna || {};
+  const confirmed = (flat.confirmed_facts || []).map(lineFromClaim).filter(Boolean);
+  const inferences = (flat.inferences || []).map(lineFromClaim).filter(Boolean);
+  const opportunities = Array.isArray(flat.hidden_opportunities) ? flat.hidden_opportunities : [];
+  const radar = usefulRadarItems(flat.ai_opportunity_radar || {});
+  const why = flat.why_we_chose_you || {};
+  const digital = flat.digital_health || {};
+  const aiDiscoverability = flat.ai_discoverability || {};
+  const future = flat.future_readiness || {};
+  const money = flat.money_left_on_table || safeMoneyFallback();
+  const contact = flat.contact_decision || {};
+
+  const opportunitySummary = [];
+  if (hasUsefulValue(dna.business_model)) opportunitySummary.push(`Inferred: ${business} appears to operate as ${dna.business_model}.`);
+  if (hasUsefulValue(dna.primary_services)) opportunitySummary.push(`Inferred: Core services include ${listField(dna.primary_services).join(", ")}.`);
+  if (hasUsefulValue(dna.geographic_market)) opportunitySummary.push(`Inferred: The visible market focus is ${dna.geographic_market}.`);
+  if (hasUsefulValue(dna.value_proposition)) opportunitySummary.push(`Inferred: ${dna.value_proposition}`);
+  if (!opportunitySummary.length && confirmed.length) opportunitySummary.push(`Evidence-backed: ${confirmed[0]}`);
+  if (!opportunitySummary.length) opportunitySummary.push("Insufficient public evidence was available to produce a reliable opportunity summary.");
+
+  const noticed = [
+    ...confirmed.slice(0, 3).map(item => `Evidence-backed: ${item}`),
+    ...listField(dna.trust_signals).slice(0, 3).map(item => `Inferred trust signal: ${item}`),
+    digital.summary ? `Inferred digital maturity: ${digital.summary}` : "",
+    aiDiscoverability.summary ? `Inferred AI discoverability: ${aiDiscoverability.summary}` : "",
+    future.fastest_improvement ? `Inferred fastest improvement: ${future.fastest_improvement}` : ""
+  ].filter(Boolean);
+
+  const hidden = opportunities.length
+    ? opportunities.slice(0, 5).map(item => {
+      const title = item.title || item.opportunity || "Opportunity";
+      const reason = item.why_it_matters || item.specific_observed_problem || item.likely_business_impact || "";
+      const confidence = item.confidence ? ` Confidence: ${item.confidence}.` : "";
+      return `${title}: ${reason}${confidence}`;
+    })
+    : inferences.length
+      ? inferences.slice(0, 4).map(item => `Inferred opportunity: ${item}`)
+      : ["No specific hidden opportunity was validated from the current public evidence."];
+
+  const moneyLines = money.status === "estimated"
+    ? [`Estimated range: ${money.currency || ""}${money.low_estimate} to ${money.currency || ""}${money.high_estimate} ${money.time_period || ""}.`, `Assumptions: ${listField(money.assumptions).join("; ") || "Scenario assumptions were supplied by Brain One."}`, `Method: ${money.calculation_method || "scenario estimate"}. Confidence: ${money.confidence || "low"}.`]
+    : ["Insufficient public evidence was available to produce a responsible monetary estimate.", ...(opportunities.length ? ["However, non-monetary opportunity signals were still found above, so this should be treated as upside to measure rather than a confirmed revenue loss."] : [])];
+
+  const whyLines = [];
+  if (why.status !== "insufficient_evidence") {
+    whyLines.push(...listField(why.observable_strengths).map(item => `Observable strength: ${item}`));
+    if (why.what_the_business_does_well) whyLines.push(`What it does well: ${why.what_the_business_does_well}`);
+    if (why.why_improvements_matter) whyLines.push(`Why improvements matter: ${why.why_improvements_matter}`);
+    if (why.why_not_random) whyLines.push(`Why this is not random: ${why.why_not_random}`);
+    if (why.potential_fit) whyLines.push(`Potential fit: ${why.potential_fit}`);
+    if (why.summary) whyLines.push(why.summary);
+  }
+  if (!whyLines.length) {
+    if (hasUsefulValue(dna.likely_revenue_drivers)) whyLines.push(`Inferred: Revenue drivers include ${listField(dna.likely_revenue_drivers).join(", ")}.`);
+    if (opportunities[0]?.callcatch_relevance) whyLines.push(`Inferred: CallCatch relevance is ${opportunities[0].callcatch_relevance}.`);
+    if (contact.primary_reason) whyLines.push(`Decision context: ${contact.primary_reason}`);
+  }
+  if (!whyLines.length) whyLines.push("Insufficient public evidence was available to explain why this business deserves attention.");
+
+  const actions = actionPlanLines(flat.one_day_action_plan, flat);
+  const radarLines = radar.length ? radar : [
+    digital.summary ? `digital health: ${digital.summary}` : "",
+    aiDiscoverability.summary ? `AI discoverability: ${aiDiscoverability.summary}` : "",
+    future.readiness_level || future.summary ? `future readiness: ${future.readiness_level || future.summary}` : ""
+  ].filter(Boolean);
+
+  const contactLines = [
+    contact.recommendation_status || contact.decision ? `Recommendation: ${contact.recommendation_status || contact.decision}` : "",
+    contact.primary_reason ? `Reason: ${contact.primary_reason}` : "",
+    contact.recommended_outreach_angle ? `Manual outreach angle: ${contact.recommended_outreach_angle}` : "",
+    ...(contact.information_gaps || []).slice(0, 3).map(item => `Information gap: ${item}`)
+  ].filter(Boolean);
+
+  return [
+    "# Business Growth Blueprint",
+    "",
+    "## Opportunity Summary",
+    markdownBullets(opportunitySummary),
+    "",
+    "## What We Noticed",
+    markdownBullets(noticed.length ? noticed : ["Insufficient public evidence was available for detailed observations."]),
+    "",
+    "## Hidden Opportunities",
+    markdownBullets(hidden),
+    "",
+    "## Money Left on the Table",
+    markdownBullets(moneyLines),
+    "",
+    "## AI Opportunity Radar",
+    markdownBullets(radarLines.length ? radarLines : ["Insufficient public evidence was available for radar scoring."]),
+    "",
+    "## Why This Business Deserves Attention",
+    markdownBullets(whyLines),
+    "",
+    "## If CallCatch Owned This Business For One Day",
+    markdownBullets(actions.length ? actions : ["Insufficient public evidence was available to create a responsible one-day action plan."]),
+    "",
+    "## Contact Decision",
+    markdownBullets(contactLines.length ? contactLines : ["Manual review required before any outreach."])
+  ].join("\n");
 }
 
 function stageLogger(options = {}) {
@@ -1557,16 +1740,26 @@ async function runBrainOne(contextPackage, options = {}) {
   const phaseBStarted = Date.now();
   logStage("brain_one_blueprint_started", { mode: "phase_b_markdown" });
   let blueprintMarkdown = "";
+  let phaseBRawResponse = "";
   try {
-    const blueprintResult = modelContent(await callModel(buildBlueprintMessages(combined), { phase: "blueprint", responseFormat: false, maxTokens: 1800, temperature: 0.2 }));
-    blueprintMarkdown = String(blueprintResult.content || "").trim();
+    try {
+      const blueprintResult = modelContent(await callModel(buildBlueprintMessages(combined), { phase: "blueprint", responseFormat: false, maxTokens: 1800, temperature: 0.2 }));
+      phaseBRawResponse = String(blueprintResult.content || "").trim();
+    } catch (error) {
+      logStage("brain_one_blueprint_model_render_failed", { error: error.message, failureStage: error.failureStage });
+      if (!completed_modules.length && !partial_modules.length) throw error;
+    }
+    blueprintMarkdown = buildFounderBlueprintFromOutput(combined);
     const phaseBValidation = validatePhaseBMarkdownAgainstPhaseA(blueprintMarkdown, flattenCombinedOutput(combined));
     logStage("brain_one_blueprint_completed", {
       ok: phaseBValidation.ok,
       markdownBytes: blueprintMarkdown.length,
-      errors: (phaseBValidation.errors || []).slice(0, 5)
+      errors: (phaseBValidation.errors || []).slice(0, 5),
+      deterministic: true,
+      modelMarkdownBytes: phaseBRawResponse.length
     });
-    if (!phaseBValidation.ok) {
+    const dangerousPhaseB = (phaseBValidation.errors || []).some(error => /evidence IDs|monetary figure/i.test(error));
+    if (!phaseBValidation.ok && dangerousPhaseB) {
       combined.founder_facing_blueprint = "Brain One completed with partial intelligence, but the founder-facing report could not be safely rendered.";
     } else {
       combined.founder_facing_blueprint = blueprintMarkdown;
@@ -1584,7 +1777,7 @@ async function runBrainOne(contextPackage, options = {}) {
     phaseAOutput: combined,
     blueprintMarkdown: combined.founder_facing_blueprint,
     phaseARawResponse: JSON.stringify(rawResponses),
-    phaseBRawResponse: blueprintMarkdown,
+    phaseBRawResponse,
     finishReason,
     responseCharCount,
     structuredResponseModeAccepted,
@@ -1707,6 +1900,7 @@ function applyBrainOneReviewState(state = {}, { runId, leadId, approved, reviewe
 module.exports = {
   applyBrainOneReviewState,
   buildBrainOneContextPackage,
+  buildFounderBlueprintFromOutput,
   callNvidia,
   duplicateBrainOneRun,
   flattenCombinedOutput,

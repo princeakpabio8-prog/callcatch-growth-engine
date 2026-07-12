@@ -928,6 +928,33 @@ test("Spring HVAC style Brain Zero replay keeps strong evidence as usable Brain 
   assert.notEqual(result.output.score_metadata.opportunity_priority.status, "failed");
 });
 
+test("Blueprint synthesizes assessed modules instead of defaulting downstream sections to insufficient evidence", async () => {
+  const context = sampleContext(1);
+  let calls = 0;
+  const result = await runBrainOne(context, {
+    callModel: async () => {
+      calls += 1;
+      const order = ["foundation", "digital_intelligence", "opportunities", "strategic_interpretation", "contact_decision"];
+      const full = sampleOutput(context);
+      if (calls === 2) return moduleJson(context, "digital_intelligence", {
+        business_dna: full.business_dna,
+        digital_health: full.digital_health,
+        ai_discoverability: full.ai_discoverability,
+        future_readiness: full.future_readiness
+      });
+      if (calls <= 5) return moduleJson(context, order[calls - 1]);
+      return "# Business Growth Blueprint\n\n## Opportunity Summary\nInsufficient public evidence.\n\n## Hidden Opportunities\nInsufficient public evidence.\n\n## AI Opportunity Radar\nInsufficient public evidence.\n\n## Why This Business Deserves Attention\nInsufficient public evidence.\n\n## If CallCatch Owned This Business For One Day\nInsufficient public evidence.";
+    }
+  });
+  assert.match(result.blueprintMarkdown, /Inbound local service provider|Core services include/i);
+  assert.match(result.blueprintMarkdown, /Capture more urgent service callers/i);
+  assert.match(result.blueprintMarkdown, /AI Opportunity Radar/);
+  assert.match(result.blueprintMarkdown, /Why This Business Deserves Attention/);
+  assert.match(result.blueprintMarkdown, /Start with response-path verification/i);
+  assert.doesNotMatch(result.blueprintMarkdown, /## Hidden Opportunities\n- Insufficient public evidence/i);
+  assert.doesNotMatch(result.blueprintMarkdown, /## Why This Business Deserves Attention\n- Insufficient public evidence/i);
+});
+
 test("weak forum-only evidence stays needs review instead of forced contact", async () => {
   const context = buildBrainOneContextPackage(sampleLead(2, {
     business: "Forum Mention Plumbing",
