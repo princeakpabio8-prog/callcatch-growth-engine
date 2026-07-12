@@ -12,7 +12,8 @@ const initialState = {
   savedSearches: [],
   auditLog: [],
   jobs: [],
-  brainOneRuns: []
+  brainOneRuns: [],
+  brainZeroRuns: []
 };
 
 let writeQueue = Promise.resolve();

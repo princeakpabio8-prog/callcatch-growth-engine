@@ -7,6 +7,12 @@ const { configured: braveConfigured } = require("./lead-engine/providers/braveSe
 const { configured: serperConfigured } = require("./lead-engine/providers/serperSearch");
 const { fetchJson } = require("./lead-engine/httpClient");
 const { scanWebsite } = require("./lead-engine/websiteScanner");
+const {
+  brainZeroCanRunBrainOne,
+  brainZeroConfig,
+  contextFromLead,
+  runBrainZeroEvidenceCollection
+} = require("./lead-engine/brainZeroService");
 const { enrichProspect, outreachAssets } = require("./lead-engine/prospectIntelligence");
 const { audit, mutateStore, newId, readStore, storageMode } = require("./lead-engine/dataStore");
 const { buildCampaign, buildSequenceTasks } = require("./lead-engine/campaigns");
@@ -682,6 +688,137 @@ async function runBackgroundAutomation() {
   }
 }
 
+function latestBrainZeroRun(runs = [], businessId = "") {
+  return (runs || [])
+    .filter(run => run.business_id === businessId || run.businessId === businessId)
+    .sort((a, b) => new Date(b.started_at || b.createdAt || 0) - new Date(a.started_at || a.createdAt || 0))[0] || null;
+}
+
+function duplicateBrainZeroRun(runs = [], businessId = "") {
+  return (runs || []).find(run => (run.business_id === businessId || run.businessId === businessId) && ["queued", "running"].includes(run.status)) || null;
+}
+
+function freshBrainZeroRun(runs = [], businessId = "") {
+  const ttl = brainZeroConfig().cacheTtlMs;
+  if (!ttl) return null;
+  const latest = latestBrainZeroRun(runs, businessId);
+  if (!latest || !["completed", "partial"].includes(latest.status)) return null;
+  const completed = new Date(latest.completed_at || latest.completedAt || 0).getTime();
+  if (!completed || Date.now() - completed > ttl) return null;
+  return latest;
+}
+
+function brainZeroEvidenceToBrainOneContext(lead = {}, run = null) {
+  const packageValue = run?.evidence_package || {};
+  const evidence = Array.isArray(packageValue.evidence_log) ? packageValue.evidence_log : [];
+  const convertedEvidence = evidence.map(item => ({
+    id: item.evidence_id,
+    sourceType: item.provider || item.category || "brain-zero",
+    sourceUrl: item.source_url || "",
+    excerpt: item.source_excerpt || (typeof item.value === "string" ? item.value : JSON.stringify(item.value || "")),
+    capturedAt: item.collected_at || run?.completed_at || new Date().toISOString()
+  }));
+  const firstEmail = (packageValue.contacts || [])
+    .flatMap(item => Array.isArray(item.value) ? item.value : [item.value])
+    .find(value => /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i.test(String(value || ""))) || lead.email || "";
+  const firstPhone = (packageValue.contacts || [])
+    .flatMap(item => Array.isArray(item.value) ? item.value : [item.value])
+    .map(value => typeof value === "object" ? value.original || value.normalized : value)
+    .find(value => /\d{7,}/.test(String(value || "").replace(/\D/g, ""))) || lead.phone || "";
+  const websiteText = [
+    ...(packageValue.website_pages || []).map(page => page.excerpt || ""),
+    ...(packageValue.content_evidence || []).map(item => item.source_excerpt || ""),
+    ...(packageValue.trust_evidence || []).map(item => item.source_excerpt || "")
+  ].filter(Boolean).join("\n\n");
+  const base = buildBrainOneContextPackage({ ...lead, email: lead.email || firstEmail, phone: lead.phone || firstPhone }, {
+    ok: true,
+    url: lead.website || packageValue.source_urls?.[0] || "",
+    text: websiteText,
+    description: `Brain Zero evidence collection ${run?.status || "completed"} with ${evidence.length} evidence records.`
+  });
+  return {
+    ...base,
+    websitePublicText: websiteText || base.websitePublicText,
+    publicContactDetails: {
+      ...base.publicContactDetails,
+      email: base.publicContactDetails.email || firstEmail || "",
+      phone: base.publicContactDetails.phone || firstPhone || ""
+    },
+    publicSocialOrDirectoryEvidence: convertedEvidence.filter(item => /identity|existing|directory|trust/i.test(item.sourceType)),
+    scraperEvidence: convertedEvidence,
+    sourceUrls: [...new Set([...(base.sourceUrls || []), ...(packageValue.source_urls || [])].filter(Boolean))],
+    evidenceLog: [
+      ...convertedEvidence,
+      ...base.evidenceLog.filter(item => !convertedEvidence.some(existing => existing.id === item.id))
+    ],
+    brainZero: {
+      runId: run?.run_id || run?.id || "",
+      status: run?.status || "",
+      evidenceQuality: packageValue.overall_evidence_quality || run?.overall_evidence_quality || "weak",
+      providerStatuses: packageValue.provider_statuses || {},
+      collectionLimitations: packageValue.collection_limitations || []
+    }
+  };
+}
+
+async function completeBrainZeroRun(runId, context, logger = log) {
+  try {
+    const result = await runBrainZeroEvidenceCollection(context, { runId, logger });
+    await mutateStore(state => {
+      state.brainZeroRuns = state.brainZeroRuns || [];
+      const record = state.brainZeroRuns.find(item => item.run_id === runId || item.id === runId);
+      if (record) Object.assign(record, result, { id: runId, run_id: runId });
+      const lead = (state.leads || []).find(item => item.id === result.business_id);
+      if (lead) {
+        lead.brainZeroLatestRunId = runId;
+        lead.brainZeroStatus = result.status;
+        lead.brainZeroEvidenceQuality = result.overall_evidence_quality;
+        lead.brainZeroEvidenceHash = result.evidence_package_hash;
+        lead.timeline = lead.timeline || [];
+        lead.timeline.unshift({
+          at: result.completed_at,
+          text: `Brain Zero evidence collection ${result.status}. ${result.evidence_count} records from ${result.source_count} sources.`
+        });
+      }
+      state.auditLog = state.auditLog || [];
+      state.auditLog.unshift({
+        id: newId("audit"),
+        at: new Date().toISOString(),
+        action: "brain_zero_completed",
+        details: {
+          runId,
+          businessId: result.business_id,
+          status: result.status,
+          evidenceCount: result.evidence_count,
+          quality: result.overall_evidence_quality
+        }
+      });
+      state.brainZeroRuns = state.brainZeroRuns.slice(0, 300);
+      return record || result;
+    });
+  } catch (error) {
+    log("error", "brain_zero_run_failed", { runId, error: error.message });
+    await mutateStore(state => {
+      state.brainZeroRuns = state.brainZeroRuns || [];
+      const record = state.brainZeroRuns.find(item => item.run_id === runId || item.id === runId);
+      if (record) {
+        record.status = "failed";
+        record.completed_at = new Date().toISOString();
+        record.duration_ms = Date.parse(record.completed_at) - Date.parse(record.started_at || record.createdAt || record.completed_at);
+        record.errors = [...(record.errors || []), error.message];
+      }
+      state.auditLog = state.auditLog || [];
+      state.auditLog.unshift({
+        id: newId("audit"),
+        at: new Date().toISOString(),
+        action: "brain_zero_failed",
+        details: { runId, error: error.message }
+      });
+      return record;
+    });
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     return send(res, 204, {});
@@ -703,7 +840,20 @@ const server = http.createServer(async (req, res) => {
         ...(serperConfigured() ? ["serper"] : []),
         ...(braveConfigured() ? ["brave-search"] : [])
       ],
-      modules: ["prospect-intelligence", "website-scanner", "approval-queue"],
+      modules: ["prospect-intelligence", "website-scanner", "approval-queue", "brain-zero-evidence"],
+      brainZero: {
+        enabled: true,
+        mode: "manual-evidence-collection",
+        version: "brain-zero-v1",
+        timeouts: {
+          totalMs: brainZeroConfig().totalTimeoutMs,
+          pageMs: brainZeroConfig().pageTimeoutMs,
+          crawlMs: brainZeroConfig().crawlTimeoutMs
+        },
+        maxPages: brainZeroConfig().maxPages,
+        maxConcurrentRequests: brainZeroConfig().maxConcurrentRequests,
+        cacheTtlMs: brainZeroConfig().cacheTtlMs
+      },
       brainOne: {
         enabled: true,
         mode: "manual-only",
@@ -811,6 +961,74 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  if (req.method === "GET" && url.pathname === "/api/brain-zero/runs") {
+    const leadId = url.searchParams.get("leadId") || "";
+    const state = await readStore();
+    const runs = (state.brainZeroRuns || [])
+      .filter(run => !leadId || run.business_id === leadId || run.businessId === leadId)
+      .sort((a, b) => new Date(b.started_at || b.createdAt || 0) - new Date(a.started_at || a.createdAt || 0));
+    return send(res, 200, { runs });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/brain-zero/run") {
+    try {
+      const body = await readJson(req);
+      const state = await readStore();
+      const lead = (state.leads || []).find(item => item.id === body.leadId) || body.lead;
+      if (!lead || !lead.id) return send(res, 404, { error: "Lead not found" });
+      const duplicate = duplicateBrainZeroRun(state.brainZeroRuns || [], lead.id);
+      if (duplicate) return send(res, 409, { error: "Brain Zero is already collecting evidence for this business", run: duplicate });
+      const cached = body.force ? null : freshBrainZeroRun(state.brainZeroRuns || [], lead.id);
+      if (cached) {
+        return send(res, 200, {
+          cached: true,
+          run: cached,
+          message: `Using Brain Zero evidence collected ${cached.completed_at || cached.completedAt || "recently"}.`
+        });
+      }
+      const runId = newId("bz");
+      const started = new Date().toISOString();
+      const context = contextFromLead(lead);
+      const run = await mutateStore(store => {
+        store.brainZeroRuns = store.brainZeroRuns || [];
+        const record = {
+          id: runId,
+          run_id: runId,
+          business_id: lead.id,
+          businessId: lead.id,
+          status: "running",
+          providers: {},
+          evidence_count: 0,
+          source_count: 0,
+          pages_scanned: 0,
+          started_at: started,
+          completed_at: null,
+          duration_ms: null,
+          errors: [],
+          warnings: [],
+          evidence_package: {},
+          version: "brain-zero-v1",
+          force: !!body.force
+        };
+        store.brainZeroRuns.unshift(record);
+        store.brainZeroRuns = store.brainZeroRuns.slice(0, 300);
+        store.auditLog = store.auditLog || [];
+        store.auditLog.unshift({
+          id: newId("audit"),
+          at: started,
+          action: "brain_zero_started",
+          details: { runId, businessId: lead.id, force: !!body.force }
+        });
+        return record;
+      });
+      setTimeout(() => completeBrainZeroRun(runId, context), 0);
+      return send(res, 202, { run, message: "Brain Zero evidence collection started." });
+    } catch (error) {
+      log("error", "brain_zero_start_failed", { error: error.message });
+      return send(res, 400, { error: error.message });
+    }
+  }
+
   if (req.method === "POST" && url.pathname === "/api/outreach") {
     try {
       const body = await readJson(req);
@@ -887,15 +1105,25 @@ const server = http.createServer(async (req, res) => {
       if (!lead || !lead.id) return send(res, 404, { error: "Business record not found" });
       const duplicateRunning = duplicateBrainOneRun(state.brainOneRuns || [], lead.id);
       if (duplicateRunning) return send(res, 409, { error: "Brain One is already analyzing this business", run: duplicateRunning });
-      let scan = null;
-      if (lead.website) {
-        try {
-          scan = await scanWebsite(lead.website);
-        } catch (error) {
-          scan = { ok: false, url: lead.website, text: "", description: `Website scan failed: ${error.message}` };
+      const requestedBrainZeroRun = body.brainZeroRunId
+        ? (state.brainZeroRuns || []).find(item => item.run_id === body.brainZeroRunId || item.id === body.brainZeroRunId)
+        : null;
+      const brainZeroRun = requestedBrainZeroRun || latestBrainZeroRun(state.brainZeroRuns || [], lead.id);
+      const gate = brainZeroCanRunBrainOne(brainZeroRun, { acceptPartial: !!body.acceptPartial && !!requestedBrainZeroRun });
+      if (!gate.allowed) return send(res, 409, { error: gate.reason, warning: gate.warning, brainZeroRun });
+      if (brainZeroRun && ["completed", "partial"].includes(brainZeroRun.status)) {
+        contextPackage = brainZeroEvidenceToBrainOneContext(lead, brainZeroRun);
+      } else {
+        let scan = null;
+        if (lead.website) {
+          try {
+            scan = await scanWebsite(lead.website);
+          } catch (error) {
+            scan = { ok: false, url: lead.website, text: "", description: `Website scan failed: ${error.message}` };
+          }
         }
+        contextPackage = buildBrainOneContextPackage(lead, scan);
       }
-      contextPackage = buildBrainOneContextPackage(lead, scan);
       const run = await mutateStore(state => {
         state.brainOneRuns = state.brainOneRuns || [];
         runId = newId("brain1");
@@ -910,6 +1138,8 @@ const server = http.createServer(async (req, res) => {
           executionDurationMs: 0,
           errorDetails: null,
           approvalStatus: "pending-review",
+          brainZeroRunId: brainZeroRun?.run_id || brainZeroRun?.id || "",
+          brainZeroStatus: brainZeroRun?.status || "",
           createdAt
         };
         state.brainOneRuns.unshift(record);

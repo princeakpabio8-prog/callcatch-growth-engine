@@ -653,6 +653,7 @@
     let leads = JSON.parse(localStorage.getItem("ccProspectsV2") || "[]");
     let queue = JSON.parse(localStorage.getItem("ccApprovalQueueV2") || "[]");
     let brainOneRuns = [];
+    let brainZeroRuns = [];
     let auditLog = [];
     let lastGrowthRun = null;
     let emailReady = false;
@@ -742,6 +743,7 @@
       if (Array.isArray(crm.leads)) leads = (mergeLocal ? mergeById(leads, crm.leads) : crm.leads).filter(isStorableProspect);
       auditLog = crm.auditLog || auditLog;
       if (Array.isArray(crm.brainOneRuns)) brainOneRuns = crm.brainOneRuns;
+      if (Array.isArray(crm.brainZeroRuns)) brainZeroRuns = crm.brainZeroRuns;
       recoverPipelineFromSentHistory();
       if (Array.isArray(crm.approvalQueue)) queue = compactEmailDuplicates(mergeLocal ? mergeById(queue, crm.approvalQueue) : crm.approvalQueue);
       serverSynced = true;
@@ -1208,10 +1210,91 @@
         return `<span class="tag ${tone}">${esc(label)}: ${esc(item.status || "missing")}</span>`;
       }).join("");
     }
+    function brainZeroLatestRun(leadId){
+      return (brainZeroRuns || [])
+        .filter(run => run.business_id === leadId || run.businessId === leadId)
+        .sort((a,b)=>new Date(b.started_at || b.createdAt || 0)-new Date(a.started_at || a.createdAt || 0))[0] || null;
+    }
+    function brainZeroProviderTags(run = {}){
+      const providers = run.providers || {};
+      const labels = {
+        existing_lead_search: "Lead Source",
+        website_crawl: "Crawl",
+        website_feature_detection: "Features",
+        technical_website_evidence: "Technical",
+        business_identity_evidence: "Identity",
+        public_trust_evidence: "Trust",
+        content_discoverability_evidence: "Content"
+      };
+      return Object.entries(labels).map(([key,label])=>{
+        const item = providers[key] || {};
+        const tone = item.status === "completed" ? "hot" : item.status === "failed" ? "bad" : item.status === "skipped" ? "warn" : "";
+        return `<span class="tag ${tone}">${esc(label)}: ${esc(item.status || "pending")}</span>`;
+      }).join("");
+    }
+    function brainZeroPanelHtml(lead = {}){
+      const run = brainZeroLatestRun(lead.id);
+      if (!run) {
+        return `<div class="panel"><div class="lead-top"><div><h3>Brain Zero Evidence Collection</h3><p class="sub">Collect public evidence first. This does not analyze, write, queue, or send outreach.</p></div><span class="tag warn">Not collected</span></div><div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-zero-run="${lead.id}">Collect Evidence</button></div><p class="hint" id="brainZeroStatus-${lead.id}"></p></div>`;
+      }
+      const statusTone = run.status === "completed" ? "hot" : run.status === "failed" ? "bad" : "warn";
+      const canContinue = run.status === "completed" || run.status === "partial";
+      const partial = run.status === "partial";
+      return `<div class="panel"><div class="lead-top"><div><h3>Brain Zero Evidence Collection</h3><p class="sub">Run ${esc(run.run_id || run.id)} | ${esc(formatDateTime(run.started_at || run.createdAt))}</p></div><span class="tag ${statusTone}">${esc(run.status)}</span></div>
+        <div class="detail-grid"><div class="mini"><span>Evidence</span><strong>${esc(run.evidence_count ?? 0)}</strong></div><div class="mini"><span>Sources</span><strong>${esc(run.source_count ?? 0)}</strong></div><div class="mini"><span>Pages</span><strong>${esc(run.pages_scanned ?? 0)}</strong></div><div class="mini"><span>Quality</span><strong>${esc(run.overall_evidence_quality || run.evidence_package?.overall_evidence_quality || "unknown")}</strong></div></div>
+        <div class="insights">${brainZeroProviderTags(run)}</div>
+        ${run.status === "running" ? `<p class="hint">Evidence collection is running in the background. You can keep using the app.</p>` : ""}
+        ${partial ? `<p class="hint">Partial evidence is usable, but Brain One may have more unknowns. You can still continue manually.</p>` : ""}
+        ${run.status === "failed" ? `<p class="hint">Brain Zero did not collect usable evidence. Run again or check the website/source details.</p>` : ""}
+        ${(run.warnings || []).length ? `<details><summary>Collection Limitations</summary>${objectSummaryHtml((run.warnings || []).slice(0,8))}</details>` : ""}
+        <details><summary>Technical Details</summary><div class="script" style="min-height:80px;">${esc(JSON.stringify({ providers: Object.fromEntries(Object.entries(run.providers || {}).map(([key,item])=>[key,{status:item.status,duration_ms:item.duration_ms,errors:item.errors,warnings:item.warnings,evidence:item.evidence?.length || 0}])), errors: run.errors || [], hash: run.evidence_package_hash || "" }, null, 2))}</div></details>
+        <div class="actions" style="margin-top:10px;"><button class="btn small" data-brain-zero-run="${lead.id}">Run Again</button><button class="btn small" data-brain-zero-force="${lead.id}">Force Rescan</button>${canContinue ? `<button class="btn primary small" data-brain-zero-continue="${lead.id}|${run.run_id || run.id}|${partial ? "1" : "0"}">Continue to Brain One</button>` : ""}</div>
+        <p class="hint" id="brainZeroStatus-${lead.id}"></p></div>`;
+    }
+    async function refreshBrainZeroRuns(leadId){
+      const result = await api(`/api/brain-zero/runs${leadId ? `?leadId=${encodeURIComponent(leadId)}` : ""}`);
+      const incoming = result.runs || [];
+      const byId = new Map((brainZeroRuns || []).map(run=>[run.run_id || run.id, run]));
+      incoming.forEach(run=>byId.set(run.run_id || run.id, run));
+      brainZeroRuns = [...byId.values()];
+      return incoming[0] || null;
+    }
+    async function pollBrainZero(leadId, runId, attempts = 40){
+      for (let index = 0; index < attempts; index += 1) {
+        await new Promise(resolve=>setTimeout(resolve, index < 3 ? 1500 : 3000));
+        const latest = await refreshBrainZeroRuns(leadId);
+        render();
+        const run = latest && (latest.run_id === runId || latest.id === runId) ? latest : brainZeroLatestRun(leadId);
+        if (run && !["queued","running"].includes(run.status)) return run;
+      }
+      return brainZeroLatestRun(leadId);
+    }
+    async function runBrainZero(leadId, force = false){
+      const status = $(`brainZeroStatus-${leadId}`);
+      if (status) status.textContent = force ? "Force rescanning public evidence..." : "Collecting public evidence...";
+      toast(force ? "Brain Zero force rescan started" : "Brain Zero started");
+      try {
+        const result = await api("/api/brain-zero/run", { method:"POST", body: JSON.stringify({ leadId, force }) });
+        await refreshBrainZeroRuns(leadId);
+        render();
+        const run = result.run || {};
+        if (["queued","running"].includes(run.status)) {
+          pollBrainZero(leadId, run.run_id || run.id).then(done=>{
+            if (done) toast(done.status === "completed" ? "Evidence ready" : `Evidence ${done.status}`);
+            render();
+          }).catch(()=>{});
+        } else {
+          toast(result.cached ? "Using cached evidence" : "Evidence ready");
+        }
+      } catch(error) {
+        if (status) status.textContent = `Brain Zero could not start: ${error.message}`;
+        toast("Brain Zero failed");
+      }
+    }
     function brainOneReportHtml(lead = {}){
       const run = brainOneLatestRun(lead.id);
       if (!run) {
-        return `<div class="panel"><div class="lead-top"><div><h3>Brain One Opportunity Intelligence</h3><p class="sub">Manual analysis only. This will not send or queue outreach.</p></div><span class="tag warn">Not analyzed</span></div><div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-one-analyze="${lead.id}">Analyze Business</button></div><p class="hint" id="brainOneStatus-${lead.id}"></p></div>`;
+        return `<div class="panel"><div class="lead-top"><div><h3>Brain One Opportunity Intelligence</h3><p class="sub">Manual analysis only. Collect Brain Zero evidence above, then continue here. This will not send or queue outreach.</p></div><span class="tag warn">Waiting for evidence</span></div><p class="hint" id="brainOneStatus-${lead.id}">Use Continue to Brain One from the Brain Zero panel after evidence collection.</p></div>`;
       }
       const combinedOutput = run.phaseAOutput || run.validatedOutput || {};
       const output = flattenBrainOneOutput(combinedOutput);
@@ -1252,12 +1335,20 @@
         <div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-one-approve="${run.id}|${lead.id}">Approve for CRM/Brain Two</button><button class="btn small" data-brain-one-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-one-analyze="${lead.id}">Analyze Again</button></div>` : `<div class="actions" style="margin-top:10px;"><button class="btn small" data-brain-one-analyze="${lead.id}">Run Again</button></div>`}
         <p class="hint" id="brainOneStatus-${lead.id}"></p></div>`;
     }
-    async function analyzeBrainOne(leadId){
+    async function analyzeBrainOne(leadId, options = {}){
       const status = $(`brainOneStatus-${leadId}`);
       if (status) status.textContent = "Analyzing business with Brain One...";
       toast("Brain One analysis started");
       try {
-        const result = await api("/api/brain-one/analyze", { method:"POST", body: JSON.stringify({ leadId }) });
+        const result = await api("/api/brain-one/analyze", {
+          method:"POST",
+          body: JSON.stringify({
+            leadId,
+            brainZeroRunId: options.brainZeroRunId || "",
+            acceptPartial: !!options.acceptPartial,
+            requireBrainZero: !!options.requireBrainZero
+          })
+        });
         const crm = await api("/api/crm");
         applyServerState(crm);
         render();
@@ -1287,6 +1378,9 @@
     }
     function bindBrainOneActions(){
       document.querySelectorAll("[data-brain-one-analyze]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); analyzeBrainOne(button.dataset.brainOneAnalyze); });
+      document.querySelectorAll("[data-brain-zero-run]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); runBrainZero(button.dataset.brainZeroRun, false); });
+      document.querySelectorAll("[data-brain-zero-force]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); runBrainZero(button.dataset.brainZeroForce, true); });
+      document.querySelectorAll("[data-brain-zero-continue]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); const [leadId, runId, partial] = button.dataset.brainZeroContinue.split("|"); analyzeBrainOne(leadId, { brainZeroRunId: runId, acceptPartial: partial === "1", requireBrainZero: true }); });
       document.querySelectorAll("[data-brain-one-approve]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); const [runId, leadId] = button.dataset.brainOneApprove.split("|"); reviewBrainOne(runId, leadId, true); });
       document.querySelectorAll("[data-brain-one-reject]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); const [runId, leadId] = button.dataset.brainOneReject.split("|"); reviewBrainOne(runId, leadId, false); });
     }
@@ -2174,6 +2268,7 @@
           <h3>Why This Prospect</h3>
           <div class="insights">${[...(lead.aiInsights || []), ...(lead.websiteIntelligence?.leadQualitySignals || []), lead.recommendedSalesAngle || ""].filter(Boolean).slice(0,10).map(item=>`<span class="tag">${esc(item)}</span>`).join("") || `<span class="tag">No intelligence saved yet</span>`}</div>
         </div>
+        ${brainZeroPanelHtml(lead)}
         ${brainOneReportHtml(lead)}`;
       bindBrainOneActions();
     }
@@ -2287,6 +2382,7 @@
       <div class="form-grid"><div><label>Stage</label><select id="detailStage">${STAGES.map(s=>`<option ${s===l.stage?"selected":""}>${s}</option>`).join("")}</select></div><div><label>Owner</label><input id="owner" value="${esc(l.owner||"")}"></div><div><label>Next Follow-up</label><input id="nextFollow" type="date" value="${esc(l.nextFollowUp||"")}"></div><div><label>Assigned</label><input id="assigned" value="${esc(l.assignedTeamMember||settings.team)}"></div></div>
       <label>Notes</label><textarea id="notes">${esc(l.notes||"")}</textarea>
       <div class="actions" style="margin-top:10px;"><button class="btn primary small" id="smartSendBtn">Research + Approve & Send</button><button class="btn small" id="queueBtn">Research + Draft</button><button class="btn small" id="scanBtn">Scan Website</button><button class="btn small" id="saveLeadBtn">Save Lead</button><button class="btn small" id="copyEmailBtn">Copy Email</button></div>
+      ${brainZeroPanelHtml(l)}
       ${brainOneReportHtml(l)}
       <h3 style="margin-top:14px;">Conversation</h3><div class="queue">${conversation.length ? conversation.slice(0,6).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.title)}</strong><span class="tag ${item.tone}">${esc(item.type)}</span></div><p class="hint">${new Date(item.at).toLocaleString()}</p><div class="script" style="min-height:64px;">${esc(item.body || "")}</div></div>`).join("") : `<p class="sub">No sent emails or replies yet.</p>`}</div>
       <h3 style="margin-top:14px;">Sent Emails</h3><div class="queue">${sentEmails.length ? sentEmails.slice(0,5).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.subject || item.title || "Sent email")}</strong><span class="tag hot">Sent</span></div><p class="hint">${esc(item.to || "")} | ${item.sentAt ? new Date(item.sentAt).toLocaleString() : ""}</p><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy-sent="${esc(item.taskId || item.id || "")}">Copy Email</button></div></div>`).join("") : `<p class="sub">No sent emails yet.</p>`}</div>
