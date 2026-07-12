@@ -355,8 +355,9 @@ function safeModuleFallback(moduleKey, contextPackage = {}) {
       information_gaps: ["Validated opportunity and contact data are incomplete."],
       recommended_outreach_angle: "Do not proceed until better evidence is available.",
       prohibited_claims_for_brain_two: ["Do not contact yet.", "Do not claim specific missed revenue."],
-      callcatch_opportunity_score: 0,
-      evidence_ids: []
+      callcatch_opportunity_score: null,
+      evidence_ids: [],
+      recommendation_status: "NEEDS_REVIEW"
     },
     brain_two_handoff: {
       approved_for_handoff: false,
@@ -365,6 +366,175 @@ function safeModuleFallback(moduleKey, contextPackage = {}) {
       do_not_automate_outbound: true
     }
   };
+}
+
+function contextEvidenceLog(contextPackage = {}) {
+  return (contextPackage.evidenceLog || []).map(item => ({
+    id: item.id,
+    source_type: item.source_type || item.sourceType || "unknown",
+    source_url: item.source_url || item.sourceUrl || "",
+    excerpt: item.excerpt || "",
+    captured_at: item.captured_at || item.capturedAt || contextPackage.analysisTimestamp || nowIso()
+  })).filter(item => item.id);
+}
+
+function normalizeContact(contact = {}, index = 0, meta = null) {
+  const defaults = {
+    owner_name: null,
+    contact_name: null,
+    contact_role: "",
+    contact_email: "",
+    contact_phone: "",
+    contact_source: "",
+    contact_confidence: 0,
+    status: "unknown",
+    evidence_ids: []
+  };
+  for (const [key, value] of Object.entries(defaults)) {
+    if (!(key in contact)) {
+      contact[key] = value;
+      recordNormalization(meta, `contacts[${index}].${key}`);
+    }
+  }
+  if (typeof contact.owner_name === "string" && contact.owner_name.trim() === "") contact.owner_name = null;
+  if (typeof contact.contact_name === "string" && contact.contact_name.trim() === "") contact.contact_name = null;
+  contact.contact_confidence = clampNumber(numberOrNull(contact.contact_confidence), 0, 100);
+  contact.status = normalizeClaimStatus(contact.status);
+  normalizeEvidenceIds(contact, `contacts[${index}].evidence_ids`, meta);
+  return contact;
+}
+
+function normalizeClaimItem(item = {}, pathName, meta = null) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+  if (!item.claim && item.inference) {
+    item.claim = item.inference;
+    recordNormalization(meta, `${pathName}.claim`);
+  }
+  if (!item.claim && item.risk) {
+    item.claim = item.risk;
+    recordNormalization(meta, `${pathName}.claim`);
+  }
+  if (!item.claim) item.claim = "Insufficient public evidence was available.";
+  item.confidence = normalizeConfidence(item.confidence);
+  item.status = normalizeClaimStatus(item.status);
+  if (!item.reasoning) item.reasoning = "The available public evidence is limited.";
+  if (!item.limitation) item.limitation = "More evidence may change this assessment.";
+  normalizeEvidenceIds(item, `${pathName}.evidence_ids`, meta);
+  return item;
+}
+
+function normalizeAssessment(section = {}, pathName, meta = null, fallbackSummary = "Insufficient public evidence was available.") {
+  if (!section || typeof section !== "object" || Array.isArray(section)) {
+    recordNormalization(meta, pathName);
+    return safeEvidenceSectionFallback(fallbackSummary);
+  }
+  const status = String(section.status || "").trim().toLowerCase();
+  if (!["assessed", "complete", "insufficient_evidence"].includes(status)) {
+    section.status = section.evidence_ids?.length ? "assessed" : "insufficient_evidence";
+    recordNormalization(meta, `${pathName}.status`);
+  } else {
+    section.status = status;
+  }
+  if (!section.summary && typeof section.description === "string") {
+    section.summary = section.description;
+    recordNormalization(meta, `${pathName}.summary`);
+  }
+  if (!section.summary) {
+    section.summary = fallbackSummary;
+    recordNormalization(meta, `${pathName}.summary`);
+  }
+  section.confidence = normalizeConfidence(section.confidence);
+  normalizeEvidenceIds(section, `${pathName}.evidence_ids`, meta);
+  return section;
+}
+
+function normalizeDigitalHealth(section = {}, meta = null) {
+  const normalized = normalizeAssessment(section, "digital_health", meta, "Insufficient public evidence was available for a reliable assessment.");
+  if (normalized.status === "assessed" && normalized.sub_scores && typeof normalized.sub_scores === "object" && !Array.isArray(normalized.sub_scores)) {
+    let total = 0;
+    let complete = true;
+    for (const [key, max] of Object.entries(DIGITAL_HEALTH_WEIGHTS)) {
+      const item = normalized.sub_scores[key];
+      if (!item || typeof item !== "object") {
+        complete = false;
+        continue;
+      }
+      const score = numberOrNull(item.score);
+      if (score === null) {
+        complete = false;
+      } else {
+        item.score = clampNumber(score, 0, max);
+        total += item.score;
+      }
+      item.confidence = normalizeConfidence(item.confidence);
+      normalizeEvidenceIds(item, `digital_health.sub_scores.${key}.evidence_ids`, meta);
+    }
+    normalized.total_score = complete ? Math.round(total) : null;
+    normalized.score = normalized.total_score;
+  } else {
+    normalized.status = "insufficient_evidence";
+    normalized.sub_scores = null;
+    normalized.total_score = null;
+    normalized.score = null;
+    recordNormalization(meta, "digital_health");
+  }
+  return normalized;
+}
+
+function normalizeMoneyForModule(value, meta = null) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    recordNormalization(meta, "money_left_on_table");
+    return safeMoneyFallback();
+  }
+  value.status = String(value.status || "").trim().toLowerCase();
+  normalizeEvidenceIds(value, "money_left_on_table.evidence_ids", meta);
+  value.confidence = normalizeConfidence(value.confidence);
+  if (value.status !== "estimated") {
+    recordNormalization(meta, "money_left_on_table");
+    return safeMoneyFallback();
+  }
+  value.low_estimate = numberOrNull(value.low_estimate);
+  value.high_estimate = numberOrNull(value.high_estimate);
+  if (
+    value.low_estimate === null ||
+    value.high_estimate === null ||
+    !value.currency ||
+    !value.time_period ||
+    !value.calculation_method ||
+    !Array.isArray(value.assumptions) ||
+    value.assumptions.length === 0 ||
+    value.evidence_ids.length === 0
+  ) {
+    recordNormalization(meta, "money_left_on_table");
+    return safeMoneyFallback();
+  }
+  return value;
+}
+
+function normalizeOpportunityItem(item = {}, index = 0, evidenceIds = new Set(), meta = null) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+  normalizeEvidenceIds(item, `hidden_opportunities[${index}].evidence_ids`, meta);
+  if (!item.evidence_ids.length || item.evidence_ids.some(id => !evidenceIds.has(id))) {
+    recordNormalization(meta, `hidden_opportunities[${index}]`);
+    return null;
+  }
+  item.title = item.title || item.specific_observed_problem || "Evidence-backed opportunity";
+  item.specific_observed_problem = item.specific_observed_problem || item.title;
+  item.supporting_evidence = Array.isArray(item.supporting_evidence) ? item.supporting_evidence : [];
+  item.why_it_matters = item.why_it_matters || "This may affect customer response or conversion.";
+  item.affected_customer_journey_stage = item.affected_customer_journey_stage || "first contact";
+  item.likely_business_impact = item.likely_business_impact || "Potential improvement, not confirmed revenue.";
+  item.implementation_difficulty = item.implementation_difficulty || "unknown";
+  item.time_to_initial_impact = item.time_to_initial_impact || "unknown";
+  item.confidence = normalizeConfidence(item.confidence);
+  item.assumptions = Array.isArray(item.assumptions) ? item.assumptions : [];
+  item.recommended_first_test = item.recommended_first_test || "Verify the observation manually before acting.";
+  item.callcatch_relevance = item.callcatch_relevance || "unknown";
+  const factors = item.ranking_factors || item;
+  const scoreFields = ["evidence_strength", "business_impact", "feasibility", "urgency"];
+  item.ranking_factors = Object.fromEntries(scoreFields.map(key => [key, clampNumber(numberOrNull(factors[key]), 0, 100)]));
+  item.opportunity_priority_score = Math.round((item.ranking_factors.evidence_strength * item.ranking_factors.business_impact * item.ranking_factors.feasibility * item.ranking_factors.urgency) / 1000000);
+  return item;
 }
 
 function recordNormalization(meta, field) {
@@ -410,6 +580,44 @@ function clampNumber(value, min = 0, max = 100) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return min;
   return Math.max(min, Math.min(max, parsed));
+}
+
+function numberOrNull(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" && value.trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeConfidence(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (["high", "strong"].includes(text)) return "high";
+  if (["medium", "moderate", "mid"].includes(text)) return "medium";
+  if (["low", "weak", "unknown", "insufficient", ""].includes(text)) return "low";
+  return "low";
+}
+
+function normalizeClaimStatus(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (["confirmed", "fact", "verified"].includes(text)) return "confirmed";
+  if (["inferred", "likely", "possible", "observed"].includes(text)) return "inferred";
+  return "unknown";
+}
+
+function uniqueArray(values = []) {
+  return [...new Set((Array.isArray(values) ? values : [values]).filter(value => value !== null && value !== undefined && String(value).trim() !== "").map(value => String(value).trim()))];
+}
+
+function normalizeEvidenceIds(holder = {}, pathName = "evidence_ids", meta = null) {
+  if (!holder || typeof holder !== "object") return [];
+  const incoming = holder.evidence_ids || holder.evidenceIds || holder.evidence || [];
+  const normalized = uniqueArray(incoming);
+  if (!Array.isArray(holder.evidence_ids) || holder.evidence_ids.length !== normalized.length || holder.evidence_ids.some((id, index) => id !== normalized[index])) {
+    holder.evidence_ids = normalized;
+    recordNormalization(meta, pathName);
+  }
+  delete holder.evidenceIds;
+  return holder.evidence_ids;
 }
 
 function evidenceIdList(item = {}) {
@@ -628,9 +836,12 @@ function validateMoneyLeftOnTable(section, evidenceIds, errors) {
 function validateContactDecision(section, evidenceIds, errors) {
   validateRequiredObject(section, "contact_decision", ["decision", "decision_confidence", "primary_reason", "supporting_evidence", "disqualifying_factors", "information_gaps", "recommended_outreach_angle", "prohibited_claims_for_brain_two", "callcatch_opportunity_score", "evidence_ids"], errors);
   if (!["CONTACT", "DO NOT CONTACT"].includes(section?.decision)) errors.push("contact_decision.decision must be CONTACT or DO NOT CONTACT");
-  evidenceReferenceCheck(evidenceIdList(section), "contact_decision", evidenceIds, errors);
+  validateSimpleEvidenceRefs(evidenceIdList(section), evidenceIds, "contact_decision", errors, section?.decision !== "CONTACT");
   const weakEvidence = String(section?.decision_confidence || "").toLowerCase() === "low" || evidenceIdList(section).length === 0;
   if (section?.decision === "CONTACT" && weakEvidence) errors.push("CONTACT decision requires more than weak evidence");
+  if (section?.callcatch_opportunity_score !== null && numberOrNull(section?.callcatch_opportunity_score) === null) {
+    errors.push("contact_decision.callcatch_opportunity_score must be numeric or null");
+  }
 }
 
 function validateRadar(section, evidenceIds, errors) {
@@ -782,12 +993,23 @@ function validateModuleOutput(moduleKey, output = {}, contextPackage = {}, prior
     ensureObjectField(output, "business_identity", {}, meta);
     ensureArrayField(output, "contacts", meta);
     ensureArrayField(output, "evidence_log", meta);
+    if (output.evidence_log.length === 0 && contextEvidenceLog(contextPackage).length) {
+      output.evidence_log = contextEvidenceLog(contextPackage);
+      recordNormalization(meta, "evidence_log");
+    }
     ensureArrayField(output, "confirmed_facts", meta);
     ensureArrayField(output, "inferences", meta);
     ensureArrayField(output, "unknowns", meta);
+    output.contacts = output.contacts.map((contact, index) => normalizeContact(contact, index, meta));
+    output.confirmed_facts = output.confirmed_facts.map((item, index) => normalizeClaimItem(item, `confirmed_facts[${index}]`, meta)).filter(Boolean);
+    output.inferences = output.inferences.map((item, index) => normalizeClaimItem(item, `inferences[${index}]`, meta)).filter(Boolean);
     cleanModuleContacts(output, meta);
     const identity = output.business_identity || {};
-    if (typeof identity.name !== "string") errors.push("business_identity.name must be a string");
+    if (!identity.name && contextPackage.businessIdentity?.businessName) {
+      identity.name = contextPackage.businessIdentity.businessName;
+      recordNormalization(meta, "business_identity.name");
+    }
+    if (typeof identity.name !== "string" || !identity.name.trim()) errors.push("business_identity.name must be a non-empty string");
     if (!("website" in identity)) identity.website = null;
     if (!("industry" in identity)) identity.industry = null;
     if (!("location" in identity)) identity.location = null;
@@ -803,6 +1025,10 @@ function validateModuleOutput(moduleKey, output = {}, contextPackage = {}, prior
     ensureObjectField(output, "digital_health", fallback.digital_health, meta);
     ensureObjectField(output, "ai_discoverability", fallback.ai_discoverability, meta);
     ensureObjectField(output, "future_readiness", fallback.future_readiness, meta);
+    output.business_dna = normalizeAssessment(output.business_dna, "business_dna", meta, "Insufficient public evidence was available for business DNA.");
+    output.digital_health = normalizeDigitalHealth(output.digital_health, meta);
+    output.ai_discoverability = normalizeAssessment(output.ai_discoverability, "ai_discoverability", meta, "Insufficient public evidence was available for AI discoverability.");
+    output.future_readiness = normalizeAssessment(output.future_readiness, "future_readiness", meta, "Insufficient public evidence was available for future readiness.");
     for (const key of ["business_dna", "digital_health", "ai_discoverability", "future_readiness"]) {
       validateAssessmentSection(output[key], key, evidenceIds, errors);
     }
@@ -815,9 +1041,22 @@ function validateModuleOutput(moduleKey, output = {}, contextPackage = {}, prior
     }
   } else if (moduleKey === "opportunities") {
     ensureArrayField(output, "hidden_opportunities", meta);
-    ensureObjectField(output, "money_left_on_table", safeMoneyFallback(), meta);
+    output.hidden_opportunities = output.hidden_opportunities.map((item, index) => normalizeOpportunityItem(item, index, evidenceIds, meta)).filter(Boolean);
+    output.money_left_on_table = normalizeMoneyForModule(output.money_left_on_table, meta);
     ensureObjectField(output, "ai_opportunity_radar", safeRadarFallback(), meta);
     ensureArrayField(output, "risks", meta);
+    for (const key of RADAR_DIMENSIONS) {
+      if (!output.ai_opportunity_radar[key] || typeof output.ai_opportunity_radar[key] !== "object") {
+        output.ai_opportunity_radar[key] = safeRadarFallback()[key];
+        recordNormalization(meta, `ai_opportunity_radar.${key}`);
+      }
+      output.ai_opportunity_radar[key].confidence = normalizeConfidence(output.ai_opportunity_radar[key].confidence);
+      output.ai_opportunity_radar[key].status = ["strong", "moderate", "weak", "unknown"].includes(String(output.ai_opportunity_radar[key].status || "").toLowerCase())
+        ? String(output.ai_opportunity_radar[key].status || "").toLowerCase()
+        : "unknown";
+      normalizeEvidenceIds(output.ai_opportunity_radar[key], `ai_opportunity_radar.${key}.evidence_ids`, meta);
+    }
+    output.risks = output.risks.map((item, index) => normalizeClaimItem(item, `risks[${index}]`, meta)).filter(Boolean);
     validateHiddenOpportunities(output.hidden_opportunities, evidenceIds, errors);
     validateMoneyLeftOnTable(output.money_left_on_table, evidenceIds, errors);
     for (const [key, item] of Object.entries(output.ai_opportunity_radar || {})) {
@@ -833,14 +1072,23 @@ function validateModuleOutput(moduleKey, output = {}, contextPackage = {}, prior
     ensureObjectField(output, "why_we_chose_you", safeEvidenceSectionFallback("Insufficient public evidence was available to explain why this business deserves attention."), meta);
     ensureObjectField(output, "one_day_action_plan", safeEvidenceSectionFallback("Insufficient public evidence was available to create a responsible one-day action plan."), meta);
     for (const key of ["why_we_chose_you", "one_day_action_plan"]) {
+      output[key] = normalizeAssessment(output[key], key, meta, key === "why_we_chose_you" ? "Insufficient public evidence was available to explain why this business deserves attention." : "Insufficient public evidence was available to create a responsible one-day action plan.");
       const status = output[key].status || "complete";
-      if (!["complete", "insufficient_evidence"].includes(status)) errors.push(`${key}.status is invalid`);
+      if (!["assessed", "complete", "insufficient_evidence"].includes(status)) errors.push(`${key}.status is invalid`);
       validateSimpleEvidenceRefs(evidenceIdList(output[key]), evidenceIds, key, errors, true);
     }
   } else if (moduleKey === "contact_decision") {
     ensureObjectField(output, "contact_decision", safeModuleFallback(moduleKey, contextPackage).contact_decision, meta);
     ensureObjectField(output, "brain_two_handoff", safeModuleFallback(moduleKey, contextPackage).brain_two_handoff, meta);
     const decision = output.contact_decision;
+    decision.decision_confidence = normalizeConfidence(decision.decision_confidence);
+    decision.callcatch_opportunity_score = numberOrNull(decision.callcatch_opportunity_score);
+    normalizeEvidenceIds(decision, "contact_decision.evidence_ids", meta);
+    if (!["CONTACT", "DO NOT CONTACT"].includes(decision.decision)) {
+      decision.recommendation_status = decision.decision || "NEEDS_REVIEW";
+      decision.decision = "DO NOT CONTACT";
+      recordNormalization(meta, "contact_decision.decision");
+    }
     validateContactDecision(decision, evidenceIds, errors);
     if (output.brain_two_handoff?.do_not_automate_outbound !== true) errors.push("brain_two_handoff.do_not_automate_outbound must be true");
     if (output.brain_two_handoff?.approved_for_handoff !== false) errors.push("brain_two_handoff.approved_for_handoff must remain false");
@@ -866,6 +1114,79 @@ function moduleResult(moduleKey, status, output, meta = {}, extra = {}) {
     raw_response: extra.raw_response || "",
     repaired: !!extra.repaired
   };
+}
+
+function dangerousModuleErrors(errors = []) {
+  const dangerousPatterns = [
+    /owner_name must not contain an email/i,
+    /contact_name must not contain an email/i,
+    /generic mailbox/i,
+    /unknown evidence id/i,
+    /confirmed claim requires evidence/i,
+    /cannot state absence as a confirmed fact/i,
+    /CONTACT decision requires/i,
+    /business_identity\.name must be a non-empty string/i
+  ];
+  return errors.filter(error => dangerousPatterns.some(pattern => pattern.test(error)));
+}
+
+function salvageModuleOutput(moduleKey, parsed, contextPackage, priorModules, parserErrors = [], validationErrors = []) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const meta = { normalization_applied: true, normalized_fields: [`${moduleKey}.salvaged_partial`] };
+  const validation = validateModuleOutput(moduleKey, parsed, contextPackage, priorModules, meta);
+  const dangerous = dangerousModuleErrors([...(validation.errors || []), ...validationErrors]);
+  if (validation.ok || dangerous.length === 0) {
+    return moduleResult(moduleKey, "partial", parsed, meta, {
+      parser_errors: parserErrors,
+      validation_errors: validation.errors || validationErrors,
+      repaired: true
+    });
+  }
+  return null;
+}
+
+function scoreMeta(value, status, componentsUsed = [], componentsMissing = [], evidenceIds = []) {
+  return {
+    value: value === null || value === undefined ? null : value,
+    status,
+    components_used: componentsUsed,
+    components_missing: componentsMissing,
+    evidence_ids: uniqueArray(evidenceIds)
+  };
+}
+
+function calculateScoreMetadata(combined = {}) {
+  const flat = flattenCombinedOutput(combined);
+  const digital = flat.digital_health || {};
+  const digitalValue = numberOrNull(digital.total_score ?? digital.score);
+  const opportunities = Array.isArray(flat.hidden_opportunities) ? flat.hidden_opportunities : [];
+  const opportunityScores = opportunities.map(item => numberOrNull(item.opportunity_priority_score)).filter(value => value !== null);
+  const contactScore = numberOrNull(flat.contact_decision?.callcatch_opportunity_score);
+  const score_metadata = {
+    digital_health: scoreMeta(
+      digitalValue,
+      digitalValue === null ? "insufficient_evidence" : "calculated",
+      digitalValue === null ? [] : ["digital_health"],
+      digitalValue === null ? ["digital_health_score"] : [],
+      evidenceIdList(digital)
+    ),
+    opportunity_priority: scoreMeta(
+      opportunityScores.length ? Math.max(...opportunityScores) : null,
+      opportunityScores.length ? "calculated" : "insufficient_evidence",
+      opportunityScores.length ? ["hidden_opportunities"] : [],
+      opportunityScores.length ? [] : ["hidden_opportunities"],
+      opportunities.flatMap(item => evidenceIdList(item))
+    ),
+    callcatch_opportunity: scoreMeta(
+      contactScore,
+      contactScore === null ? "needs_review" : "model_assisted",
+      contactScore === null ? [] : ["contact_decision"],
+      contactScore === null ? ["callcatch_opportunity_score"] : [],
+      evidenceIdList(flat.contact_decision || {})
+    )
+  };
+  combined.score_metadata = score_metadata;
+  return score_metadata;
 }
 
 function flattenCombinedOutput(combined = {}) {
@@ -1036,6 +1357,7 @@ async function runBrainOne(contextPackage, options = {}) {
   const callModel = options.callModel || ((messages, callOptions = {}) => callNvidia(messages, { ...options, ...callOptions, model, startedAt: started }));
   const modules = {};
   const completed_modules = [];
+  const partial_modules = [];
   const failed_modules = [];
   const rawResponses = {};
   const normalization_metadata = {};
@@ -1047,6 +1369,8 @@ async function runBrainOne(contextPackage, options = {}) {
     const moduleStarted = Date.now();
     const priorOutputs = Object.fromEntries(Object.entries(modules).map(([key, value]) => [key, value.output]));
     let firstRaw = "";
+    let lastRaw = "";
+    let lastParsed = null;
     let parserErrors = [];
     let validationErrors = [];
     let meta = { normalization_applied: false, normalized_fields: [] };
@@ -1061,8 +1385,10 @@ async function runBrainOne(contextPackage, options = {}) {
         structuredResponseModeAccepted = structuredResponseModeAccepted || result.structuredResponseModeAccepted;
         const raw = result.content || "";
         if (attempt === 1) firstRaw = raw;
+        lastRaw = raw;
         rawResponses[spec.key] = raw;
         const parsed = parseMaybeJson(raw);
+        lastParsed = parsed;
         meta = { normalization_applied: false, normalized_fields: [] };
         const validation = validateModuleOutput(spec.key, parsed, contextPackage, modules, meta);
         if (validation.ok) {
@@ -1081,6 +1407,12 @@ async function runBrainOne(contextPackage, options = {}) {
         parserErrors.push(error.message);
         logStage("brain_one_module_parse_failed", { module: spec.key, attempt, error: error.message });
       }
+    }
+    const salvaged = salvageModuleOutput(spec.key, lastParsed, contextPackage, modules, parserErrors, validationErrors);
+    if (salvaged) {
+      salvaged.raw_response = lastRaw || rawResponses[spec.key] || firstRaw;
+      logStage("brain_one_module_salvaged", { module: spec.key, durationMs: Date.now() - moduleStarted, normalized_fields: salvaged.normalized_fields, validation_errors: salvaged.validation_errors.slice(0, 5) });
+      return salvaged;
     }
     const fallbackMeta = { normalization_applied: true, normalized_fields: [spec.key] };
     const fallback = safeModuleFallback(spec.key, contextPackage);
@@ -1101,22 +1433,26 @@ async function runBrainOne(contextPackage, options = {}) {
       normalized_fields: result.normalized_fields
     };
     if (result.status === "completed") completed_modules.push(spec.key);
+    else if (result.status === "partial") partial_modules.push(spec.key);
     else failed_modules.push(spec.key);
   }
 
   const combined = {
     modules,
-    overall_status: failed_modules.length ? "partial" : "completed",
+    overall_status: failed_modules.length ? "partial" : partial_modules.length ? "partial" : "completed",
     completed_modules,
+    partial_modules,
     failed_modules,
     normalization_metadata,
     founder_facing_blueprint: ""
   };
+  calculateScoreMetadata(combined);
   const phaseADurationMs = Date.now() - phaseAStarted;
   logStage("brain_one_phase_a_completed", {
     mode: "modular",
     durationMs: phaseADurationMs,
     completed_modules,
+    partial_modules,
     failed_modules
   });
 

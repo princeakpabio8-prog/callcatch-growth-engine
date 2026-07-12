@@ -1210,6 +1210,14 @@
         return `<span class="tag ${tone}">${esc(label)}: ${esc(item.status || "missing")}</span>`;
       }).join("");
     }
+    function brainScoreValue(metaValue, fallback){
+      const raw = metaValue && Object.prototype.hasOwnProperty.call(metaValue, "value") ? metaValue.value : fallback;
+      return raw === null || raw === undefined || raw === "" ? "-" : raw;
+    }
+    function brainScoreStatus(metaValue){
+      if (!metaValue || !metaValue.status) return "";
+      return metaValue.status === "insufficient_evidence" ? "Insufficient evidence" : metaValue.status;
+    }
     function brainZeroLatestRun(leadId){
       return (brainZeroRuns || [])
         .filter(run => run.business_id === leadId || run.businessId === leadId)
@@ -1315,17 +1323,19 @@
       const readiness = output.future_readiness || {};
       const opportunities = output.hidden_opportunities || [];
       const risks = output.risks || [];
+      const scoreMeta = combinedOutput.score_metadata || {};
       const statusTone = run.executionStatus === "completed" ? "hot" : ["failed","validation_failed"].includes(run.executionStatus) ? "bad" : "warn";
       const approval = run.approvalStatus || "pending-review";
       const validationMessage = "Brain One completed its analysis, but the structured report could not be validated. Please run again.";
-      const opportunityPriority = Math.max(0, ...opportunities.map(item=>Number(item.opportunity_priority_score || 0)));
+      const opportunityScores = opportunities.map(item=>Number(item.opportunity_priority_score)).filter(Number.isFinite);
+      const opportunityPriority = opportunityScores.length ? Math.max(...opportunityScores) : null;
       const decisionTone = decision.decision === "CONTACT" ? "hot" : "warn";
       const overallStatus = combinedOutput.overall_status || run.overallStatus || "completed";
       return `<div class="panel"><div class="lead-top"><div><h3>Brain One Opportunity Intelligence</h3><p class="sub">Run ${esc(run.id)} | ${esc(formatDateTime(run.createdAt))}</p></div><span class="tag ${statusTone}">${esc(run.executionStatus)}</span></div>
         ${run.executionStatus === "failed" ? `<p class="hint">${esc(run.errorDetails?.message || "Analysis failed. Check NVIDIA_API_KEY or model output.")}</p>` : ""}
         ${run.executionStatus === "validation_failed" ? `<p class="hint">${esc(run.errorDetails?.message || validationMessage)}</p>${run.errorDetails?.parserError ? `<p class="hint">Parser: ${esc(run.errorDetails.parserError)}</p>` : ""}` : ""}
         ${run.executionStatus === "running" ? `<p class="hint">Brain One is analyzing this business. Refresh shortly.</p>` : ""}
-        ${run.executionStatus === "completed" ? `<div class="detail-grid"><div class="mini"><span>Overall</span><strong>${esc(overallStatus)}</strong></div><div class="mini"><span>Decision</span><strong><span class="tag ${decisionTone}">${esc(decision.decision || "UNKNOWN")}</span></strong></div><div class="mini"><span>Opportunity Priority</span><strong>${esc(opportunityPriority)}</strong></div><div class="mini"><span>CallCatch Score</span><strong>${esc(decision.callcatch_opportunity_score ?? "-")}</strong></div><div class="mini"><span>Digital Health</span><strong>${esc(digital.total_score ?? digital.score ?? "-")}</strong></div><div class="mini"><span>AI Discoverability</span><strong>${esc(discoverability.score ?? "-")}</strong></div><div class="mini"><span>Future Readiness</span><strong>${esc(readiness.readiness_level || readiness.status || "unknown")}</strong></div></div>
+        ${run.executionStatus === "completed" ? `<div class="detail-grid"><div class="mini"><span>Overall</span><strong>${esc(overallStatus)}</strong></div><div class="mini"><span>Decision</span><strong><span class="tag ${decisionTone}">${esc(decision.recommendation_status || decision.decision || "UNKNOWN")}</span></strong></div><div class="mini"><span>Opportunity Priority</span><strong>${esc(brainScoreValue(scoreMeta.opportunity_priority, opportunityPriority))}</strong><small>${esc(brainScoreStatus(scoreMeta.opportunity_priority))}</small></div><div class="mini"><span>CallCatch Score</span><strong>${esc(brainScoreValue(scoreMeta.callcatch_opportunity, decision.callcatch_opportunity_score))}</strong><small>${esc(brainScoreStatus(scoreMeta.callcatch_opportunity))}</small></div><div class="mini"><span>Digital Health</span><strong>${esc(brainScoreValue(scoreMeta.digital_health, digital.total_score ?? digital.score))}</strong><small>${esc(brainScoreStatus(scoreMeta.digital_health))}</small></div><div class="mini"><span>AI Discoverability</span><strong>${esc(discoverability.score ?? "-")}</strong></div><div class="mini"><span>Future Readiness</span><strong>${esc(readiness.readiness_level || readiness.status || "unknown")}</strong></div></div>
         <p class="hint">${esc(decision.primary_reason || output.brain_two_handoff?.summary || "Brain One report is ready.")}</p>
         <div class="insights">${moduleStatusHtml(combinedOutput)}</div>
         <div class="insights"><span class="tag hot">Confirmed</span><span class="tag">Inferred</span><span class="tag warn">Unknown</span></div>

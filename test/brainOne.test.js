@@ -748,7 +748,184 @@ test("successful modules are preserved when another module fails", async () => {
   });
   assert.equal(result.output.modules.foundation.status, "completed");
   assert.equal(result.output.modules.digital_intelligence.status, "failed");
-  assert.equal(result.output.modules.opportunities.status, "completed");
+  assert.equal(result.output.modules.opportunities.status, "partial");
+});
+
+test("module normalization converts numeric strings and deduplicates evidence ids", () => {
+  const context = sampleContext(1);
+  const priorModules = { foundation: { output: moduleOutput(context, "foundation") } };
+  const output = moduleOutput(context, "digital_intelligence");
+  output.digital_health = {
+    status: "assessed",
+    summary: "Visible public website information supports a partial digital assessment.",
+    evidence_ids: ["ev-lead-record", "ev-lead-record"],
+    confidence: "moderate",
+    sub_scores: {
+      website_clarity: digitalSub("12", ["ev-lead-record", "ev-lead-record"], "moderate"),
+      conversion_path: digitalSub("10", ["ev-lead-record"], "medium"),
+      trust_and_proof: digitalSub("8", ["ev-lead-record"], "medium"),
+      local_discoverability: digitalSub("9", ["ev-lead-record"], "medium"),
+      customer_convenience: digitalSub("7", ["ev-lead-record"], "medium"),
+      technical_readiness: digitalSub("6", ["ev-lead-record"], "medium")
+    }
+  };
+  const meta = { normalization_applied: false, normalized_fields: [] };
+  const validation = validateModuleOutput("digital_intelligence", output, context, priorModules, meta);
+  assert.equal(validation.ok, true);
+  assert.equal(output.digital_health.total_score, 52);
+  assert.deepEqual(output.digital_health.evidence_ids, ["ev-lead-record"]);
+  assert.equal(output.digital_health.confidence, "medium");
+});
+
+test("unsupported module monetary estimate is normalized to insufficient evidence", () => {
+  const context = sampleContext(1);
+  const priorModules = { foundation: { output: moduleOutput(context, "foundation") } };
+  const output = moduleOutput(context, "opportunities", {
+    money_left_on_table: {
+      status: "estimated",
+      low_estimate: "12000",
+      high_estimate: "",
+      currency: "USD",
+      time_period: "monthly",
+      calculation_method: "",
+      assumptions: [],
+      evidence_ids: [],
+      confidence: "high",
+      disclaimer: "Estimate"
+    }
+  });
+  const meta = { normalization_applied: false, normalized_fields: [] };
+  const validation = validateModuleOutput("opportunities", output, context, priorModules, meta);
+  assert.equal(validation.ok, true);
+  assert.equal(output.money_left_on_table.status, "insufficient_evidence");
+  assert.equal(output.money_left_on_table.low_estimate, null);
+  assert.equal(meta.normalized_fields.includes("money_left_on_table"), true);
+});
+
+test("unknown scores stay null while measured zero is preserved", async () => {
+  const context = sampleContext(1);
+  let calls = 0;
+  const result = await runBrainOne(context, {
+    callModel: async () => {
+      calls += 1;
+      if (calls === 1) return moduleJson(context, "foundation");
+      if (calls === 2) return moduleJson(context, "digital_intelligence", {
+        digital_health: { status: "insufficient_evidence", summary: "Not enough website evidence.", evidence_ids: [], confidence: "low", sub_scores: null, total_score: null }
+      });
+      if (calls === 3) return moduleJson(context, "opportunities", {
+        hidden_opportunities: [{
+          ...moduleOutput(context, "opportunities").hidden_opportunities[0],
+          ranking_factors: { evidence_strength: 0, business_impact: 80, feasibility: 90, urgency: 75 },
+          opportunity_priority_score: 0
+        }]
+      });
+      if (calls === 4) return moduleJson(context, "strategic_interpretation");
+      if (calls === 5) return moduleJson(context, "contact_decision", {
+        contact_decision: {
+          ...moduleOutput(context, "contact_decision").contact_decision,
+          decision: "DO NOT CONTACT",
+          decision_confidence: "low",
+          callcatch_opportunity_score: null,
+          evidence_ids: []
+        }
+      });
+      return "# Business Growth Blueprint\n\nManual review only.";
+    }
+  });
+  assert.equal(result.output.score_metadata.digital_health.value, null);
+  assert.equal(result.output.score_metadata.opportunity_priority.value, 0);
+  assert.equal(result.output.score_metadata.callcatch_opportunity.value, null);
+});
+
+test("non-dangerous module validation error is salvaged as partial", async () => {
+  const context = sampleContext(1);
+  const badOpportunity = moduleOutput(context, "opportunities", {
+    ai_opportunity_radar: {
+      custom_dimension: { status: "unsupported", evidence_ids: [], opportunity: "Unknown", confidence: "low" }
+    }
+  });
+  let calls = 0;
+  const result = await runBrainOne(context, {
+    callModel: async () => {
+      calls += 1;
+      if (calls === 1) return moduleJson(context, "foundation");
+      if (calls === 2) return moduleJson(context, "digital_intelligence");
+      if (calls === 3 || calls === 4) return JSON.stringify(badOpportunity);
+      if (calls === 5) return moduleJson(context, "strategic_interpretation");
+      if (calls === 6) return moduleJson(context, "contact_decision");
+      return "# Business Growth Blueprint\n\nPartial module preserved.";
+    }
+  });
+  assert.equal(result.output.modules.opportunities.status, "partial");
+  assert.equal(result.output.failed_modules.includes("opportunities"), false);
+});
+
+test("Spring HVAC style Brain Zero replay keeps strong evidence as usable Brain One output", async () => {
+  const lead = sampleLead(1, {
+    id: "spring-hvac",
+    business: "Spring HVAC",
+    website: "https://springhvac.example",
+    city: "Spring",
+    state: "TX",
+    email: "service@springhvac.example",
+    aiInsights: [
+      "Brain Zero collected 57 evidence records across 9 sources.",
+      "Website crawl was partial but identity, trust, content, feature, and technical evidence completed."
+    ]
+  });
+  const context = buildBrainOneContextPackage(lead, {
+    ok: true,
+    url: lead.website,
+    text: "Spring HVAC advertises heating and cooling service, emergency repairs, phone contact, service-area pages, customer reviews, and financing information."
+  });
+  let calls = 0;
+  const result = await runBrainOne(context, {
+    callModel: async () => {
+      calls += 1;
+      const order = ["foundation", "digital_intelligence", "opportunities", "strategic_interpretation", "contact_decision"];
+      if (calls <= 5) return moduleJson(context, order[calls - 1]);
+      return "# Business Growth Blueprint\n\nPublic evidence supports a manual opportunity review.";
+    }
+  });
+  assert.equal(result.output.failed_modules.length, 0);
+  assert.equal(result.output.modules.foundation.output.evidence_log.length >= 2, true);
+  assert.notEqual(result.output.score_metadata.opportunity_priority.status, "failed");
+});
+
+test("weak forum-only evidence stays needs review instead of forced contact", async () => {
+  const context = buildBrainOneContextPackage(sampleLead(2, {
+    business: "Forum Mention Plumbing",
+    website: "",
+    email: "",
+    source: "forum-public-mention",
+    aiInsights: ["A forum mention referenced the business name, but no official website or confirmed contact was found."]
+  }), null);
+  let calls = 0;
+  const result = await runBrainOne(context, {
+    callModel: async () => {
+      calls += 1;
+      if (calls === 1) return moduleJson(context, "foundation", { contacts: [] });
+      if (calls === 2) return moduleJson(context, "digital_intelligence", {
+        digital_health: { status: "insufficient_evidence", summary: "Only weak public evidence was available.", evidence_ids: [], confidence: "low", sub_scores: null, total_score: null }
+      });
+      if (calls === 3) return moduleJson(context, "opportunities", { hidden_opportunities: [], money_left_on_table: null });
+      if (calls === 4) return moduleJson(context, "strategic_interpretation");
+      if (calls === 5) return moduleJson(context, "contact_decision", {
+        contact_decision: {
+          ...moduleOutput(context, "contact_decision").contact_decision,
+          decision: "NEEDS_REVIEW",
+          decision_confidence: "low",
+          primary_reason: "The evidence is too weak for outreach.",
+          callcatch_opportunity_score: null,
+          evidence_ids: []
+        }
+      });
+      return "# Business Growth Blueprint\n\nEvidence is too thin for outbound action.";
+    }
+  });
+  assert.equal(result.output.modules.contact_decision.output.contact_decision.decision, "DO NOT CONTACT");
+  assert.equal(result.output.modules.contact_decision.output.contact_decision.recommendation_status, "NEEDS_REVIEW");
+  assert.equal(result.output.score_metadata.callcatch_opportunity.value, null);
 });
 
 test("API timeout from model call is surfaced as a failed Brain One run", async () => {
