@@ -955,6 +955,47 @@ test("Blueprint synthesizes assessed modules instead of defaulting downstream se
   assert.doesNotMatch(result.blueprintMarkdown, /## Why This Business Deserves Attention\n- Insufficient public evidence/i);
 });
 
+test("independent module scores preserve strong business quality when contactability is poor", async () => {
+  const context = sampleContext(1);
+  let calls = 0;
+  const result = await runBrainOne(context, {
+    callModel: async () => {
+      calls += 1;
+      const full = sampleOutput(context);
+      if (calls === 1) return moduleJson(context, "foundation", { contacts: [] });
+      if (calls === 2) return moduleJson(context, "digital_intelligence", {
+        business_dna: full.business_dna,
+        digital_health: full.digital_health,
+        ai_discoverability: full.ai_discoverability,
+        future_readiness: full.future_readiness
+      });
+      if (calls === 3) return moduleJson(context, "opportunities");
+      if (calls === 4) return moduleJson(context, "strategic_interpretation");
+      if (calls === 5) return moduleJson(context, "contact_decision", {
+        contact_decision: {
+          ...full.contact_decision,
+          decision: "DO NOT CONTACT",
+          decision_confidence: "low",
+          primary_reason: "Excellent company, but no verified contact path.",
+          callcatch_opportunity_score: null,
+          evidence_ids: ["ev-lead-record"]
+        }
+      });
+      return "# Business Growth Blueprint\n\nGeneric render.";
+    }
+  });
+  const scores = result.output.score_metadata.module_scores;
+  assert.ok(scores.business_foundation.value >= 80);
+  assert.ok(scores.business_dna.value >= 80);
+  assert.ok(scores.digital_health.value >= 50);
+  assert.ok(scores.ai_discoverability.value >= 50);
+  assert.equal(scores.contactability.value, 0);
+  assert.equal(result.output.decision_engine.decision, "DO NOT CONTACT");
+  assert.match(result.blueprintMarkdown, /Business Foundation: \d+\/100/);
+  assert.match(result.blueprintMarkdown, /Contactability: 0\/100/);
+  assert.doesNotMatch(result.blueprintMarkdown, /Business Foundation: Not scored|Business Foundation: Failed/i);
+});
+
 test("weak forum-only evidence stays needs review instead of forced contact", async () => {
   const context = buildBrainOneContextPackage(sampleLead(2, {
     business: "Forum Mention Plumbing",

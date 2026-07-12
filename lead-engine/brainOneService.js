@@ -430,7 +430,7 @@ function normalizeAssessment(section = {}, pathName, meta = null, fallbackSummar
   }
   const status = String(section.status || "").trim().toLowerCase();
   if (!["assessed", "complete", "insufficient_evidence"].includes(status)) {
-    section.status = section.evidence_ids?.length ? "assessed" : "insufficient_evidence";
+    section.status = section.evidence_ids?.length || hasUsefulAnalyticalFields(section) ? "assessed" : "insufficient_evidence";
     recordNormalization(meta, `${pathName}.status`);
   } else {
     section.status = status;
@@ -446,6 +446,18 @@ function normalizeAssessment(section = {}, pathName, meta = null, fallbackSummar
   section.confidence = normalizeConfidence(section.confidence);
   normalizeEvidenceIds(section, `${pathName}.evidence_ids`, meta);
   return section;
+}
+
+function hasUsefulAnalyticalFields(section = {}) {
+  if (!section || typeof section !== "object" || Array.isArray(section)) return false;
+  const ignored = new Set(["status", "evidence_ids", "confidence", "summary"]);
+  return Object.entries(section).some(([key, value]) => {
+    if (ignored.has(key)) return false;
+    if (Array.isArray(value)) return value.length > 0;
+    if (value && typeof value === "object") return Object.keys(value).length > 0;
+    const text = String(value || "").trim().toLowerCase();
+    return !!text && !["unknown", "n/a", "null", "insufficient evidence"].includes(text);
+  });
 }
 
 function normalizeDigitalHealth(section = {}, meta = null) {
@@ -1165,6 +1177,196 @@ function scoreMeta(value, status, componentsUsed = [], componentsMissing = [], e
   };
 }
 
+function confidencePercent(value) {
+  const confidence = normalizeConfidence(value);
+  if (confidence === "high") return 90;
+  if (confidence === "medium") return 65;
+  return 35;
+}
+
+function levelScore(value) {
+  const text = String(value || "").toLowerCase();
+  if (/excellent|advanced|strong|high|mature|enterprise|world.?class/.test(text)) return 92;
+  if (/moderate|medium|developing|basic|visible/.test(text)) return 68;
+  if (/weak|low|early|limited/.test(text)) return 38;
+  return null;
+}
+
+function averageScore(values = []) {
+  const clean = values.map(numberOrNull).filter(value => value !== null);
+  if (!clean.length) return null;
+  return Math.round(clean.reduce((sum, value) => sum + value, 0) / clean.length);
+}
+
+function clampScore(value) {
+  const number = numberOrNull(value);
+  return number === null ? null : clampNumber(number, 0, 100);
+}
+
+function scoreCard(key, label, value, { status = "", confidence = "", explanation = "", evidenceIds = [], componentsUsed = [], componentsMissing = [] } = {}) {
+  const numeric = clampScore(value);
+  const finalStatus = status || (numeric === null ? "insufficient_evidence" : "assessed");
+  return {
+    key,
+    label,
+    value: numeric,
+    status: finalStatus,
+    confidence: confidence || (numeric === null ? "low" : numeric >= 80 ? "high" : numeric >= 55 ? "medium" : "low"),
+    explanation: explanation || (numeric === null ? "Insufficient module-specific evidence." : `${label} was scored from its own module evidence.`),
+    evidence_ids: uniqueArray(evidenceIds),
+    components_used: componentsUsed,
+    components_missing: componentsMissing
+  };
+}
+
+function scoreBusinessFoundation(flat = {}) {
+  const identity = flat.business_identity || {};
+  const dna = flat.business_dna || {};
+  const components = [
+    identity.name || identity.business_name ? 20 : null,
+    identity.website || identity.website_url ? 10 : null,
+    identity.industry || identity.trade || dna.primary_services?.length ? 15 : null,
+    identity.location || dna.geographic_market ? 10 : null,
+    hasUsefulValue(dna.business_model) ? 15 : null,
+    hasUsefulValue(dna.customer_journey) ? 15 : null,
+    hasUsefulValue(dna.value_proposition) ? 15 : null
+  ].filter(value => value !== null);
+  const score = components.length ? Math.min(100, components.reduce((sum, value) => sum + value, 0)) : null;
+  return scoreCard("business_foundation", "Business Foundation", score, {
+    explanation: score === null ? "Company identity and business foundation could not be established." : "Company identity, market, business model, journey, and value proposition were evaluated independently of contact data.",
+    evidenceIds: [...evidenceIdList(dna), ...evidenceIdList(identity)],
+    componentsUsed: ["identity", "services", "business_model", "customer_journey", "market", "value_proposition"],
+    componentsMissing: score === null ? ["business_foundation"] : []
+  });
+}
+
+function scoreBusinessDna(flat = {}) {
+  const dna = flat.business_dna || {};
+  const fields = ["business_model", "primary_services", "likely_customer_segments", "geographic_market", "value_proposition", "likely_revenue_drivers", "customer_journey", "current_digital_maturity", "operational_complexity", "trust_signals", "differentiators", "growth_stage"];
+  const present = fields.filter(key => hasUsefulValue(dna[key]));
+  const score = present.length ? Math.round((present.length / fields.length) * 100) : null;
+  return scoreCard("business_dna", "Business DNA", score, {
+    confidence: dna.confidence,
+    explanation: score === null ? "Business DNA was not established." : "Business DNA is scored only from business model, services, journey, market, revenue drivers, and positioning evidence.",
+    evidenceIds: evidenceIdList(dna),
+    componentsUsed: present,
+    componentsMissing: fields.filter(key => !present.includes(key))
+  });
+}
+
+function scoreDigitalHealth(flat = {}) {
+  const digital = flat.digital_health || {};
+  const score = clampScore(digital.total_score ?? digital.score ?? averageScore(Object.values(digital.sub_scores || {}).map(item => item?.score)));
+  return scoreCard("digital_health", "Digital Health", score, {
+    status: digital.status === "insufficient_evidence" && score === null ? "insufficient_evidence" : "assessed",
+    confidence: digital.confidence,
+    explanation: score === null ? "Website and UX evidence was not sufficient for a digital health score." : "Digital Health is scored from website, UX, SEO, structure, accessibility, and conversion-path evidence only.",
+    evidenceIds: evidenceIdList(digital),
+    componentsUsed: Object.keys(digital.sub_scores || {}),
+    componentsMissing: score === null ? ["website_or_digital_subscores"] : []
+  });
+}
+
+function scoreAiDiscoverability(flat = {}) {
+  const ai = flat.ai_discoverability || {};
+  const subScore = averageScore(Object.values(ai.sub_scores || {}));
+  const score = clampScore(ai.score ?? subScore ?? levelScore(ai.summary || ai.status));
+  return scoreCard("ai_discoverability", "AI Discoverability", score, {
+    status: ai.status === "insufficient_evidence" && score === null ? "insufficient_evidence" : "assessed",
+    confidence: ai.confidence,
+    explanation: score === null ? "AI-readable content evidence was not sufficient." : "AI Discoverability is scored from structured content, FAQ/schema, semantic clarity, and answer-ready public information only.",
+    evidenceIds: evidenceIdList(ai),
+    componentsUsed: Object.keys(ai.sub_scores || {}).length ? Object.keys(ai.sub_scores) : ["summary", "improvement_actions"],
+    componentsMissing: score === null ? ["ai_readable_content"] : []
+  });
+}
+
+function scoreFutureReadiness(flat = {}) {
+  const future = flat.future_readiness || {};
+  const score = clampScore(future.score ?? levelScore(future.readiness_level || future.status || future.summary) ?? (hasUsefulValue(future.fastest_improvement) ? confidencePercent(future.confidence) : null));
+  return scoreCard("future_readiness", "Future Readiness", score, {
+    status: future.status === "insufficient_evidence" && score === null ? "insufficient_evidence" : "assessed",
+    confidence: future.confidence,
+    explanation: score === null ? "Innovation, automation, or roadmap signals were not sufficient." : "Future Readiness is scored from innovation, automation, integrations, digital maturity, and roadmap signals only.",
+    evidenceIds: evidenceIdList(future),
+    componentsUsed: ["readiness_level", "fastest_improvement", "blockers"].filter(key => hasUsefulValue(future[key])),
+    componentsMissing: score === null ? ["future_readiness_signals"] : []
+  });
+}
+
+function scoreTrust(flat = {}) {
+  const dna = flat.business_dna || {};
+  const confirmed = flat.confirmed_facts || [];
+  const signals = listField(dna.trust_signals);
+  const score = signals.length || confirmed.length ? Math.min(100, 45 + signals.length * 12 + confirmed.length * 8) : null;
+  return scoreCard("trust", "Trust", score, {
+    confidence: dna.confidence,
+    explanation: score === null ? "Trust evidence was not found." : "Trust is scored from public proof such as certifications, partners, testimonials, reviews, policies, and transparency signals.",
+    evidenceIds: [...evidenceIdList(dna), ...confirmed.flatMap(evidenceIdList)],
+    componentsUsed: ["trust_signals", "confirmed_facts"],
+    componentsMissing: score === null ? ["trust_signals"] : []
+  });
+}
+
+function scoreOpportunity(flat = {}) {
+  const opportunities = Array.isArray(flat.hidden_opportunities) ? flat.hidden_opportunities : [];
+  const scores = opportunities.map(item => item.opportunity_priority_score);
+  const score = scores.length ? Math.max(...scores.map(value => clampScore(value) || 0)) : null;
+  return scoreCard("opportunity", "Opportunity", score, {
+    explanation: score === null ? "No module-specific operational or conversion opportunities were validated." : "Opportunity is scored from operational gaps, missing funnels, automation gaps, conversion friction, and customer journey friction.",
+    evidenceIds: opportunities.flatMap(evidenceIdList),
+    componentsUsed: opportunities.map(item => item.title || item.opportunity).filter(Boolean),
+    componentsMissing: score === null ? ["hidden_opportunities"] : []
+  });
+}
+
+function scoreContactability(flat = {}) {
+  const contacts = Array.isArray(flat.contacts) ? flat.contacts : [];
+  const hasEmail = contacts.some(item => item.contact_email);
+  const hasPhone = contacts.some(item => item.contact_phone);
+  const confidenceScores = contacts.map(item => numberOrNull(item.contact_confidence)).filter(value => value !== null);
+  const base = (hasEmail ? 45 : 0) + (hasPhone ? 30 : 0) + Math.min(25, Math.round((averageScore(confidenceScores) || 0) / 4));
+  const score = contacts.length ? clampScore(base) : 0;
+  return scoreCard("contactability", "Contactability", score, {
+    status: "assessed",
+    explanation: score === 0 ? "No verified outreach path was found." : "Contactability is the only module scored from email, phone, forms, LinkedIn, CRM, or outreach feasibility.",
+    evidenceIds: contacts.flatMap(evidenceIdList),
+    componentsUsed: [hasEmail ? "email" : "", hasPhone ? "phone" : ""].filter(Boolean),
+    componentsMissing: [hasEmail ? "" : "verified_email", hasPhone ? "" : "verified_phone"].filter(Boolean)
+  });
+}
+
+function decisionEngineFromScores(moduleScores = {}, flat = {}) {
+  const contactability = moduleScores.contactability?.value ?? null;
+  const opportunity = moduleScores.opportunity?.value ?? null;
+  const businessQuality = averageScore([
+    moduleScores.business_foundation?.value,
+    moduleScores.business_dna?.value,
+    moduleScores.digital_health?.value,
+    moduleScores.ai_discoverability?.value,
+    moduleScores.future_readiness?.value,
+    moduleScores.trust?.value
+  ]);
+  const modelDecision = flat.contact_decision || {};
+  const decision = contactability !== null && contactability < 35
+    ? "DO NOT CONTACT"
+    : opportunity !== null && opportunity < 25
+      ? "DO NOT CONTACT"
+      : modelDecision.decision || "DO NOT CONTACT";
+  const reason = decision === "DO NOT CONTACT" && contactability !== null && contactability < 35
+    ? "Excellent business signals may exist, but outreach feasibility is low because no strong verified contact path was found."
+    : modelDecision.primary_reason || "Decision is based on independent module scores.";
+  return {
+    decision,
+    reason,
+    business_quality_score: businessQuality,
+    sales_opportunity_score: averageScore([opportunity, contactability, moduleScores.decision?.value]),
+    contactability_score: contactability,
+    model_recommendation: modelDecision.decision || "",
+    preserves_module_scores: true
+  };
+}
+
 function calculateScoreMetadata(combined = {}) {
   const flat = flattenCombinedOutput(combined);
   const digital = flat.digital_health || {};
@@ -1172,20 +1374,36 @@ function calculateScoreMetadata(combined = {}) {
   const opportunities = Array.isArray(flat.hidden_opportunities) ? flat.hidden_opportunities : [];
   const opportunityScores = opportunities.map(item => numberOrNull(item.opportunity_priority_score)).filter(value => value !== null);
   const contactScore = numberOrNull(flat.contact_decision?.callcatch_opportunity_score);
+  const module_scores = {
+    business_foundation: scoreBusinessFoundation(flat),
+    business_dna: scoreBusinessDna(flat),
+    digital_health: scoreDigitalHealth(flat),
+    ai_discoverability: scoreAiDiscoverability(flat),
+    future_readiness: scoreFutureReadiness(flat),
+    trust: scoreTrust(flat),
+    opportunity: scoreOpportunity(flat),
+    contactability: scoreContactability(flat)
+  };
+  module_scores.decision = scoreCard("decision", "Decision Engine", contactScore, {
+    status: contactScore === null ? "needs_review" : "model_assisted",
+    explanation: flat.contact_decision?.primary_reason || "Decision Engine consumes module scores without overwriting them.",
+    evidenceIds: evidenceIdList(flat.contact_decision || {})
+  });
   const score_metadata = {
+    module_scores,
     digital_health: scoreMeta(
-      digitalValue,
-      digitalValue === null ? "insufficient_evidence" : "calculated",
-      digitalValue === null ? [] : ["digital_health"],
-      digitalValue === null ? ["digital_health_score"] : [],
-      evidenceIdList(digital)
+      module_scores.digital_health.value ?? digitalValue,
+      module_scores.digital_health.status,
+      module_scores.digital_health.components_used,
+      module_scores.digital_health.components_missing,
+      module_scores.digital_health.evidence_ids
     ),
     opportunity_priority: scoreMeta(
-      opportunityScores.length ? Math.max(...opportunityScores) : null,
-      opportunityScores.length ? "calculated" : "insufficient_evidence",
-      opportunityScores.length ? ["hidden_opportunities"] : [],
-      opportunityScores.length ? [] : ["hidden_opportunities"],
-      opportunities.flatMap(item => evidenceIdList(item))
+      module_scores.opportunity.value ?? (opportunityScores.length ? Math.max(...opportunityScores) : null),
+      module_scores.opportunity.status,
+      module_scores.opportunity.components_used,
+      module_scores.opportunity.components_missing,
+      module_scores.opportunity.evidence_ids
     ),
     callcatch_opportunity: scoreMeta(
       contactScore,
@@ -1195,6 +1413,7 @@ function calculateScoreMetadata(combined = {}) {
       evidenceIdList(flat.contact_decision || {})
     )
   };
+  combined.decision_engine = decisionEngineFromScores(module_scores, flat);
   combined.score_metadata = score_metadata;
   return score_metadata;
 }
@@ -1289,6 +1508,7 @@ function actionPlanLines(plan = {}, flat = {}) {
 
 function buildFounderBlueprintFromOutput(combined = {}) {
   const flat = flattenCombinedOutput(combined);
+  const moduleScores = combined.score_metadata?.module_scores || {};
   const identity = flat.business_identity || {};
   const business = identityName(identity);
   const dna = flat.business_dna || {};
@@ -1363,6 +1583,19 @@ function buildFounderBlueprintFromOutput(combined = {}) {
     contact.recommended_outreach_angle ? `Manual outreach angle: ${contact.recommended_outreach_angle}` : "",
     ...(contact.information_gaps || []).slice(0, 3).map(item => `Information gap: ${item}`)
   ].filter(Boolean);
+  const scoreLines = Object.values(moduleScores)
+    .filter(item => item && item.key !== "decision")
+    .map(item => `${item.label}: ${item.value === null ? "Not scored" : `${item.value}/100`} (${item.status}; confidence ${item.confidence}). ${item.explanation}`);
+  const decisionEngine = combined.decision_engine || {};
+  if (decisionEngine.decision) {
+    contactLines.unshift(`Decision Engine: ${decisionEngine.decision}. ${decisionEngine.reason || ""}`.trim());
+    if (decisionEngine.business_quality_score !== null && decisionEngine.business_quality_score !== undefined) {
+      contactLines.push(`Business quality score: ${decisionEngine.business_quality_score}/100.`);
+    }
+    if (decisionEngine.contactability_score !== null && decisionEngine.contactability_score !== undefined) {
+      contactLines.push(`Contactability score: ${decisionEngine.contactability_score}/100.`);
+    }
+  }
 
   return [
     "# Business Growth Blueprint",
@@ -1372,6 +1605,9 @@ function buildFounderBlueprintFromOutput(combined = {}) {
     "",
     "## What We Noticed",
     markdownBullets(noticed.length ? noticed : ["Insufficient public evidence was available for detailed observations."]),
+    "",
+    "## Independent Module Scores",
+    markdownBullets(scoreLines.length ? scoreLines : ["Module scores were not available."]),
     "",
     "## Hidden Opportunities",
     markdownBullets(hidden),
