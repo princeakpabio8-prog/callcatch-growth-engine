@@ -378,6 +378,150 @@ function contextEvidenceLog(contextPackage = {}) {
   })).filter(item => item.id);
 }
 
+function evidenceText(item = {}) {
+  return compact([
+    item.excerpt,
+    item.value,
+    item.text,
+    item.summary,
+    item.title,
+    item.field,
+    item.source_url || item.sourceUrl
+  ].filter(Boolean).join(" "), 1200);
+}
+
+function evidenceContainsAny(item = {}, patterns = []) {
+  const text = evidenceText(item);
+  return patterns.some(pattern => pattern.test(text));
+}
+
+function firstUsefulEvidence(evidence = [], patterns = []) {
+  return evidence.find(item => evidenceContainsAny(item, patterns)) || evidence.find(item => evidenceText(item));
+}
+
+function evidenceIdsFrom(items = []) {
+  return uniqueArray(items.map(item => item.id || item.evidence_id).filter(Boolean));
+}
+
+function phraseFromEvidence(item = {}, fallback = "") {
+  const text = evidenceText(item);
+  if (!text) return fallback;
+  const cleaned = text
+    .replace(/\s*\|\s*/g, ". ")
+    .replace(/\bhttps?:\/\/\S+/gi, "")
+    .trim();
+  return compact(cleaned, 180) || fallback;
+}
+
+function inferredServiceList(contextPackage = {}, evidence = []) {
+  const identity = contextPackage.businessIdentity || {};
+  const text = evidence.map(evidenceText).join(" ").toLowerCase();
+  const services = [];
+  const trade = compact(identity.trade, 80);
+  if (trade) services.push(trade);
+  const serviceSignals = [
+    ["Payments", /\bpayments?\b|\bbilling\b|\binvoic|\bcheckout\b|\bfinancial infrastructure\b/],
+    ["CRM", /\bcrm\b|\bcustomer platform\b|\bsales\b|\bmarketing\b/],
+    ["Commerce platform", /\becommerce\b|\bcommerce\b|\bonline store\b|\bshop\b|\bretail\b/],
+    ["Cloud and software", /\bcloud\b|\bsoftware\b|\bproductivity\b|\bdeveloper\b|\bplatform\b/],
+    ["Automation", /\bautomation\b|\bworkflow\b|\bai\b|\bartificial intelligence\b/],
+    ["Developer tools", /\bapi\b|\bdeveloper\b|\bsdk\b|\bintegration\b/]
+  ];
+  for (const [label, pattern] of serviceSignals) {
+    if (pattern.test(text)) services.push(label);
+  }
+  return uniqueArray(services).slice(0, 6);
+}
+
+function synthesizeBusinessDnaFromEvidence(contextPackage = {}, priorModules = {}) {
+  const evidence = [
+    ...(Array.isArray(contextPackage.evidenceLog) ? contextPackage.evidenceLog : []),
+    ...(priorModules.foundation?.output?.evidence_log || [])
+  ].filter(item => item && (item.id || item.evidence_id));
+  if (!evidence.length) return null;
+
+  const identity = contextPackage.businessIdentity || {};
+  const foundationIdentity = priorModules.foundation?.output?.business_identity || {};
+  const websiteText = compact(contextPackage.websitePublicText || evidence.map(evidenceText).join(" "), 5000);
+  const text = websiteText.toLowerCase();
+  const picked = [];
+  const pick = (patterns, fallbackIndex = 0) => {
+    const item = firstUsefulEvidence(evidence, patterns) || evidence[fallbackIndex];
+    if (item) picked.push(item);
+    return item;
+  };
+
+  const services = inferredServiceList(contextPackage, evidence);
+  const identityEvidence = pick([/business_name|website|description|homepage|title/i]);
+  const serviceEvidence = pick([/service|product|platform|solution|commerce|payment|crm|software|cloud|api|developer/i], 1);
+  const trustEvidence = pick([/customer|partner|security|trust|enterprise|review|testimonial|certif|compliance/i], 2);
+  const journeyEvidence = pick([/pricing|contact|demo|checkout|start|sign up|book|schedule|sales|support/i], 3);
+
+  const businessName = compact(
+    foundationIdentity.name ||
+    foundationIdentity.business_name ||
+    identity.businessName ||
+    "The business",
+    120
+  );
+  const market = [identity.city, identity.state, identity.country].filter(Boolean).join(", ")
+    || foundationIdentity.location
+    || (/\bglobal\b|\benterprise\b|\bworldwide\b|\binternational\b/.test(text) ? "public global market" : "public website market");
+  const businessModel = /\bplatform\b|\bsaas\b|\bsubscription\b|\bsoftware\b|\bapi\b|\bcloud\b/.test(text)
+    ? "Inferred platform or software-led business model"
+    : services.length
+      ? `Inferred ${services[0]} service business model`
+      : "Inferred public website-led business model";
+  const segments = [];
+  if (/\benterprise\b|\bbusinesses\b|\bteams\b|\bdevelopers\b|\bcompanies\b|\bretailers\b|\bmerchants\b/.test(text)) segments.push("business customers");
+  if (/\bdeveloper\b|\bapi\b|\bsdk\b/.test(text)) segments.push("developers and technical teams");
+  if (/\bconsumer\b|\bhomeowner\b|\bcustomer\b/.test(text)) segments.push("end customers");
+
+  const dna = {
+    status: "assessed",
+    summary: `Business DNA synthesized from Brain Zero evidence for ${businessName}.`,
+    business_model: businessModel,
+    primary_services: services.length ? services : ["public website services"],
+    likely_customer_segments: segments.length ? uniqueArray(segments) : ["public website visitors", "business customers"],
+    geographic_market: market,
+    value_proposition: `Inferred from public evidence: ${phraseFromEvidence(serviceEvidence || identityEvidence, `${businessName} presents a clear public product or service offering.`)}`,
+    likely_revenue_drivers: uniqueArray([
+      /\bpricing\b|\bplan\b|\bsubscription\b/.test(text) ? "subscriptions or pricing plans" : "",
+      /\bpayment\b|\bcheckout\b|\btransaction\b/.test(text) ? "transaction or payment volume" : "",
+      /\benterprise\b|\bsales\b|\bdemo\b/.test(text) ? "enterprise or sales-led contracts" : "",
+      services.length ? `${services[0]} demand` : ""
+    ].filter(Boolean)),
+    customer_journey: journeyEvidence
+      ? `Inferred website-led journey from public evidence: ${phraseFromEvidence(journeyEvidence)}`
+      : "Inferred website-led discovery and conversion journey.",
+    current_digital_maturity: /\bapi\b|\bintegration\b|\bdeveloper\b|\bcloud\b|\bautomation\b|\bai\b/.test(text)
+      ? "High digital maturity inferred from public technical and platform evidence."
+      : "Digital maturity inferred from available public website evidence.",
+    operational_complexity: /\benterprise\b|\bglobal\b|\bplatform\b|\bapi\b|\bintegration\b|\bcloud\b/.test(text)
+      ? "High operational complexity inferred from platform, enterprise, or integration signals."
+      : "Moderate operational complexity inferred from public service evidence.",
+    trust_signals: uniqueArray([
+      trustEvidence ? phraseFromEvidence(trustEvidence, "") : "",
+      /\bsecurity\b|\bcompliance\b|\bprivacy\b/.test(text) ? "security, compliance, or privacy signals are visible publicly" : "",
+      /\bcustomer\b|\bpartner\b|\btestimonial\b|\bcase stud/.test(text) ? "customer, partner, or proof signals are visible publicly" : ""
+    ].filter(Boolean)).slice(0, 5),
+    differentiators: uniqueArray([
+      /\bapi\b|\bdeveloper\b/.test(text) ? "developer-accessible product surface" : "",
+      /\bautomation\b|\bai\b/.test(text) ? "automation or AI-related positioning" : "",
+      /\bplatform\b/.test(text) ? "platform positioning" : "",
+      services[0] ? `${services[0]} focus` : ""
+    ].filter(Boolean)).slice(0, 5),
+    growth_stage: /\benterprise\b|\bglobal\b|\bpartner\b|\bcustomer\b/.test(text)
+      ? "Established public business"
+      : "Active public business",
+    evidence_strength: evidence.length >= 8 ? "high" : evidence.length >= 3 ? "medium" : "low",
+    confidence: evidence.length >= 8 ? "high" : evidence.length >= 3 ? "medium" : "low",
+    evidence_ids: evidenceIdsFrom(picked.length ? picked : evidence).slice(0, 10)
+  };
+
+  return hasUsefulAnalyticalFields(dna) ? dna : null;
+}
+
 function normalizeContact(contact = {}, index = 0, meta = null) {
   const defaults = {
     owner_name: null,
@@ -1048,6 +1192,13 @@ function validateModuleOutput(moduleKey, output = {}, contextPackage = {}, prior
     ensureObjectField(output, "ai_discoverability", fallback.ai_discoverability, meta);
     ensureObjectField(output, "future_readiness", fallback.future_readiness, meta);
     output.business_dna = normalizeAssessment(output.business_dna, "business_dna", meta, "Insufficient public evidence was available for business DNA.");
+    if (!hasUsefulValue(output.business_dna) || output.business_dna.status === "insufficient_evidence") {
+      const evidenceBackedDna = synthesizeBusinessDnaFromEvidence(contextPackage, priorModules);
+      if (evidenceBackedDna) {
+        output.business_dna = evidenceBackedDna;
+        recordNormalization(meta, "business_dna.evidence_backed_synthesis");
+      }
+    }
     output.digital_health = normalizeDigitalHealth(output.digital_health, meta);
     output.ai_discoverability = normalizeAssessment(output.ai_discoverability, "ai_discoverability", meta, "Insufficient public evidence was available for AI discoverability.");
     output.future_readiness = normalizeAssessment(output.future_readiness, "future_readiness", meta, "Insufficient public evidence was available for future readiness.");

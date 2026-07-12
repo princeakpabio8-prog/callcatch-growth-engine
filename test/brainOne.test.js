@@ -731,6 +731,34 @@ test("missing Digital Health sub-scores are accepted with insufficient evidence 
   assert.equal(validation.ok, true);
 });
 
+test("empty Business DNA is synthesized from Brain Zero evidence before scoring", () => {
+  const context = sampleContext(1);
+  context.businessIdentity.businessName = "Shopify";
+  context.businessIdentity.websiteUrl = "https://www.shopify.com";
+  context.websitePublicText = "Shopify is a commerce platform for businesses, merchants, online stores, checkout, payments, developers, APIs, apps, integrations, enterprise, and global retail.";
+  context.evidenceLog.push({
+    id: "ev-shopify-commerce-platform",
+    sourceType: "website",
+    sourceProvider: "website_crawl",
+    sourceCategory: "content",
+    category: "content",
+    field: "page_text",
+    sourceUrl: "https://www.shopify.com",
+    excerpt: context.websitePublicText
+  });
+  const foundation = { foundation: { output: moduleOutput(context, "foundation") } };
+  const output = moduleOutput(context, "digital_intelligence");
+  output.business_dna = {};
+  const meta = { normalization_applied: false, normalized_fields: [] };
+  const validation = validateModuleOutput("digital_intelligence", output, context, foundation, meta);
+  assert.equal(validation.ok, true);
+  assert.equal(output.business_dna.status, "assessed");
+  assert.match(output.business_dna.business_model, /platform|software/i);
+  assert.ok(output.business_dna.primary_services.includes("Commerce platform"));
+  assert.ok(output.business_dna.evidence_ids.includes("ev-shopify-commerce-platform"));
+  assert.ok(meta.normalized_fields.includes("business_dna.evidence_backed_synthesis"));
+});
+
 test("missing radar dimensions are accepted when available dimensions are unknown", () => {
   const context = sampleContext(1);
   const foundation = { foundation: { output: moduleOutput(context, "foundation") } };
