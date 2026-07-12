@@ -1239,16 +1239,20 @@
       }
       const statusTone = run.status === "completed" ? "hot" : run.status === "failed" ? "bad" : "warn";
       const canContinue = run.status === "completed" || run.status === "partial";
+      const busy = ["queued","running"].includes(run.status);
       const partial = run.status === "partial";
+      const interrupted = JSON.stringify(run.errors || []).includes("run_interrupted_by_server_restart");
       return `<div class="panel"><div class="lead-top"><div><h3>Brain Zero Evidence Collection</h3><p class="sub">Run ${esc(run.run_id || run.id)} | ${esc(formatDateTime(run.started_at || run.createdAt))}</p></div><span class="tag ${statusTone}">${esc(run.status)}</span></div>
         <div class="detail-grid"><div class="mini"><span>Evidence</span><strong>${esc(run.evidence_count ?? 0)}</strong></div><div class="mini"><span>Sources</span><strong>${esc(run.source_count ?? 0)}</strong></div><div class="mini"><span>Pages</span><strong>${esc(run.pages_scanned ?? 0)}</strong></div><div class="mini"><span>Quality</span><strong>${esc(run.overall_evidence_quality || run.evidence_package?.overall_evidence_quality || "unknown")}</strong></div></div>
         <div class="insights">${brainZeroProviderTags(run)}</div>
         ${run.status === "running" ? `<p class="hint">Evidence collection is running in the background. You can keep using the app.</p>` : ""}
+        ${run.status === "queued" ? `<p class="hint">Evidence collection will begin when the current run finishes.</p>` : ""}
         ${partial ? `<p class="hint">Partial evidence is usable, but Brain One may have more unknowns. You can still continue manually.</p>` : ""}
+        ${interrupted ? `<p class="hint">Evidence collection was interrupted by a server restart. Please run it again.</p>` : ""}
         ${run.status === "failed" ? `<p class="hint">Brain Zero did not collect usable evidence. Run again or check the website/source details.</p>` : ""}
         ${(run.warnings || []).length ? `<details><summary>Collection Limitations</summary>${objectSummaryHtml((run.warnings || []).slice(0,8))}</details>` : ""}
         <details><summary>Technical Details</summary><div class="script" style="min-height:80px;">${esc(JSON.stringify({ providers: Object.fromEntries(Object.entries(run.providers || {}).map(([key,item])=>[key,{status:item.status,duration_ms:item.duration_ms,errors:item.errors,warnings:item.warnings,evidence:item.evidence?.length || 0}])), errors: run.errors || [], hash: run.evidence_package_hash || "" }, null, 2))}</div></details>
-        <div class="actions" style="margin-top:10px;"><button class="btn small" data-brain-zero-run="${lead.id}">Run Again</button><button class="btn small" data-brain-zero-force="${lead.id}">Force Rescan</button>${canContinue ? `<button class="btn primary small" data-brain-zero-continue="${lead.id}|${run.run_id || run.id}|${partial ? "1" : "0"}">Continue to Brain One</button>` : ""}</div>
+        <div class="actions" style="margin-top:10px;">${busy ? `<button class="btn small" disabled>Evidence running</button>` : `<button class="btn small" data-brain-zero-run="${lead.id}">Run Again</button><button class="btn small" data-brain-zero-force="${lead.id}">Force Rescan</button>`}${canContinue ? `<button class="btn primary small" data-brain-zero-continue="${lead.id}|${run.run_id || run.id}|${partial ? "1" : "0"}">Continue to Brain One</button>` : ""}</div>
         <p class="hint" id="brainZeroStatus-${lead.id}"></p></div>`;
     }
     async function refreshBrainZeroRuns(leadId){
@@ -1275,6 +1279,12 @@
       toast(force ? "Brain Zero force rescan started" : "Brain Zero started");
       try {
         const result = await api("/api/brain-zero/run", { method:"POST", body: JSON.stringify({ leadId, force }) });
+        if (result.queued) {
+          brainZeroRuns.unshift({ ...(result.run || {}), started_at: now(), business_id: leadId });
+          toast("Brain Zero is busy");
+          render();
+          return;
+        }
         await refreshBrainZeroRuns(leadId);
         render();
         const run = result.run || {};

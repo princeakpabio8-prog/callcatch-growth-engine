@@ -3,21 +3,23 @@ const assert = require("node:assert/strict");
 
 const {
   brainZeroCanRunBrainOne,
+  brainZeroRuntimeState,
   contextFromLead,
   dedupeEvidence,
   evidenceHash,
   genericInbox,
   makeEvidence,
-  runBrainZeroEvidenceCollection
+  runBrainZeroEvidenceCollection,
+  safeRunProvider
 } = require("../lead-engine/brainZeroService");
 
-function response(url, body, { status = 200, finalUrl = url } = {}) {
+function response(url, body, { status = 200, finalUrl = url, headers = {} } = {}) {
   return {
     ok: status >= 200 && status < 300,
     status,
     statusText: status >= 200 && status < 300 ? "OK" : "Error",
     url: finalUrl,
-    headers: new Map(),
+    headers: new Map(Object.entries({ "content-type": "text/html; charset=utf-8", ...headers })),
     async text() {
       return body;
     }
@@ -56,6 +58,9 @@ function fetchMap(map = {}) {
 }
 
 async function run(contextOverrides = {}, fetchImpl, config = {}) {
+  const enforceActiveLimit = !!config.enforceActiveLimit;
+  const serviceConfig = { ...config };
+  delete serviceConfig.enforceActiveLimit;
   return runBrainZeroEvidenceCollection({
     ...contextFromLead(lead()),
     ...contextOverrides
@@ -68,8 +73,9 @@ async function run(contextOverrides = {}, fetchImpl, config = {}) {
       technicalTimeoutMs: 80,
       maxPages: 4,
       maxConcurrentRequests: 2,
-      ...config
+      ...serviceConfig
     },
+    enforceActiveLimit,
     logger: () => {}
   });
 }
@@ -251,4 +257,93 @@ test("Brain Zero does not change email or follow-up behaviour", async () => {
   }));
   const text = JSON.stringify(result);
   assert.equal(/send now|follow-up email|outreach subject|approve/i.test(text), false);
+});
+
+test("safe provider wrapper catches synchronous throws", async () => {
+  const result = await safeRunProvider("sync_throw_provider", () => {
+    throw new Error("boom");
+  }, {}, { runId: "test-sync" }, {}, () => {});
+  assert.equal(result.status, "failed");
+  assert.match(result.errors[0], /boom/);
+});
+
+test("safe provider wrapper catches rejected promises", async () => {
+  const result = await safeRunProvider("reject_provider", async () => {
+    throw new Error("reject boom");
+  }, {}, { runId: "test-reject" }, {}, () => {});
+  assert.equal(result.status, "failed");
+  assert.match(result.errors[0], /reject boom/);
+});
+
+test("malformed URL becomes failed provider output, not process crash", async () => {
+  const result = await run({ website_url: "http://%" }, fetchMap({}));
+  assert.equal(["partial", "failed"].includes(result.status), true);
+  assert.equal(result.providers.website_crawl.status, "failed");
+});
+
+test("oversized HTML is rejected safely", async () => {
+  const large = "x".repeat(250000);
+  const result = await run({}, fetchMap({
+    "https://example.com": response("https://example.com", large, { headers: { "content-length": "250000" } })
+  }), { maxResponseBytes: 100000 });
+  assert.equal(result.providers.website_crawl.status, "failed");
+  assert.match(JSON.stringify(result.providers.website_crawl.errors), /excessive size/i);
+});
+
+test("non-HTML response is skipped safely", async () => {
+  const result = await run({}, fetchMap({
+    "https://example.com": response("https://example.com", "%PDF-1.7", { headers: { "content-type": "application/pdf" } })
+  }));
+  assert.equal(result.providers.website_crawl.status, "failed");
+  assert.match(JSON.stringify(result.providers.website_crawl.errors), /Non-HTML/i);
+});
+
+test("DNS failure is isolated to provider failure", async () => {
+  const result = await run({}, fetchMap({
+    "https://example.com": new Error("getaddrinfo ENOTFOUND example.com")
+  }));
+  assert.equal(result.status, "partial");
+  assert.equal(result.providers.website_crawl.status, "failed");
+});
+
+test("successful evidence is preserved when a later provider fails", async () => {
+  const result = await run({}, fetchMap({
+    "https://example.com": response("https://example.com", html("Home", `<a href="/contact">Contact</a>`)),
+    "https://example.com/contact": response("https://example.com/contact", html("Contact", `Email info@brainzerohvac.com`))
+  }));
+  result.providers.content_discoverability_evidence.status = "failed";
+  const evidenceCount = result.evidence_package.evidence_log.length;
+  assert.ok(evidenceCount > 0);
+});
+
+test("global active-run limit returns queued and releases after completion", async () => {
+  const slowFetch = async url => {
+    if (String(url).endsWith("/robots.txt")) return response(url, "User-agent: *\nAllow: /");
+    if (String(url).endsWith("/sitemap.xml")) return response(url, "<urlset></urlset>");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    return response(url, html("Home", "Slow page"));
+  };
+  const first = run({}, slowFetch, { maxActiveRuns: 1, maxResponseBytes: 500000, pageTimeoutMs: 1000, enforceActiveLimit: true });
+  const second = await run({ business_id: "second" }, slowFetch, { maxActiveRuns: 1, pageTimeoutMs: 1000, enforceActiveLimit: true });
+  assert.equal(second.status, "queued");
+  await first;
+  assert.equal(brainZeroRuntimeState().activeRunCount, 0);
+});
+
+test("repeated sequential scans release timers and locks", async () => {
+  for (let index = 0; index < 20; index += 1) {
+    const result = await run({ business_id: `stress-${index}` }, fetchMap({
+      "https://example.com": response("https://example.com", html("Home", `Email info${index}@brainzerohvac.com`))
+    }), { maxActiveRuns: 1 });
+    assert.equal(["completed", "partial"].includes(result.status), true);
+    assert.equal(brainZeroRuntimeState().activeRunCount, 0);
+  }
+});
+
+test("server source includes stale running recovery and no process exit", () => {
+  const fs = require("node:fs");
+  const server = fs.readFileSync("callcatch-lead-server.js", "utf8");
+  assert.match(server, /recoverStaleBrainZeroRuns/);
+  assert.match(server, /run_interrupted_by_server_restart/);
+  assert.doesNotMatch(server, /process\.exit\s*\(/);
 });

@@ -3,6 +3,14 @@ const { scanWebsite, normalizeUrl } = require("./websiteScanner");
 const { APP_USER_AGENT } = require("./httpClient");
 
 const VERSION = "brain-zero-v1";
+const DEFAULT_MAX_RESPONSE_BYTES = 1_000_000;
+
+const runtimeState = {
+  activeRuns: new Set(),
+  activeProviders: new Map(),
+  lastCrashAt: "",
+  lastRecoveredAt: ""
+};
 
 function nowIso() {
   return new Date().toISOString();
@@ -22,8 +30,58 @@ function brainZeroConfig() {
     technicalTimeoutMs: envNumber("BRAIN_ZERO_TECHNICAL_TIMEOUT_MS", 20000, { min: 3000 }),
     maxPages: envNumber("BRAIN_ZERO_MAX_PAGES", 10, { min: 1, max: 20 }),
     maxConcurrentRequests: envNumber("BRAIN_ZERO_MAX_CONCURRENT_REQUESTS", 2, { min: 1, max: 4 }),
-    cacheTtlMs: envNumber("BRAIN_ZERO_CACHE_TTL_MS", 86400000, { min: 0 })
+    cacheTtlMs: envNumber("BRAIN_ZERO_CACHE_TTL_MS", 86400000, { min: 0 }),
+    maxActiveRuns: envNumber("BRAIN_ZERO_MAX_ACTIVE_RUNS", 1, { min: 1, max: 3 }),
+    maxResponseBytes: envNumber("BRAIN_ZERO_MAX_RESPONSE_BYTES", DEFAULT_MAX_RESPONSE_BYTES, { min: 100000, max: 3000000 }),
+    maxRedirects: envNumber("BRAIN_ZERO_MAX_REDIRECTS", 3, { min: 0, max: 5 })
   };
+}
+
+function brainZeroRuntimeState() {
+  return {
+    activeRunCount: runtimeState.activeRuns.size,
+    activeRunIds: [...runtimeState.activeRuns],
+    activeProviders: Object.fromEntries(runtimeState.activeProviders.entries()),
+    lastCrashAt: runtimeState.lastCrashAt,
+    lastRecoveredAt: runtimeState.lastRecoveredAt
+  };
+}
+
+function noteBrainZeroCrash() {
+  runtimeState.lastCrashAt = nowIso();
+}
+
+function noteBrainZeroRecovery() {
+  runtimeState.lastRecoveredAt = nowIso();
+}
+
+function memorySummary() {
+  const memory = process.memoryUsage();
+  return {
+    rssMb: Math.round(memory.rss / 1024 / 1024),
+    heapUsedMb: Math.round(memory.heapUsed / 1024 / 1024),
+    heapTotalMb: Math.round(memory.heapTotal / 1024 / 1024),
+    externalMb: Math.round(memory.external / 1024 / 1024)
+  };
+}
+
+function canStartBrainZeroRun(config = brainZeroConfig()) {
+  return runtimeState.activeRuns.size < config.maxActiveRuns;
+}
+
+function acquireBrainZeroRun(runId, config = brainZeroConfig()) {
+  if (!canStartBrainZeroRun(config)) return false;
+  runtimeState.activeRuns.add(runId);
+  return true;
+}
+
+function releaseBrainZeroRun(runId) {
+  runtimeState.activeRuns.delete(runId);
+  runtimeState.activeProviders.delete(runId);
+}
+
+function setActiveBrainZeroProvider(runId, provider) {
+  if (runId) runtimeState.activeProviders.set(runId, provider || "");
 }
 
 function compact(value = "", limit = 700) {
@@ -176,7 +234,15 @@ async function withTimeout(promise, timeoutMs, label) {
   }
 }
 
-async function fetchText(url, { timeoutMs, fetchImpl = fetch, method = "GET" } = {}) {
+async function fetchText(url, { timeoutMs, fetchImpl = fetch, method = "GET", maxResponseBytes } = {}) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("Invalid URL");
+  }
+  if (!/^https?:$/i.test(parsed.protocol)) throw new Error("Unsupported URL protocol");
+  const maxBytes = maxResponseBytes || brainZeroConfig().maxResponseBytes;
   const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(timeoutMs || 10000) : undefined;
   const response = await fetchImpl(url, {
     method,
@@ -187,7 +253,13 @@ async function fetchText(url, { timeoutMs, fetchImpl = fetch, method = "GET" } =
       "Accept": method === "HEAD" ? "*/*" : "text/html,application/xhtml+xml,text/plain;q=0.8"
     }
   });
-  const text = method === "HEAD" ? "" : await response.text();
+  const contentType = response.headers?.get?.("content-type") || "";
+  const contentLength = Number(response.headers?.get?.("content-length") || 0);
+  if (contentLength > maxBytes) throw new Error(`Response body rejected for excessive size (${contentLength} bytes)`);
+  if (method !== "HEAD" && contentType && !/text\/html|application\/xhtml\+xml|text\/plain/i.test(contentType)) {
+    throw new Error(`Non-HTML response skipped (${contentType})`);
+  }
+  const text = method === "HEAD" ? "" : await readBoundedText(response, maxBytes);
   return {
     ok: response.ok,
     status: response.status,
@@ -196,6 +268,32 @@ async function fetchText(url, { timeoutMs, fetchImpl = fetch, method = "GET" } =
     headers: response.headers,
     text
   };
+}
+
+async function readBoundedText(response, maxBytes = DEFAULT_MAX_RESPONSE_BYTES) {
+  if (!response.body || !response.body.getReader) {
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > maxBytes) throw new Error(`Response body rejected for excessive size (${Buffer.byteLength(text, "utf8")} bytes)`);
+    return text;
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength || value.length || 0;
+      if (total > maxBytes) {
+        try { await reader.cancel(); } catch {}
+        throw new Error(`Response body rejected for excessive size (${total} bytes)`);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    try { reader.releaseLock?.(); } catch {}
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 async function mapLimit(items, limit, worker) {
@@ -208,7 +306,9 @@ async function mapLimit(items, limit, worker) {
       results[current] = await worker(items[current], current);
     }
   });
-  await Promise.all(workers);
+  const settled = await Promise.allSettled(workers);
+  const rejected = settled.find(item => item.status === "rejected");
+  if (rejected) throw rejected.reason;
   return results;
 }
 
@@ -216,7 +316,7 @@ async function robotsAllowed(rootUrl, targetUrl, options) {
   try {
     const root = new URL(rootUrl);
     const robotsUrl = `${root.protocol}//${root.host}/robots.txt`;
-    const response = await fetchText(robotsUrl, { timeoutMs: Math.min(4000, options.pageTimeoutMs), fetchImpl: options.fetchImpl });
+    const response = await fetchText(robotsUrl, { timeoutMs: Math.min(4000, options.pageTimeoutMs), fetchImpl: options.fetchImpl, maxResponseBytes: Math.min(options.maxResponseBytes || DEFAULT_MAX_RESPONSE_BYTES, 200000) });
     const text = response.text || "";
     const path = new URL(targetUrl).pathname || "/";
     let applies = false;
@@ -271,6 +371,12 @@ async function providerWebsiteCrawl(context, options) {
     result.warnings.push("No website URL available.");
     return finishProvider(result, result.started_at, "skipped");
   }
+  try {
+    new URL(website);
+  } catch {
+    result.errors.push("Invalid website URL");
+    return finishProvider(result, result.started_at, "failed");
+  }
   const robots = await robotsAllowed(website, website, options);
   if (!robots.allowed) {
     result.warnings.push("robots.txt disallows the homepage path.");
@@ -282,8 +388,9 @@ async function providerWebsiteCrawl(context, options) {
   }
   if (robots.warning) result.warnings.push(robots.warning);
   const pages = [];
-  const first = await fetchText(website, { timeoutMs: options.pageTimeoutMs, fetchImpl: options.fetchImpl });
+  const first = await fetchText(website, { timeoutMs: options.pageTimeoutMs, fetchImpl: options.fetchImpl, maxResponseBytes: options.maxResponseBytes });
   if (!first.ok) throw new Error(`Homepage returned HTTP ${first.status}`);
+  if (!compact(first.text, 100)) result.warnings.push("Homepage returned empty or JavaScript-only content.");
   const firstPage = {
     url: first.url || website,
     status: first.status,
@@ -301,14 +408,14 @@ async function providerWebsiteCrawl(context, options) {
     const allowed = await robotsAllowed(website, link, options);
     if (!allowed.allowed) return { skipped: true, url: link, reason: "robots.txt disallowed this path" };
     try {
-      const response = await fetchText(link, { timeoutMs: options.pageTimeoutMs, fetchImpl: options.fetchImpl });
+      const response = await fetchText(link, { timeoutMs: options.pageTimeoutMs, fetchImpl: options.fetchImpl, maxResponseBytes: options.maxResponseBytes });
       if (!response.ok) return { skipped: true, url: link, reason: `HTTP ${response.status}` };
       return {
         url: response.url || link,
         status: response.status,
         title: parseTitle(response.text),
         text: stripHtml(response.text),
-        html: response.text,
+        html: compact(response.text, 8000),
         links: extractLinks(response.text, response.url || link)
       };
     } catch (error) {
@@ -327,7 +434,7 @@ async function providerWebsiteCrawl(context, options) {
     seen.add(key);
     deduped.push(page);
   }
-  result.raw = { pages: deduped.map(page => ({ ...page, html: compact(page.html || "", 8000) })) };
+  result.raw = { pages: deduped.map(page => ({ ...page, html: compact(page.html || "", 8000), links: (page.links || []).slice(0, 40) })) };
   result.evidence = deduped.map((page, index) => makeEvidence("website_crawl", "website_page", "page_text", {
     url: page.url,
     title: page.title,
@@ -410,8 +517,8 @@ async function providerTechnical(context, options, prior) {
   const sitemapUrl = `${root.protocol}//${root.host}/sitemap.xml`;
   let robotsOk = false;
   let sitemapOk = false;
-  try { robotsOk = (await fetchText(robotsUrl, { timeoutMs: Math.min(5000, options.technicalTimeoutMs), fetchImpl: options.fetchImpl })).ok; } catch {}
-  try { sitemapOk = (await fetchText(sitemapUrl, { timeoutMs: Math.min(5000, options.technicalTimeoutMs), fetchImpl: options.fetchImpl })).ok; } catch {}
+  try { robotsOk = (await fetchText(robotsUrl, { timeoutMs: Math.min(5000, options.technicalTimeoutMs), fetchImpl: options.fetchImpl, maxResponseBytes: 200000 })).ok; } catch {}
+  try { sitemapOk = (await fetchText(sitemapUrl, { timeoutMs: Math.min(5000, options.technicalTimeoutMs), fetchImpl: options.fetchImpl, maxResponseBytes: 300000 })).ok; } catch {}
   const html = page.html || "";
   const schemaTypes = unique([...html.matchAll(/"@type"\s*:\s*"([^"]+)"/gi)].map(match => match[1])).slice(0, 10);
   const technical = {
@@ -546,31 +653,53 @@ async function providerContent(context, options, prior) {
   return finishProvider(result, result.started_at, "completed");
 }
 
-async function runProviderWithRetry(name, fn, context, options, prior, logger) {
+function normalizeProviderOutput(result, providerName) {
+  if (!result || typeof result !== "object") throw new Error("Provider returned malformed output");
+  result.provider = result.provider || providerName;
+  result.status = ["completed", "partial", "failed", "skipped", "running"].includes(result.status) ? result.status : "partial";
+  result.started_at = result.started_at || nowIso();
+  result.completed_at = result.completed_at || nowIso();
+  result.duration_ms = Number.isFinite(Number(result.duration_ms)) ? Number(result.duration_ms) : 0;
+  result.evidence = Array.isArray(result.evidence) ? result.evidence.filter(item => item && typeof item === "object") : [];
+  result.errors = Array.isArray(result.errors) ? result.errors.map(error => String(error).slice(0, 500)) : [];
+  result.warnings = Array.isArray(result.warnings) ? result.warnings.map(warning => String(warning).slice(0, 500)) : [];
+  return result;
+}
+
+function failedProviderResult(name, error) {
+  const failed = providerShell(name);
+  failed.errors.push(error?.message || "Provider failed");
+  return finishProvider(failed, failed.started_at, "failed");
+}
+
+async function safeRunProvider(name, fn, context, options, prior, logger) {
   const started = Date.now();
   logger?.("info", "brain_zero_provider_started", { provider: name });
+  setActiveBrainZeroProvider(options.runId, name);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const result = await fn(context, options, prior);
+      const normalized = normalizeProviderOutput(result, name);
       logger?.("info", "brain_zero_provider_completed", {
         provider: name,
-        status: result.status,
-        durationMs: result.duration_ms,
-        evidence: result.evidence.length
+        status: normalized.status,
+        durationMs: normalized.duration_ms,
+        evidence: normalized.evidence.length
       });
-      return result;
+      return normalized;
     } catch (error) {
       if (attempt === 0) {
         logger?.("warn", "brain_zero_provider_retry", { provider: name, error: error.message });
         continue;
       }
-      const failed = providerShell(name);
-      failed.errors.push(error.message);
-      const result = finishProvider(failed, failed.started_at, "failed");
+      const result = failedProviderResult(name, error);
       logger?.("error", "brain_zero_provider_failed", { provider: name, error: error.message, durationMs: Date.now() - started });
       return result;
+    } finally {
+      setActiveBrainZeroProvider(options.runId, "");
     }
   }
+  return failedProviderResult(name, new Error("Provider failed without returning a result"));
 }
 
 function dedupeEvidence(evidence = []) {
@@ -684,6 +813,32 @@ function contextFromLead(lead = {}) {
 async function runBrainZeroEvidenceCollection(businessContext = {}, options = {}) {
   const config = { ...brainZeroConfig(), ...options.config };
   const logger = options.logger || (() => {});
+  const runId = options.runId || `bz_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  let acquired = false;
+  if (options.enforceActiveLimit) {
+    acquired = acquireBrainZeroRun(runId, config);
+    if (!acquired) {
+      return {
+        run_id: runId,
+        business_id: String(businessContext.business_id || ""),
+        status: "queued",
+        providers: {},
+        evidence_count: 0,
+        source_count: 0,
+        pages_scanned: 0,
+        started_at: nowIso(),
+        completed_at: null,
+        duration_ms: null,
+        errors: [],
+        warnings: ["Evidence collection will begin when the current run finishes."],
+        evidence_package: {},
+        evidence_package_hash: "",
+        overall_evidence_quality: "weak",
+        version: VERSION,
+        message: "Evidence collection will begin when the current run finishes."
+      };
+    }
+  }
   const context = {
     business_id: String(businessContext.business_id || ""),
     business_name: businessContext.business_name || null,
@@ -695,14 +850,18 @@ async function runBrainZeroEvidenceCollection(businessContext = {}, options = {}
     requested_at: businessContext.requested_at || nowIso()
   };
   const startedAt = nowIso();
+  const startedMs = Date.now();
   logger("info", "brain_zero_run_started", {
     businessId: context.business_id,
     website: context.website_url,
-    maxPages: config.maxPages
+    maxPages: config.maxPages,
+    activeRunCount: runtimeState.activeRuns.size,
+    memory: memorySummary()
   });
   const prior = {};
   const providers = {};
-  const runSequence = async () => {
+  let internalError = null;
+  try {
     const providerDefs = [
       ["existing_lead_search", providerExistingSearch],
       ["website_crawl", providerWebsiteCrawl],
@@ -713,15 +872,30 @@ async function runBrainZeroEvidenceCollection(businessContext = {}, options = {}
       ["content_discoverability_evidence", providerContent]
     ];
     for (const [name, fn] of providerDefs) {
-      providers[name] = await runProviderWithRetry(name, fn, context, {
+      if (Date.now() - startedMs > config.totalTimeoutMs) {
+        providers[name] = finishProvider({
+          ...providerShell(name),
+          warnings: ["Skipped because the Brain Zero total run timeout was reached."]
+        }, nowIso(), "skipped");
+        prior[name] = providers[name];
+        continue;
+      }
+      providers[name] = await safeRunProvider(name, fn, context, {
         ...config,
+        runId,
         fetchImpl: options.fetchImpl || fetch,
         scanWebsiteImpl: options.scanWebsiteImpl || scanWebsite
       }, prior, logger);
       prior[name] = providers[name];
     }
-  };
-  await withTimeout(runSequence(), config.totalTimeoutMs, "Brain Zero evidence collection");
+  } catch (error) {
+    internalError = error;
+    logger("error", "brain_zero_internal_error", {
+      businessId: context.business_id,
+      runId,
+      error: error.message
+    });
+  }
   const allEvidence = Object.values(providers).flatMap(provider => provider.evidence || []);
   const { evidence, removed } = dedupeEvidence(allEvidence);
   const pagesScanned = pagesFromProvider(providers.website_crawl).length;
@@ -729,7 +903,9 @@ async function runBrainZeroEvidenceCollection(businessContext = {}, options = {}
   const completedAt = nowIso();
   const anyEvidence = evidence.length > 0;
   const failedProviders = Object.values(providers).filter(provider => provider.status === "failed");
-  const status = !anyEvidence ? "failed" : failedProviders.length ? "partial" : "completed";
+  const status = internalError
+    ? (anyEvidence ? "partial" : "failed")
+    : !anyEvidence ? "failed" : failedProviders.length ? "partial" : "completed";
   const quality = anyEvidence ? evidenceQuality({ providers, evidence, pagesScanned }) : "weak";
   const evidence_package = anyEvidence
     ? buildBrainOneEvidencePackage({ providers, evidence, status, quality })
@@ -743,8 +919,8 @@ async function runBrainZeroEvidenceCollection(businessContext = {}, options = {}
     duplicateEvidenceRemoved: removed.length,
     quality
   });
-  return {
-    run_id: options.runId || `bz_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+  const finalResult = {
+    run_id: runId,
     business_id: context.business_id,
     status,
     providers,
@@ -754,7 +930,15 @@ async function runBrainZeroEvidenceCollection(businessContext = {}, options = {}
     started_at: startedAt,
     completed_at: completedAt,
     duration_ms: Date.parse(completedAt) - Date.parse(startedAt),
-    errors: Object.values(providers).flatMap(provider => provider.errors || []),
+    errors: [
+      ...Object.values(providers).flatMap(provider => provider.errors || []),
+      ...(internalError ? [{
+        code: "brain_zero_internal_error",
+        message: "Evidence collection encountered an internal error.",
+        provider: null,
+        technical_message: internalError.message
+      }] : [])
+    ],
     warnings: [
       ...Object.values(providers).flatMap(provider => provider.warnings || []),
       ...(removed.length ? [`Removed ${removed.length} duplicate or unsafe evidence records.`] : [])
@@ -762,8 +946,18 @@ async function runBrainZeroEvidenceCollection(businessContext = {}, options = {}
     evidence_package,
     evidence_package_hash: evidence_package.evidence_package_hash || "",
     overall_evidence_quality: quality,
-    version: VERSION
+    version: VERSION,
+    memory_before: options.memoryBefore || null,
+    memory_after: memorySummary()
   };
+  if (acquired) releaseBrainZeroRun(runId);
+  logger("info", "brain_zero_run_cleanup_completed", {
+    businessId: context.business_id,
+    runId,
+    activeRunCount: runtimeState.activeRuns.size,
+    memory: finalResult.memory_after
+  });
+  return finalResult;
 }
 
 function brainZeroCanRunBrainOne(run = {}, { acceptPartial = false } = {}) {
@@ -780,14 +974,22 @@ function brainZeroCanRunBrainOne(run = {}, { acceptPartial = false } = {}) {
 
 module.exports = {
   VERSION,
+  acquireBrainZeroRun,
   brainZeroCanRunBrainOne,
   brainZeroConfig,
+  brainZeroRuntimeState,
   buildBrainOneEvidencePackage,
+  canStartBrainZeroRun,
   contextFromLead,
   dedupeEvidence,
   evidenceHash,
   genericInbox,
   isValidEmail,
   makeEvidence,
-  runBrainZeroEvidenceCollection
+  memorySummary,
+  noteBrainZeroCrash,
+  noteBrainZeroRecovery,
+  releaseBrainZeroRun,
+  runBrainZeroEvidenceCollection,
+  safeRunProvider
 };

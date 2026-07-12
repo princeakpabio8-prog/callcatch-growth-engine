@@ -10,7 +10,12 @@ const { scanWebsite } = require("./lead-engine/websiteScanner");
 const {
   brainZeroCanRunBrainOne,
   brainZeroConfig,
+  brainZeroRuntimeState,
+  canStartBrainZeroRun,
   contextFromLead,
+  memorySummary,
+  noteBrainZeroCrash,
+  noteBrainZeroRecovery,
   runBrainZeroEvidenceCollection
 } = require("./lead-engine/brainZeroService");
 const { enrichProspect, outreachAssets } = require("./lead-engine/prospectIntelligence");
@@ -43,6 +48,46 @@ const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
 const PUBLIC_DIR = __dirname;
 let automationRunning = false;
+
+function sanitizedError(error) {
+  const secretPatterns = [
+    process.env.NVIDIA_API_KEY,
+    process.env.RESEND_API_KEY,
+    process.env.SMTP_PASS,
+    process.env.TWILIO_AUTH_TOKEN,
+    process.env.SERPER_API_KEY,
+    process.env.BRAVE_SEARCH_API_KEY
+  ].filter(Boolean);
+  let stack = String(error?.stack || error?.message || error || "");
+  for (const secret of secretPatterns) {
+    stack = stack.split(secret).join("[redacted]");
+  }
+  return {
+    name: error?.name || "Error",
+    message: String(error?.message || error || "Unknown error").slice(0, 500),
+    stack: stack.slice(0, 4000)
+  };
+}
+
+process.on("unhandledRejection", reason => {
+  noteBrainZeroCrash();
+  const runtime = brainZeroRuntimeState();
+  log("error", "unhandled_rejection_detected", {
+    error: sanitizedError(reason),
+    activeBrainZeroRunIds: runtime.activeRunIds,
+    activeBrainZeroProviders: runtime.activeProviders
+  });
+});
+
+process.on("uncaughtException", error => {
+  noteBrainZeroCrash();
+  const runtime = brainZeroRuntimeState();
+  log("error", "uncaught_exception_detected", {
+    error: sanitizedError(error),
+    activeBrainZeroRunIds: runtime.activeRunIds,
+    activeBrainZeroProviders: runtime.activeProviders
+  });
+});
 
 function normalizeCompanyKey(lead = {}) {
   return String(lead.website || `${lead.business || ""}-${lead.city || ""}-${lead.state || ""}`)
@@ -762,8 +807,14 @@ function brainZeroEvidenceToBrainOneContext(lead = {}, run = null) {
 }
 
 async function completeBrainZeroRun(runId, context, logger = log) {
+  const startedMemory = memorySummary();
   try {
-    const result = await runBrainZeroEvidenceCollection(context, { runId, logger });
+    const result = await runBrainZeroEvidenceCollection(context, {
+      runId,
+      logger,
+      enforceActiveLimit: true,
+      memoryBefore: startedMemory
+    });
     await mutateStore(state => {
       state.brainZeroRuns = state.brainZeroRuns || [];
       const record = state.brainZeroRuns.find(item => item.run_id === runId || item.id === runId);
@@ -797,24 +848,40 @@ async function completeBrainZeroRun(runId, context, logger = log) {
       return record || result;
     });
   } catch (error) {
-    log("error", "brain_zero_run_failed", { runId, error: error.message });
-    await mutateStore(state => {
-      state.brainZeroRuns = state.brainZeroRuns || [];
-      const record = state.brainZeroRuns.find(item => item.run_id === runId || item.id === runId);
-      if (record) {
-        record.status = "failed";
-        record.completed_at = new Date().toISOString();
-        record.duration_ms = Date.parse(record.completed_at) - Date.parse(record.started_at || record.createdAt || record.completed_at);
-        record.errors = [...(record.errors || []), error.message];
-      }
-      state.auditLog = state.auditLog || [];
-      state.auditLog.unshift({
-        id: newId("audit"),
-        at: new Date().toISOString(),
-        action: "brain_zero_failed",
-        details: { runId, error: error.message }
+    log("error", "brain_zero_run_failed", { runId, error: sanitizedError(error), memory: memorySummary() });
+    try {
+      await mutateStore(state => {
+        state.brainZeroRuns = state.brainZeroRuns || [];
+        const record = state.brainZeroRuns.find(item => item.run_id === runId || item.id === runId);
+        const completedAt = new Date().toISOString();
+        if (record) {
+          record.status = record.evidence_count ? "partial" : "failed";
+          record.completed_at = completedAt;
+          record.duration_ms = Date.parse(record.completed_at) - Date.parse(record.started_at || record.createdAt || record.completed_at);
+          record.errors = [...(record.errors || []), {
+            code: "brain_zero_internal_error",
+            message: "Evidence collection encountered an internal error.",
+            provider: null,
+            technical_message: error.message
+          }];
+        }
+        state.auditLog = state.auditLog || [];
+        state.auditLog.unshift({
+          id: newId("audit"),
+          at: completedAt,
+          action: "brain_zero_failed",
+          details: { runId, error: error.message }
+        });
+        return record;
       });
-      return record;
+    } catch (persistError) {
+      log("error", "brain_zero_failure_persist_failed", { runId, error: sanitizedError(persistError) });
+    }
+  } finally {
+    log("info", "brain_zero_background_task_settled", {
+      runId,
+      activeRunCount: brainZeroRuntimeState().activeRunCount,
+      memory: memorySummary()
     });
   }
 }
@@ -970,6 +1037,35 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, { runs });
   }
 
+  if (req.method === "GET" && url.pathname === "/api/brain-zero/health") {
+    const state = await readStore();
+    const runtime = brainZeroRuntimeState();
+    const latestCompleted = (state.brainZeroRuns || [])
+      .filter(run => ["completed", "partial", "failed"].includes(run.status))
+      .sort((a, b) => new Date(b.completed_at || 0) - new Date(a.completed_at || 0))[0] || null;
+    const queued = (state.brainZeroRuns || []).filter(run => run.status === "queued").length;
+    return send(res, 200, {
+      ok: true,
+      service: "brain-zero",
+      version: "brain-zero-v1",
+      status: runtime.activeRunCount ? "busy" : "ready",
+      activeRunCount: runtime.activeRunCount,
+      activeRunIds: runtime.activeRunIds,
+      activeProviders: runtime.activeProviders,
+      queueLength: queued,
+      memory: memorySummary(),
+      config: {
+        maxActiveRuns: brainZeroConfig().maxActiveRuns,
+        maxConcurrentRequests: brainZeroConfig().maxConcurrentRequests,
+        maxPages: brainZeroConfig().maxPages,
+        maxResponseBytes: brainZeroConfig().maxResponseBytes
+      },
+      lastCompletedRunAt: latestCompleted?.completed_at || "",
+      lastRecoveredRunAt: runtime.lastRecoveredAt || "",
+      lastCrashAt: runtime.lastCrashAt || ""
+    });
+  }
+
   if (req.method === "POST" && url.pathname === "/api/brain-zero/run") {
     try {
       const body = await readJson(req);
@@ -978,6 +1074,19 @@ const server = http.createServer(async (req, res) => {
       if (!lead || !lead.id) return send(res, 404, { error: "Lead not found" });
       const duplicate = duplicateBrainZeroRun(state.brainZeroRuns || [], lead.id);
       if (duplicate) return send(res, 409, { error: "Brain Zero is already collecting evidence for this business", run: duplicate });
+      if (!canStartBrainZeroRun(brainZeroConfig())) {
+        return send(res, 202, {
+          queued: true,
+          run: {
+            id: "",
+            run_id: "",
+            business_id: lead.id,
+            status: "queued",
+            message: "Evidence collection will begin when the current run finishes."
+          },
+          message: "Evidence collection will begin when the current run finishes."
+        });
+      }
       const cached = body.force ? null : freshBrainZeroRun(state.brainZeroRuns || [], lead.id);
       if (cached) {
         return send(res, 200, {
@@ -1021,7 +1130,11 @@ const server = http.createServer(async (req, res) => {
         });
         return record;
       });
-      setTimeout(() => completeBrainZeroRun(runId, context), 0);
+      setTimeout(() => {
+        completeBrainZeroRun(runId, context).catch(error => {
+          log("error", "brain_zero_background_unhandled", { runId, error: sanitizedError(error) });
+        });
+      }, 0);
       return send(res, 202, { run, message: "Brain Zero evidence collection started." });
     } catch (error) {
       log("error", "brain_zero_start_failed", { error: error.message });
@@ -1806,6 +1919,43 @@ const brainOneRequestTimeoutMs = Math.max(210000, (resolvedNvidiaTimeoutMs() * 2
 server.requestTimeout = brainOneRequestTimeoutMs;
 server.headersTimeout = Math.max(65000, Math.min(brainOneRequestTimeoutMs, 300000));
 
+async function recoverStaleBrainZeroRuns() {
+  try {
+    const recovered = await mutateStore(state => {
+      state.brainZeroRuns = state.brainZeroRuns || [];
+      const stale = state.brainZeroRuns.filter(run => ["queued", "running"].includes(run.status));
+      const at = new Date().toISOString();
+      for (const run of stale) {
+        run.status = "failed";
+        run.completed_at = at;
+        run.duration_ms = Date.parse(at) - Date.parse(run.started_at || run.createdAt || at);
+        run.errors = [...(run.errors || []), {
+          code: "run_interrupted_by_server_restart",
+          message: "Evidence collection was interrupted by a server restart. Please run it again.",
+          provider: null
+        }];
+        run.warnings = [...(run.warnings || []), "Evidence collection was interrupted by a server restart. Please run it again."];
+      }
+      if (stale.length) {
+        state.auditLog = state.auditLog || [];
+        state.auditLog.unshift({
+          id: newId("audit"),
+          at,
+          action: "brain_zero_stale_runs_recovered",
+          details: { recovered: stale.length }
+        });
+      }
+      return stale.length;
+    });
+    if (recovered) noteBrainZeroRecovery();
+    log("info", "brain_zero_stale_run_recovery_complete", { recovered });
+    return recovered;
+  } catch (error) {
+    log("error", "brain_zero_stale_run_recovery_failed", { error: sanitizedError(error) });
+    return 0;
+  }
+}
+
 server.listen(PORT, HOST, () => {
   log("info", "server_started", {
     url: HOST === "0.0.0.0" ? `http://0.0.0.0:${PORT}` : `http://127.0.0.1:${PORT}`,
@@ -1820,6 +1970,7 @@ server.listen(PORT, HOST, () => {
     model: resolvedNvidiaModel(),
     timeoutMs: resolvedNvidiaTimeoutMs()
   });
+  recoverStaleBrainZeroRuns();
   runBackgroundAutomation();
   setInterval(runBackgroundAutomation, 30 * 60 * 1000);
 });
