@@ -1277,6 +1277,35 @@
       if (!metaValue || !metaValue.status) return "";
       return metaValue.status === "insufficient_evidence" ? "Insufficient evidence" : metaValue.status;
     }
+    function brainModuleScore(scoreMeta = {}, key){
+      return scoreMeta.module_scores?.[key] || {};
+    }
+    function scoreMini(label, value, status = ""){
+      return `<div class="mini"><span>${esc(label)}</span><strong>${esc(value)}</strong>${status ? `<small>${esc(status)}</small>` : ""}</div>`;
+    }
+    function brainOneScoreGridHtml({ combinedOutput = {}, output = {}, decision = {}, decisionTone = "warn", overallStatus = "completed", opportunityPriority = null } = {}){
+      const scoreMeta = combinedOutput.score_metadata || {};
+      const modules = scoreMeta.module_scores || {};
+      const decisionEngine = combinedOutput.decision_engine || {};
+      const digital = output.digital_health || {};
+      const fallbackOpportunity = opportunityPriority;
+      const fallbackCallCatch = decision.callcatch_opportunity_score;
+      const rows = [
+        scoreMini("Overall", overallStatus),
+        `<div class="mini"><span>Decision</span><strong><span class="tag ${decisionTone}">${esc(decision.recommendation_status || decision.decision || decisionEngine.decision || "UNKNOWN")}</span></strong></div>`,
+        scoreMini("Business Foundation", brainScoreValue(modules.business_foundation, "-"), brainScoreStatus(modules.business_foundation)),
+        scoreMini("Business DNA", brainScoreValue(modules.business_dna, "-"), brainScoreStatus(modules.business_dna)),
+        scoreMini("Trust", brainScoreValue(modules.trust, "-"), brainScoreStatus(modules.trust)),
+        scoreMini("Digital Health", brainScoreValue(modules.digital_health, digital.total_score ?? digital.score), brainScoreStatus(modules.digital_health || scoreMeta.digital_health)),
+        scoreMini("AI Discoverability", brainScoreValue(modules.ai_discoverability, "-"), brainScoreStatus(modules.ai_discoverability)),
+        scoreMini("Future Readiness", brainScoreValue(modules.future_readiness, "-"), brainScoreStatus(modules.future_readiness)),
+        scoreMini("Opportunity Radar", brainScoreValue(modules.opportunity || scoreMeta.opportunity_priority, fallbackOpportunity), brainScoreStatus(modules.opportunity || scoreMeta.opportunity_priority)),
+        scoreMini("Business Quality", decisionEngine.business_quality_score ?? "-", decisionEngine.business_quality_score === null || decisionEngine.business_quality_score === undefined ? "" : "decision engine"),
+        scoreMini("Contactability", brainScoreValue(modules.contactability, decisionEngine.contactability_score), brainScoreStatus(modules.contactability)),
+        scoreMini("CallCatch Score", brainScoreValue(scoreMeta.callcatch_opportunity, fallbackCallCatch), brainScoreStatus(scoreMeta.callcatch_opportunity))
+      ];
+      return `<div class="detail-grid">${rows.join("")}</div>`;
+    }
     function brainZeroLatestRun(leadId){
       return (brainZeroRuns || [])
         .filter(run => run.business_id === leadId || run.businessId === leadId)
@@ -1400,7 +1429,7 @@
         ${run.executionStatus === "failed" ? `<p class="hint">${esc(run.errorDetails?.message || "Analysis failed. Check NVIDIA_API_KEY or model output.")}</p><p class="hint">Stopped at: ${esc(run.errorDetails?.failureStage || run.currentStage || "unknown")}</p>` : ""}
         ${run.executionStatus === "validation_failed" ? `<p class="hint">${esc(run.errorDetails?.message || validationMessage)}</p><p class="hint">Stopped at: ${esc(run.errorDetails?.failureStage || run.currentStage || "validation")}</p>${run.errorDetails?.parserError ? `<p class="hint">Parser: ${esc(run.errorDetails.parserError)}</p>` : ""}` : ""}
         ${run.executionStatus === "running" ? `<p class="hint">Brain One is analyzing this business. Current step: ${esc(run.currentStage || "running")}.</p>` : ""}
-        ${run.executionStatus === "completed" ? `<div class="detail-grid"><div class="mini"><span>Overall</span><strong>${esc(overallStatus)}</strong></div><div class="mini"><span>Decision</span><strong><span class="tag ${decisionTone}">${esc(decision.recommendation_status || decision.decision || "UNKNOWN")}</span></strong></div><div class="mini"><span>Opportunity Priority</span><strong>${esc(brainScoreValue(scoreMeta.opportunity_priority, opportunityPriority))}</strong><small>${esc(brainScoreStatus(scoreMeta.opportunity_priority))}</small></div><div class="mini"><span>CallCatch Score</span><strong>${esc(brainScoreValue(scoreMeta.callcatch_opportunity, decision.callcatch_opportunity_score))}</strong><small>${esc(brainScoreStatus(scoreMeta.callcatch_opportunity))}</small></div><div class="mini"><span>Digital Health</span><strong>${esc(brainScoreValue(scoreMeta.digital_health, digital.total_score ?? digital.score))}</strong><small>${esc(brainScoreStatus(scoreMeta.digital_health))}</small></div><div class="mini"><span>AI Discoverability</span><strong>${esc(discoverability.score ?? "-")}</strong></div><div class="mini"><span>Future Readiness</span><strong>${esc(readiness.readiness_level || readiness.status || "unknown")}</strong></div></div>
+        ${run.executionStatus === "completed" ? `${brainOneScoreGridHtml({ combinedOutput, output, decision, decisionTone, overallStatus, opportunityPriority })}
         <p class="hint">${esc(decision.primary_reason || output.brain_two_handoff?.summary || "Brain One report is ready.")}</p>
         <div class="insights">${moduleStatusHtml(combinedOutput)}</div>
         <div class="insights"><span class="tag hot">Confirmed</span><span class="tag">Inferred</span><span class="tag warn">Unknown</span></div>
