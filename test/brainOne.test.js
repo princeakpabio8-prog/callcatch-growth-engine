@@ -1167,6 +1167,84 @@ test("Brain Zero evidence powers digital, AI, and future scores for enterprise v
   }
 });
 
+test("Brain One does not crash when production modules return null evidence_ids", async () => {
+  const fixtures = [
+    ["Stripe", "https://stripe.com"],
+    ["Twilio", "https://twilio.com"],
+    ["Shopify", "https://shopify.com"],
+    ["Microsoft", "https://microsoft.com"],
+    ["HubSpot", "https://hubspot.com"]
+  ];
+  for (const [name, website] of fixtures) {
+    const context = enterpriseEvidenceContext(name, website);
+    let calls = 0;
+    const result = await runBrainOne(context, {
+      model: "test-model",
+      callModel: async () => {
+        calls += 1;
+        const full = sampleOutput(context);
+        if (calls === 1) return JSON.stringify({
+          ...moduleOutput(context, "foundation"),
+          confirmed_facts: [null, ...moduleOutput(context, "foundation").confirmed_facts],
+          inferences: [{ claim: `${name} has public platform evidence.`, evidence_ids: null, confidence: "medium", status: "inferred", reasoning: "Public evidence exists.", limitation: "Some pages may be missing." }]
+        });
+        if (calls === 2) return JSON.stringify({
+          business_dna: {
+            status: "assessed",
+            summary: `${name} has public platform and business evidence.`,
+            confidence: "high",
+            evidence_ids: null
+          },
+          digital_health: {
+            status: "assessed",
+            summary: "Digital evidence is visible, but the model returned null evidence ids.",
+            evidence_ids: null,
+            confidence: "medium",
+            sub_scores: null,
+            total_score: null
+          },
+          ai_discoverability: null,
+          future_readiness: { status: "assessed", summary: "Future-readiness signals are visible.", evidence_ids: null, confidence: "medium" }
+        });
+        if (calls === 3) return JSON.stringify({
+          hidden_opportunities: [null, { title: "Conversion path review", specific_observed_problem: "Public journey may be improved.", evidence_ids: null }],
+          money_left_on_table: null,
+          ai_opportunity_radar: {
+            conversion: null,
+            discoverability: { status: "observed", evidence: "Public content exists.", opportunity: "Improve answer-ready content.", confidence: "medium", evidence_ids: null },
+            future_readiness: null
+          },
+          risks: [null, { claim: "Outreach should avoid unsupported revenue claims.", evidence_ids: null, confidence: "low", status: "unknown", reasoning: "No monetary evidence was supplied.", limitation: "No estimate should be invented." }]
+        });
+        if (calls === 4) return JSON.stringify({
+          why_we_chose_you: { status: "insufficient_evidence", summary: "The model returned null evidence ids.", evidence_ids: null },
+          one_day_action_plan: { status: "insufficient_evidence", summary: "The model returned null evidence ids.", evidence_ids: null },
+          brain_two_handoff: { approved_for_handoff: false, summary: "Manual review required.", evidence_ids: null, do_not_automate_outbound: true }
+        });
+        if (calls === 5) return JSON.stringify({
+          contact_decision: {
+            ...full.contact_decision,
+            decision: "DO NOT CONTACT",
+            decision_confidence: "low",
+            primary_reason: "No verified outbound contact path in this test fixture.",
+            supporting_evidence: [],
+            disqualifying_factors: ["No verified contact path."],
+            information_gaps: ["No verified email or phone."],
+            callcatch_opportunity_score: null,
+            evidence_ids: null
+          },
+          brain_two_handoff: { approved_for_handoff: false, summary: "Manual review required.", evidence_ids: null, do_not_automate_outbound: true }
+        });
+        return "# Business Growth Blueprint\n\n## Opportunity Summary\nCompleted without evidence id crash.";
+      }
+    });
+    assert.ok(result.output, `${name} output`);
+    assert.match(result.blueprintMarkdown, /Business Growth Blueprint|Opportunity Summary/, `${name} blueprint`);
+    assert.notEqual(result.output.score_metadata.module_scores.business_foundation.value, undefined, `${name} foundation score exists`);
+    assert.notEqual(result.output.score_metadata.module_scores.digital_health.value, undefined, `${name} digital score exists`);
+  }
+});
+
 test("weak forum-only evidence stays needs review instead of forced contact", async () => {
   const context = buildBrainOneContextPackage(sampleLead(2, {
     business: "Forum Mention Plumbing",

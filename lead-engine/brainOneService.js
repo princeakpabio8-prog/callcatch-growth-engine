@@ -383,7 +383,7 @@ function safeModuleFallback(moduleKey, contextPackage = {}) {
 }
 
 function contextEvidenceLog(contextPackage = {}) {
-  return (contextPackage.evidenceLog || []).map(item => ({
+  return (contextPackage.evidenceLog || []).filter(item => item && typeof item === "object").map(item => ({
     id: item.id,
     source_type: item.source_type || item.sourceType || "unknown",
     source_url: item.source_url || item.sourceUrl || "",
@@ -393,6 +393,7 @@ function contextEvidenceLog(contextPackage = {}) {
 }
 
 function evidenceText(item = {}) {
+  if (!item || typeof item !== "object") return "";
   return compact([
     item.excerpt,
     item.value,
@@ -414,7 +415,7 @@ function firstUsefulEvidence(evidence = [], patterns = []) {
 }
 
 function evidenceIdsFrom(items = []) {
-  return uniqueArray(items.map(item => item.id || item.evidence_id).filter(Boolean));
+  return uniqueArray((items || []).map(item => item?.id || item?.evidence_id).filter(Boolean));
 }
 
 function phraseFromEvidence(item = {}, fallback = "") {
@@ -795,7 +796,9 @@ function normalizeEvidenceIds(holder = {}, pathName = "evidence_ids", meta = nul
 }
 
 function evidenceIdList(item = {}) {
-  return item.evidence_ids || item.evidenceIds || [];
+  if (!item || typeof item !== "object") return [];
+  const ids = item.evidence_ids ?? item.evidenceIds ?? [];
+  return Array.isArray(ids) ? ids : [];
 }
 
 function evidenceReferenceCheck(ids, pathName, evidenceIds, errors) {
@@ -1071,7 +1074,7 @@ function validateBrainOneOutput(output, options = {}) {
   if (errors.length) return { ok: false, errors };
   validateRequiredObject(output.business_identity, "business_identity", ["business_name", "website_url", "trade", "location"], errors);
   validateEvidenceItems(output.evidence_log, "evidence_log", errors, "snake");
-  const evidenceIds = new Set((output.evidence_log || []).map(item => item.id));
+  const evidenceIds = new Set((output.evidence_log || []).filter(item => item && typeof item === "object").map(item => item.id));
   validateContacts(output.contacts, evidenceIds, errors);
   claimListChecks(output.confirmed_facts, "confirmed_facts", evidenceIds, errors);
   claimListChecks(output.inferences, "inferences", evidenceIds, errors);
@@ -1171,7 +1174,7 @@ function validateModuleOutput(moduleKey, output = {}, contextPackage = {}, prior
     ...(priorModules.foundation?.output?.evidence_log || []),
     ...(output.evidence_log || [])
   ];
-  const evidenceIds = new Set((foundationEvidence || []).map(item => item.id));
+  const evidenceIds = new Set((foundationEvidence || []).filter(item => item && typeof item === "object").map(item => item.id));
 
   if (moduleKey === "foundation") {
     ensureObjectField(output, "business_identity", {}, meta);
@@ -1199,7 +1202,7 @@ function validateModuleOutput(moduleKey, output = {}, contextPackage = {}, prior
     if (!("location" in identity)) identity.location = null;
     if (!("summary" in identity)) identity.summary = null;
     validateEvidenceItems(output.evidence_log, "evidence_log", errors, "snake");
-    const localEvidenceIds = new Set((output.evidence_log || []).map(item => item.id));
+    const localEvidenceIds = new Set((output.evidence_log || []).filter(item => item && typeof item === "object").map(item => item.id));
     validateContacts(output.contacts, localEvidenceIds, errors);
     validateFlexibleClaims(output.confirmed_facts, "confirmed_facts", localEvidenceIds, errors);
     validateFlexibleClaims(output.inferences, "inferences", localEvidenceIds, errors);
@@ -1218,7 +1221,7 @@ function validateModuleOutput(moduleKey, output = {}, contextPackage = {}, prior
           ...evidenceBackedDna,
           ...output.business_dna,
           status: "assessed",
-          evidence_ids: uniqueArray([...evidenceBackedDna.evidence_ids, ...existingEvidenceIds])
+          evidence_ids: uniqueArray([...(evidenceBackedDna.evidence_ids ?? []), ...existingEvidenceIds])
         };
         recordNormalization(meta, "business_dna.evidence_backed_synthesis");
       }
@@ -1418,6 +1421,7 @@ function scoreCard(key, label, value, {
 }
 
 function evidenceText(item = {}) {
+  if (!item || typeof item !== "object") return "";
   const value = item.value;
   const valueText = value && typeof value === "object" ? JSON.stringify(value) : String(value || "");
   return [
@@ -1436,7 +1440,7 @@ function evidenceText(item = {}) {
 }
 
 function evidenceCategories(items = []) {
-  return uniqueArray(items.flatMap(item => [
+  return uniqueArray((items || []).filter(item => item && typeof item === "object").flatMap(item => [
     evidenceCategoryOf(item),
     evidenceProviderOf(item),
     evidenceFieldOf(item)
@@ -1444,7 +1448,7 @@ function evidenceCategories(items = []) {
 }
 
 function evidenceIds(items = []) {
-  return uniqueArray(items.map(item => item.id || item.evidence_id).filter(Boolean));
+  return uniqueArray((items || []).map(item => item?.id || item?.evidence_id).filter(Boolean));
 }
 
 function evidenceHas(item = {}, patterns = []) {
@@ -1476,7 +1480,7 @@ function evidenceMatchesScoringModule(moduleKey, item = {}) {
 }
 
 function moduleEvidenceForScoring(moduleKey, contextPackage = {}) {
-  const evidence = Array.isArray(contextPackage.evidenceLog) ? contextPackage.evidenceLog : [];
+  const evidence = Array.isArray(contextPackage.evidenceLog) ? contextPackage.evidenceLog.filter(item => item && typeof item === "object") : [];
   const hasBrainZeroContract = !!contextPackage.brainZero || evidence.some(item => item.sourceProvider || item.sourceCategory || item.category || item.field);
   if (!hasBrainZeroContract) return [];
   return evidence.filter(item => evidenceMatchesScoringModule(moduleKey, item));
@@ -1746,7 +1750,7 @@ function decisionEngineFromScores(moduleScores = {}, flat = {}) {
 }
 
 function hydrateScoreCardDiagnostics(moduleScores = {}, contextPackage = {}) {
-  const evidence = Array.isArray(contextPackage.evidenceLog) ? contextPackage.evidenceLog : [];
+  const evidence = Array.isArray(contextPackage.evidenceLog) ? contextPackage.evidenceLog.filter(item => item && typeof item === "object") : [];
   const byId = new Map(evidence.map(item => [item.id || item.evidence_id, item]));
   for (const item of Object.values(moduleScores)) {
     if (!item || typeof item !== "object") continue;
@@ -1796,7 +1800,7 @@ function calculateScoreMetadata(combined = {}, contextPackage = {}) {
       module_scores.digital_health.status,
       module_scores.digital_health.components_used,
       module_scores.digital_health.components_missing,
-      module_scores.digital_health.evidence_ids
+      module_scores.digital_health.evidence_ids ?? []
     ),
     opportunity_priority: scoreMeta(
       opportunityScores.length ? Math.max(...opportunityScores) : null,
@@ -2185,19 +2189,22 @@ function buildMessages(contextPackage, repairContext = null) {
 }
 
 function evidenceCategoryOf(item = {}) {
+  if (!item || typeof item !== "object") return "";
   return String(item.category || item.evidenceCategory || item.sourceCategory || item.sourceType || item.source_type || "").toLowerCase();
 }
 
 function evidenceProviderOf(item = {}) {
+  if (!item || typeof item !== "object") return "";
   return String(item.provider || item.sourceProvider || item.sourceType || item.source_type || "").toLowerCase();
 }
 
 function evidenceFieldOf(item = {}) {
+  if (!item || typeof item !== "object") return "";
   return String(item.field || "").toLowerCase();
 }
 
 function selectEvidenceForModule(moduleKey, contextPackage = {}, priorModules = {}) {
-  const evidence = Array.isArray(contextPackage.evidenceLog) ? contextPackage.evidenceLog : [];
+  const evidence = Array.isArray(contextPackage.evidenceLog) ? contextPackage.evidenceLog.filter(item => item && typeof item === "object") : [];
   const keepers = {
     foundation: item => /identity|trust|existing|lead|directory|content/.test(evidenceProviderOf(item)) || /identity|trust|contact|content|lead/.test(evidenceCategoryOf(item)) || /business_name|website|location|service|phone|email|description/i.test(evidenceFieldOf(item)),
     digital_intelligence: item => /website|feature|technical|content|crawl/.test(evidenceProviderOf(item)) || /website_page|technical|content|feature/.test(evidenceCategoryOf(item)) || /booking|form|chat|mobile|speed|metadata|heading|content/i.test(evidenceFieldOf(item)),
