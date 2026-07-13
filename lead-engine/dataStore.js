@@ -13,6 +13,7 @@ const initialState = {
   auditLog: [],
   jobs: [],
   brainOneRuns: [],
+  brainTwoRuns: [],
   brainZeroRuns: []
 };
 

@@ -676,8 +676,10 @@
     let leads = JSON.parse(localStorage.getItem("ccProspectsV2") || "[]");
     let queue = JSON.parse(localStorage.getItem("ccApprovalQueueV2") || "[]");
     let brainOneRuns = [];
+    let brainTwoRuns = [];
     let brainZeroRuns = [];
     const brainOneStarting = new Set();
+    const brainTwoStarting = new Set();
     let auditLog = [];
     let lastGrowthRun = null;
     let emailReady = false;
@@ -802,6 +804,7 @@
       if (Array.isArray(crm.leads)) leads = (mergeLocal ? mergeById(leads, crm.leads) : crm.leads).filter(isStorableProspect);
       auditLog = crm.auditLog || auditLog;
       if (Array.isArray(crm.brainOneRuns)) brainOneRuns = crm.brainOneRuns;
+      if (Array.isArray(crm.brainTwoRuns)) brainTwoRuns = crm.brainTwoRuns;
       if (Array.isArray(crm.brainZeroRuns)) brainZeroRuns = crm.brainZeroRuns;
       recoverPipelineFromSentHistory();
       if (Array.isArray(crm.approvalQueue)) queue = compactEmailDuplicates(mergeLocal ? mergeById(queue, crm.approvalQueue) : crm.approvalQueue);
@@ -1202,6 +1205,11 @@
         .filter(run => run.businessId === leadId)
         .sort((a,b)=>new Date(b.createdAt || 0)-new Date(a.createdAt || 0))[0] || null;
     }
+    function brainTwoLatestRun(leadId){
+      return (brainTwoRuns || [])
+        .filter(run => run.businessId === leadId)
+        .sort((a,b)=>new Date(b.createdAt || 0)-new Date(a.createdAt || 0))[0] || null;
+    }
     function markdownToHtml(markdown = ""){
       const lines = String(markdown || "").split(/\r?\n/);
       const html = [];
@@ -1449,6 +1457,54 @@
         <div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-one-approve="${run.id}|${lead.id}">Approve for CRM/Brain Two</button><button class="btn small" data-brain-one-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-one-analyze="${lead.id}">Analyze Again</button></div>` : `<div class="actions" style="margin-top:10px;"><button class="btn small" data-brain-one-analyze="${lead.id}">Run Again</button></div>`}
         <p class="hint" id="brainOneStatus-${lead.id}"></p></div>`;
     }
+    function brainTwoEmailHtml(email = {}, index = 0){
+      const title = index ? `Follow-up ${index}` : "First Email";
+      return `<div class="queue-item"><div class="lead-top"><strong>${esc(title)}: ${esc(email.subject || "No subject")}</strong><span class="tag">${esc((email.evidence_ids || []).length)} evidence</span></div><div class="script" style="min-height:90px;">${esc(email.body || "")}</div><p class="hint">Claims: ${esc((email.claims || []).join(", ") || "none")}</p></div>`;
+    }
+    function brainTwoReportHtml(lead = {}){
+      const brainOne = brainOneLatestRun(lead.id);
+      const run = brainTwoLatestRun(lead.id);
+      const manualTest = !!(lead.testProspect || lead.manualTest || lead.outreachDisabled || lead.analysis_mode === "manual_test");
+      const brainOneApproved = /^approved/i.test(brainOne?.approvalStatus || "");
+      const combinedOutput = brainOne?.phaseAOutput || brainOne?.validatedOutput || {};
+      const flat = flattenBrainOneOutput(combinedOutput);
+      const decision = flat.contact_decision?.decision || flat.contact_decision?.recommendation_status || "";
+      const canGenerate = brainOne?.executionStatus === "completed" && brainOneApproved && decision !== "DO NOT CONTACT" && !manualTest;
+      const blockedReasons = [
+        !brainOne ? "Run Brain One first." : "",
+        brainOne && brainOne.executionStatus !== "completed" ? "Brain One must complete first." : "",
+        brainOne && !brainOneApproved ? "Manually approve Brain One first." : "",
+        decision === "DO NOT CONTACT" ? "Brain One decision is DO NOT CONTACT." : "",
+        manualTest ? "Manual Test mode blocks Brain Two." : ""
+      ].filter(Boolean);
+      if (!run) {
+        return `<div class="panel"><div class="lead-top"><div><h3>Brain Two Outreach Intelligence</h3><p class="sub">Generates outreach strategy only after approved Brain One. This will not send or queue email.</p></div><span class="tag ${canGenerate ? "warn" : "bad"}">${canGenerate ? "Ready" : "Blocked"}</span></div>
+          ${blockedReasons.length ? `<p class="hint">${esc(blockedReasons.join(" "))}</p>` : `<p class="hint">Brain Two can generate outreach intelligence from the approved Brain One report.</p>`}
+          <div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-two-generate="${lead.id}" ${canGenerate ? "" : "disabled"}>Generate Brain Two</button></div>
+          <p class="hint" id="brainTwoStatus-${lead.id}"></p></div>`;
+      }
+      const output = run.output || {};
+      const tone = run.executionStatus === "completed" ? "hot" : run.executionStatus === "blocked" ? "bad" : "warn";
+      const confidence = output.outreach_confidence || {};
+      const eligibility = output.eligibility || {};
+      const persona = output.ideal_contact_persona || {};
+      const offer = output.selected_offer || {};
+      const angle = output.selected_outreach_angle || {};
+      return `<div class="panel"><div class="lead-top"><div><h3>Brain Two Outreach Intelligence</h3><p class="sub">Run ${esc(run.id)} | ${esc(formatDateTime(run.createdAt))}</p></div><span class="tag ${tone}">${esc(output.status || run.executionStatus)}</span></div>
+        <div class="detail-grid"><div class="mini"><span>Eligibility</span><strong>${esc(eligibility.status || "unknown")}</strong></div><div class="mini"><span>Persona</span><strong>${esc(persona.persona || "-")}</strong></div><div class="mini"><span>Offer</span><strong>${esc(offer.name || "-")}</strong></div><div class="mini"><span>Confidence</span><strong>${esc(confidence.score ?? "-")}</strong><small>${esc(confidence.level || "")}</small></div><div class="mini"><span>Approval</span><strong>${esc(run.approvalStatus || output.approval_state || "pending-review")}</strong></div></div>
+        ${(eligibility.reasons || []).length ? `<p class="hint">${esc(eligibility.reasons.join(" "))}</p>` : ""}
+        <details open><summary>Selected Outreach Strategy</summary><p><strong>Angle:</strong> ${esc(angle.angle || "")}</p><p class="hint">${esc(angle.reasoning || "")}</p><p><strong>Offer:</strong> ${esc(offer.description || "")}</p><p class="hint">${esc(output.offer_fit_explanation || offer.reasoning || "")}</p><p><strong>CTA:</strong> ${esc(output.concise_cta || "")}</p></details>
+        <details open><summary>Subject Lines</summary>${objectSummaryHtml(output.subject_lines || [])}</details>
+        <details open><summary>First Outreach Email</summary>${brainTwoEmailHtml(output.first_email || {}, 0)}</details>
+        <details><summary>Follow-up Emails</summary>${(output.follow_up_emails || []).map((email,index)=>brainTwoEmailHtml(email, index + 1)).join("") || `<p class="sub">No follow-ups generated.</p>`}</details>
+        <details><summary>Ranked Contact Personas</summary>${(output.ranked_contact_personas || []).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.rank)}. ${esc(item.persona)}</strong><span class="tag">${esc(item.confidence)}</span></div><p class="hint">${esc(item.reasoning || "")}</p><p class="hint">Evidence: ${esc((item.evidence_ids || []).join(", ") || "none")}</p></div>`).join("") || `<p class="sub">No personas ranked.</p>`}</details>
+        <details><summary>Supporting Evidence</summary>${(output.supporting_evidence || []).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.claim)}</strong><span class="tag">${esc(item.claim_type)}</span></div><p class="hint">Evidence: ${esc((item.evidence_ids || []).join(", ") || "none")}</p></div>`).join("") || `<p class="sub">No evidence listed.</p>`}</details>
+        <details><summary>Prohibited Claims</summary>${objectSummaryHtml(output.prohibited_claims || [])}</details>
+        <details><summary>Brain Three Handoff</summary>${objectSummaryHtml(output.brain_three_handoff || {})}</details>
+        <p class="hint">Brain Two approval does not send or queue email.</p>
+        <div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-two-approve="${run.id}|${lead.id}">Approve Brain Two</button><button class="btn small" data-brain-two-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-two-generate="${lead.id}">Regenerate</button></div>
+        <p class="hint" id="brainTwoStatus-${lead.id}"></p></div>`;
+    }
     async function refreshBrainOneRuns(leadId){
       const result = await api(`/api/brain-one/runs${leadId ? `?leadId=${encodeURIComponent(leadId)}` : ""}`);
       const incoming = result.runs || [];
@@ -1540,6 +1596,52 @@
         return null;
       }
     }
+    async function refreshBrainTwoRuns(leadId){
+      const result = await api(`/api/brain-two/runs${leadId ? `?leadId=${encodeURIComponent(leadId)}` : ""}`);
+      const incoming = result.runs || [];
+      const byId = new Map((brainTwoRuns || []).map(run=>[run.id, run]));
+      incoming.forEach(run=>byId.set(run.id, run));
+      brainTwoRuns = [...byId.values()];
+      return incoming[0] || null;
+    }
+    async function generateBrainTwo(leadId){
+      const status = $(`brainTwoStatus-${leadId}`);
+      if (brainTwoStarting.has(leadId)) return;
+      brainTwoStarting.add(leadId);
+      if (status) status.textContent = "Generating Brain Two outreach intelligence...";
+      toast("Brain Two starting");
+      try {
+        const brainOne = brainOneLatestRun(leadId);
+        const result = await api("/api/brain-two/generate", { method:"POST", body: JSON.stringify({ leadId, brainOneRunId: brainOne?.id || "" }) });
+        if (result.run) {
+          const byId = new Map((brainTwoRuns || []).map(run=>[run.id, run]));
+          byId.set(result.run.id, result.run);
+          brainTwoRuns = [...byId.values()];
+        }
+        const crm = await api("/api/crm");
+        applyServerState(crm);
+        render();
+        toast("Brain Two ready for review");
+      } catch(error) {
+        if (status) status.textContent = `Brain Two blocked: ${error.message}`;
+        toast("Brain Two blocked");
+      } finally {
+        brainTwoStarting.delete(leadId);
+      }
+    }
+    async function reviewBrainTwo(runId, leadId, approved){
+      try {
+        const result = await api(approved ? "/api/brain-two/approve" : "/api/brain-two/reject", { method:"POST", body: JSON.stringify({ runId, leadId }) });
+        const crm = await api("/api/crm");
+        applyServerState(crm);
+        render();
+        toast(approved ? "Brain Two approved" : "Brain Two rejected");
+        return result;
+      } catch(error) {
+        toast(error.message);
+        return null;
+      }
+    }
     function bindBrainOneActions(){
       document.querySelectorAll("[data-brain-one-analyze]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); analyzeBrainOne(button.dataset.brainOneAnalyze); });
       document.querySelectorAll("[data-brain-zero-run]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); runBrainZero(button.dataset.brainZeroRun, false); });
@@ -1547,6 +1649,9 @@
       document.querySelectorAll("[data-brain-zero-continue]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); const [leadId, runId, partial] = button.dataset.brainZeroContinue.split("|"); analyzeBrainOne(leadId, { brainZeroRunId: runId, acceptPartial: partial === "1", requireBrainZero: true }); });
       document.querySelectorAll("[data-brain-one-approve]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); const [runId, leadId] = button.dataset.brainOneApprove.split("|"); reviewBrainOne(runId, leadId, true); });
       document.querySelectorAll("[data-brain-one-reject]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); const [runId, leadId] = button.dataset.brainOneReject.split("|"); reviewBrainOne(runId, leadId, false); });
+      document.querySelectorAll("[data-brain-two-generate]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); generateBrainTwo(button.dataset.brainTwoGenerate); });
+      document.querySelectorAll("[data-brain-two-approve]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); const [runId, leadId] = button.dataset.brainTwoApprove.split("|"); reviewBrainTwo(runId, leadId, true); });
+      document.querySelectorAll("[data-brain-two-reject]").forEach(button=>button.onclick=event=>{ event.stopPropagation(); const [runId, leadId] = button.dataset.brainTwoReject.split("|"); reviewBrainTwo(runId, leadId, false); });
     }
     function emailIdentity(value = ""){
       return String(value || "").toLowerCase().match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/)?.[0] || "";
@@ -2434,7 +2539,8 @@
           <div class="insights">${[...(lead.aiInsights || []), ...(lead.websiteIntelligence?.leadQualitySignals || []), lead.recommendedSalesAngle || ""].filter(Boolean).slice(0,10).map(item=>`<span class="tag">${esc(item)}</span>`).join("") || `<span class="tag">No intelligence saved yet</span>`}</div>
         </div>
         ${brainZeroPanelHtml(lead)}
-        ${brainOneReportHtml(lead)}`;
+        ${brainOneReportHtml(lead)}
+        ${brainTwoReportHtml(lead)}`;
       bindBrainOneActions();
     }
     function saveComposer(){
@@ -2551,6 +2657,7 @@
       <div class="actions" style="margin-top:10px;"><button class="btn primary small" id="smartSendBtn" ${manualTest ? "disabled" : ""}>Research + Approve & Send</button><button class="btn small" id="queueBtn" ${manualTest ? "disabled" : ""}>Research + Draft</button><button class="btn small" id="scanBtn">Scan Website</button><button class="btn small" id="saveLeadBtn">Save Lead</button><button class="btn small" id="copyEmailBtn">Copy Email</button>${manualTest ? `<button class="btn small" id="convertManualBtn">Convert to Real Prospect</button>` : ""}</div>
       ${brainZeroPanelHtml(l)}
       ${brainOneReportHtml(l)}
+      ${brainTwoReportHtml(l)}
       <h3 style="margin-top:14px;">Conversation</h3><div class="queue">${conversation.length ? conversation.slice(0,6).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.title)}</strong><span class="tag ${item.tone}">${esc(item.type)}</span></div><p class="hint">${new Date(item.at).toLocaleString()}</p><div class="script" style="min-height:64px;">${esc(item.body || "")}</div></div>`).join("") : `<p class="sub">No sent emails or replies yet.</p>`}</div>
       <h3 style="margin-top:14px;">Sent Emails</h3><div class="queue">${sentEmails.length ? sentEmails.slice(0,5).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.subject || item.title || "Sent email")}</strong><span class="tag hot">Sent</span></div><p class="hint">${esc(item.to || "")} | ${item.sentAt ? new Date(item.sentAt).toLocaleString() : ""}</p><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy-sent="${esc(item.taskId || item.id || "")}">Copy Email</button></div></div>`).join("") : `<p class="sub">No sent emails yet.</p>`}</div>
       <h3 style="margin-top:14px;">Timeline</h3><div class="script">${(l.timeline||[]).map(t=>`${new Date(t.at).toLocaleString()} - ${t.text}`).join("\n")}</div>`;

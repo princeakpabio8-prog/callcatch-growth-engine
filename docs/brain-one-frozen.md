@@ -1,114 +1,189 @@
-# CallCatch Brain One - Opportunity Intelligence Engine
+# CallCatch Brain One - Opportunity Intelligence v1.0 (Frozen)
 
-Status: frozen for Brain One production integration.
+Status: frozen production baseline.
 
-Brain One is a manual business analysis engine. It researches one business record at a time and produces an evidence-backed opportunity report for CallCatch. It does not write outreach, send emails, schedule follow-ups, or trigger automation.
+Frozen tag: `brain-one-v1.0-frozen`
 
-## Operating Rules
+Brain Two rollback tag: `brain-two-before-v1.0`
 
-- Brain One only runs after a user clicks Analyze Business.
-- Brain One output never triggers outbound email automatically.
-- Approval is manual through Approve for CRM/Brain Two.
-- Rejecting a report preserves the audit trail.
-- Unknown information remains unknown.
-- Every material claim must reference evidence from the input package.
-- Estimates must include assumptions and confidence.
-- Malformed model output is rejected.
-- One repair attempt is allowed. If repair fails, the raw response and parser error are stored and the user sees a clear validation message.
+Frozen production commit:
 
-## Input Contract
+`a51894206f5d0d4eac3171eaba6d636869751533`
+
+## Freeze Rule
+
+Brain One may only be modified for a verified production bug.
+
+Do not change Brain One prompts, schemas, scoring, evidence validation, evidence collection handoff, manual approval behavior, CRM behavior, sending behavior, or follow-up behavior while building Brain Two.
+
+Brain Two must consume Brain One as a frozen upstream contract. It may read approved Brain One output, but it must never recalculate or overwrite Brain One scores, decisions, evidence, opportunities, money estimates, or contact decisions.
+
+## Frozen Responsibility
+
+Brain One analyzes a business and produces an evidence-backed Opportunity Intelligence report.
+
+Brain One does not:
+
+- write outreach as an operational sending artifact
+- send email
+- queue email
+- schedule follow-ups
+- trigger automation
+- approve itself
+- start Brain Two automatically
+
+Brain One runs manually after evidence collection and requires manual approval before any downstream brain may use its output.
+
+## Frozen Input Contract
 
 Brain One receives a structured context package containing:
 
 - business identity
+- website URL
 - website/public text
 - public contact details
 - public social or directory evidence
 - scraper evidence
 - source URLs
 - analysis timestamp
+- Brain Zero evidence package metadata when available
 
-No private inbox content, secret keys, or sender credentials are included.
+No API keys, SMTP secrets, inbox credentials, private email content, or sender credentials are included.
 
-## Output Contract
+## Frozen Output Contract
 
-Brain One now runs in two phases. Phase A is modular so a weak or malformed section does not discard the whole analysis.
+Brain One uses the modular Phase A / Phase B architecture.
 
-Phase A returns compact JSON only, using these module schemas:
+Phase A stores validated JSON with independent module outputs:
 
-- `/schemas/brain-one-foundation.json`
-- `/schemas/brain-one-digital-intelligence.json`
-- `/schemas/brain-one-opportunities.json`
-- `/schemas/brain-one-strategic-interpretation.json`
-- `/schemas/brain-one-contact-decision.json`
-- `/schemas/brain-one-combined-output.json`
+- Foundation
+- Business DNA
+- Digital Health
+- AI Discoverability
+- Future Readiness
+- Trust
+- Opportunity Radar
+- Hidden Opportunities
+- Money Left on the Table
+- Why We Chose You
+- One-Day Action Plan
+- Contact Decision
+- Decision Engine
+- Brain Two handoff context
 
-Required modules:
+Each module owns its own evidence, confidence, score, diagnostics, and explanation. A weak Contactability score must not downgrade Business Foundation, Business DNA, Trust, Digital Health, AI Discoverability, Future Readiness, or Business Quality.
 
-- Foundation: business identity, contacts with strict owner/contact separation, business DNA, evidence log, confirmed facts, inferences, and unknowns.
-- Digital Intelligence: digital health assessment, AI discoverability assessment, and future readiness.
-- Opportunities: hidden opportunities, money left on the table, AI opportunity radar, and risks.
-- Strategic Interpretation: why we chose you, one-day action plan, and Brain Two handoff context.
-- Contact Decision: CONTACT or DO NOT CONTACT decision.
+Phase B stores a founder-facing Business Growth Blueprint rendered from validated Phase A output only.
 
-If a module still fails after one repair attempt, Brain One stores a safe failed-module fallback and continues with the remaining modules. The combined report records completed modules, failed modules, module status, parser errors, validation errors, normalization metadata, and the raw model response for audit.
+## Frozen Score Contract
 
-Phase B renders the long-form Business Growth Blueprint as Markdown using only the validated Phase A JSON as its factual source. Phase B output is stored separately from the Phase A JSON.
+Brain One exposes the following validated score source:
 
-## Evidence Standard
+`validatedOutput.score_metadata.module_scores`
 
-Evidence IDs in the output must match evidence IDs from the module evidence log.
+Required visible scores:
 
-Confirmed facts require direct evidence. Inferences require evidence plus reasoning. Monetary estimates require clear assumptions and evidence. If evidence is weak or missing, the output must say unknown or insufficient evidence rather than guessing.
+- `business_foundation`
+- `business_dna`
+- `trust`
+- `digital_health`
+- `ai_discoverability`
+- `future_readiness`
+- `opportunity`
+- `contactability`
 
-Owner names and contact names must never contain email addresses. Generic inboxes are not person names. CONTACT decisions require more than weak evidence.
+Business Quality is exposed at:
 
-## Defensive Normalization
+`validatedOutput.decision_engine.business_quality_score`
 
-Brain One may normalize missing non-dangerous sections before validation. Normalization never creates facts, money, contacts, or outreach intent.
+The UI must render Brain One scores from these validated fields, not from raw model-only sections.
 
-Safe defaults may be inserted for:
+## Frozen Evidence Standard
 
-- contacts: []
-- evidence_log: []
-- confirmed_facts: []
-- inferences: []
-- unknowns: []
-- hidden_opportunities: []
-- risks: []
-- money_left_on_table: insufficient-evidence fallback
-- ai_opportunity_radar: unknown-state fallback
-- why_we_chose_you: insufficient-evidence fallback
-- one_day_action_plan: insufficient-evidence fallback
+Every material claim must be tied to evidence IDs from the approved Brain One evidence package or clearly marked as an inference.
 
-When normalization happens, the run records `normalization_applied: true` and lists `normalized_fields`. The raw model response is preserved.
+Confirmed facts require direct evidence.
 
-Dangerous errors are still rejected, including email addresses as owner names, unsupported confirmed absence claims, fabricated monetary estimates, weak CONTACT decisions, malformed business identity, and Phase B facts absent from Phase A.
+Inferences require evidence plus reasoning.
 
-## Persistence
+Monetary estimates require assumptions, evidence, confidence, and a disclaimer.
 
-Every run is logged with:
+If monetary estimation is unsupported, Brain One returns the safe insufficient-evidence object instead of inventing values.
 
-- business ID
-- input snapshot
-- model name
-- raw Phase A response
-- validated Phase A output
-- Phase B Markdown blueprint
-- execution status
-- execution duration
-- parser error details when validation fails
-- error details
-- created timestamp
+Unknown information remains unknown.
 
-## Current Scope
+## Frozen Validation and Safety Rules
 
-Included: Brain One only.
+Brain One rejects or safely fails dangerous output, including:
 
-Excluded for now:
+- owner names containing email addresses
+- generic inboxes treated as people
+- unsupported confirmed claims
+- fabricated monetary estimates
+- weak CONTACT decisions
+- malformed core business identity
+- Phase B introducing facts absent from Phase A
 
-- Brain Two
-- Brain Three
-- Brain Four
-- Brain Five
-- automatic outbound actions from Brain One
+Brain One may normalize non-dangerous missing fields only when the raw response is preserved and normalization metadata is stored.
+
+## Live Verification Results
+
+Live Render application:
+
+`https://callcatch-growth-engine.onrender.com`
+
+Verification performed against production Brain Zero and Brain One runs for Stripe, HubSpot, Shopify, and Microsoft.
+
+| Business | Foundation | DNA | Trust | Digital | AI Discoverability | Future Readiness | Opportunity Radar | Business Quality | Contactability | Decision |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Stripe | 100 | 100 | 69 | 95 | 95 | 88 | 47 | 91 | 0 | DO NOT CONTACT |
+| HubSpot | 100 | 100 | 69 | 95 | 92 | 79 | 45 | 89 | 0 | DO NOT CONTACT |
+| Shopify | 90 | 100 | 77 | 95 | 95 | 95 | 95 | 92 | 0 | DO NOT CONTACT |
+| Microsoft | 100 | 100 | 69 | 95 | 95 | 95 | 95 | 92 | 0 | DO NOT CONTACT |
+
+Result:
+
+- all four production runs completed
+- all required score values were present
+- saved blueprint reports contained no `Not scored` marker for required sections
+- Contactability remained independent from Business Quality
+
+## Passing Tests
+
+Frozen local test result:
+
+`122/122` passing
+
+Command:
+
+`npm.cmd test`
+
+Syntax check:
+
+`node --check lead-engine\brainOneService.js`
+
+## Rollback Instructions
+
+Rollback Brain One to the frozen production state:
+
+```powershell
+git fetch --tags
+git checkout brain-one-v1.0-frozen
+```
+
+Rollback Brain Two work while keeping Brain One frozen:
+
+```powershell
+git fetch --tags
+git checkout brain-two-before-v1.0
+```
+
+To restore `main` to the frozen Brain One commit, use a normal revert or reset workflow only after confirming the production rollback plan:
+
+```powershell
+git checkout main
+git revert <brain-two-commit-range>
+git push origin main
+```
+
+Do not rewrite production history unless there is a confirmed deployment emergency.

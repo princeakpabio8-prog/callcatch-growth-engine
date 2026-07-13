@@ -34,6 +34,12 @@ const {
   runBrainOne
 } = require("./lead-engine/brainOneService");
 const {
+  applyBrainTwoReviewState,
+  duplicateBrainTwoRun,
+  evaluateBrainTwoEligibility,
+  runBrainTwo
+} = require("./lead-engine/brainTwoService");
+const {
   generateFollowUps,
   metrics: sendingMetrics,
   recordReply,
@@ -1224,7 +1230,7 @@ const server = http.createServer(async (req, res) => {
         ...(serperConfigured() ? ["serper"] : []),
         ...(braveConfigured() ? ["brave-search"] : [])
       ],
-      modules: ["prospect-intelligence", "website-scanner", "approval-queue", "brain-zero-evidence"],
+      modules: ["prospect-intelligence", "website-scanner", "approval-queue", "brain-zero-evidence", "brain-two-outreach-intelligence"],
       brainZero: {
         enabled: true,
         mode: "manual-evidence-collection",
@@ -1244,6 +1250,12 @@ const server = http.createServer(async (req, res) => {
         model: resolvedNvidiaModel(),
         timeoutMs: resolvedNvidiaTimeoutMs(),
         configured: !!process.env.NVIDIA_API_KEY
+      },
+      brainTwo: {
+        enabled: true,
+        mode: "manual-after-approved-brain-one",
+        sendsEmail: false,
+        queuesEmail: false
       },
       automation: ["daily-growth", "campaign-sequences", "approval-first-autopilot"],
       sendingEngine: ["send-now", "bulk-send", "scheduled-send", "rate-limits", "reply-tracking"],
@@ -1729,6 +1741,90 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, result);
     } catch (error) {
       return send(res, 400, { error: error.message });
+    }
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/brain-two/runs") {
+    const state = await readStore();
+    const leadId = url.searchParams.get("leadId") || "";
+    const runs = (state.brainTwoRuns || [])
+      .filter(run => !leadId || run.businessId === leadId)
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    return send(res, 200, { runs });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/brain-two/generate") {
+    try {
+      const body = await readJson(req);
+      const createdAt = new Date().toISOString();
+      const result = await mutateStore(state => {
+        state.brainTwoRuns = state.brainTwoRuns || [];
+        state.brainOneRuns = state.brainOneRuns || [];
+        state.auditLog = state.auditLog || [];
+        const lead = (state.leads || []).find(item => item.id === body.leadId);
+        if (!lead) throw new Error("Lead not found");
+        const duplicate = duplicateBrainTwoRun(state.brainTwoRuns, lead.id);
+        if (duplicate) return { alreadyRunning: true, run: duplicate };
+        const brainOneRun = body.brainOneRunId
+          ? state.brainOneRuns.find(item => item.id === body.brainOneRunId)
+          : state.brainOneRuns
+            .filter(item => item.businessId === lead.id)
+            .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))[0];
+        const eligibility = evaluateBrainTwoEligibility({ lead, brainOneRun });
+        if (!eligibility.eligible) {
+          const error = new Error(eligibility.reasons.join(" ") || "Brain Two is not eligible for this lead.");
+          error.statusCode = 409;
+          error.eligibility = eligibility;
+          throw error;
+        }
+        const runId = newId("brain2");
+        const generated = runBrainTwo({ lead, brainOneRun, runId, createdAt });
+        const record = {
+          id: runId,
+          businessId: lead.id,
+          brainOneRunId: brainOneRun.id,
+          executionStatus: generated.executionStatus,
+          approvalStatus: generated.approvalStatus,
+          output: generated.output,
+          generationMode: generated.output.generation_mode,
+          createdAt,
+          executionDurationMs: 0,
+          errorDetails: null
+        };
+        state.brainTwoRuns.unshift(record);
+        lead.brainTwoLatestRunId = runId;
+        lead.brainTwoApprovalStatus = "pending-review";
+        lead.timeline = lead.timeline || [];
+        lead.timeline.unshift({ at: createdAt, text: "Brain Two outreach intelligence generated. Manual approval required. No email was sent or queued." });
+        state.auditLog.unshift({ id: newId("audit"), at: createdAt, action: "brain_two_generated", details: { runId, businessId: lead.id, brainOneRunId: brainOneRun.id } });
+        return { run: record, eligibility };
+      });
+      if (result.alreadyRunning) return send(res, 200, { ok: true, status: "already_running", run: result.run });
+      return send(res, 201, { ok: true, status: "completed", run: result.run, eligibility: result.eligibility });
+    } catch (error) {
+      return send(res, error.statusCode || 400, {
+        ok: false,
+        status: "blocked",
+        error: error.message,
+        eligibility: error.eligibility || null
+      });
+    }
+  }
+
+  if (req.method === "POST" && ["/api/brain-two/approve", "/api/brain-two/reject"].includes(url.pathname)) {
+    try {
+      const body = await readJson(req);
+      const approved = url.pathname.endsWith("/approve");
+      const result = await mutateStore(state => applyBrainTwoReviewState(state, {
+        runId: body.runId,
+        leadId: body.leadId,
+        approved,
+        reviewedBy: body.reviewedBy || "CallCatch user",
+        notes: body.notes || ""
+      }));
+      return send(res, 200, { ok: true, ...result });
+    } catch (error) {
+      return send(res, 400, { ok: false, error: error.message });
     }
   }
 

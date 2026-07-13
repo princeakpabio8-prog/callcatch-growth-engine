@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://callcatch.site/schemas/brain-two-output.json",
+  "title": "CallCatch Brain Two - Outreach Intelligence v1.0",
+  "type": "object",
+  "required": [
+    "version",
+    "status",
+    "eligibility",
+    "ideal_contact_persona",
+    "ranked_contact_personas",
+    "selected_outreach_angle",
+    "selected_offer",
+    "offer_fit_explanation",
+    "subject_lines",
+    "first_email",
+    "follow_up_emails",
+    "concise_cta",
+    "outreach_confidence",
+    "supporting_evidence",
+    "prohibited_claims",
+    "brain_three_handoff",
+    "approval_state",
+    "generation_mode"
+  ],
+  "properties": {
+    "version": { "const": "brain-two-v1.0" },
+    "status": { "enum": ["READY", "NEEDS_REVIEW", "BLOCKED"] },
+    "eligibility": {
+      "type": "object",
+      "required": ["eligible", "status", "reasons", "brain_one_run_id", "manual_research_required"],
+      "properties": {
+        "eligible": { "type": "boolean" },
+        "status": { "enum": ["eligible", "needs_review", "blocked"] },
+        "reasons": { "type": "array", "items": { "type": "string" } },
+        "brain_one_run_id": { "type": "string" },
+        "manual_research_required": { "type": "boolean" }
+      }
+    },
+    "ideal_contact_persona": {
+      "type": "object",
+      "required": ["persona", "reasoning", "confidence", "evidence_ids"],
+      "properties": {
+        "persona": { "type": "string" },
+        "reasoning": { "type": "string" },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "evidence_ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "ranked_contact_personas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["persona", "rank", "reasoning", "confidence", "evidence_ids"],
+        "properties": {
+          "persona": { "type": "string" },
+          "rank": { "type": "integer" },
+          "reasoning": { "type": "string" },
+          "confidence": { "enum": ["high", "medium", "low"] },
+          "evidence_ids": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "selected_outreach_angle": {
+      "type": "object",
+      "required": ["angle", "reasoning", "claim_type", "evidence_ids"],
+      "properties": {
+        "angle": { "type": "string" },
+        "reasoning": { "type": "string" },
+        "claim_type": { "enum": ["evidence_backed", "soft_hypothesis"] },
+        "evidence_ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "selected_offer": {
+      "type": "object",
+      "required": ["name", "description", "reasoning", "evidence_ids"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "reasoning": { "type": "string" },
+        "evidence_ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "offer_fit_explanation": { "type": "string" },
+    "subject_lines": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "type": "string" }
+    },
+    "first_email": {
+      "type": "object",
+      "required": ["subject", "body", "evidence_ids", "claims"],
+      "properties": {
+        "subject": { "type": "string" },
+        "body": { "type": "string" },
+        "evidence_ids": { "type": "array", "items": { "type": "string" } },
+        "claims": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "follow_up_emails": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["step", "recommended_delay_days", "subject", "body", "evidence_ids", "claims"],
+        "properties": {
+          "step": { "type": "integer" },
+          "recommended_delay_days": { "type": "integer" },
+          "subject": { "type": "string" },
+          "body": { "type": "string" },
+          "evidence_ids": { "type": "array", "items": { "type": "string" } },
+          "claims": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "concise_cta": { "type": "string" },
+    "outreach_confidence": {
+      "type": "object",
+      "required": ["score", "level", "reasoning"],
+      "properties": {
+        "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "level": { "enum": ["high", "medium", "low"] },
+        "reasoning": { "type": "string" }
+      }
+    },
+    "supporting_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["claim", "evidence_ids", "claim_type"],
+        "properties": {
+          "claim": { "type": "string" },
+          "evidence_ids": { "type": "array", "items": { "type": "string" } },
+          "claim_type": { "enum": ["evidence_backed", "soft_hypothesis"] }
+        }
+      }
+    },
+    "prohibited_claims": { "type": "array", "items": { "type": "string" } },
+    "brain_three_handoff": {
+      "type": "object",
+      "required": ["lead_id", "brain_one_run_id", "brain_two_run_id", "selected_angle", "selected_offer", "reply_watch_items", "do_not_claim", "approval_required"],
+      "properties": {
+        "lead_id": { "type": "string" },
+        "brain_one_run_id": { "type": "string" },
+        "brain_two_run_id": { "type": "string" },
+        "selected_angle": { "type": "string" },
+        "selected_offer": { "type": "string" },
+        "reply_watch_items": { "type": "array", "items": { "type": "string" } },
+        "do_not_claim": { "type": "array", "items": { "type": "string" } },
+        "approval_required": { "const": true }
+      }
+    },
+    "approval_state": { "enum": ["pending-review", "approved", "rejected"] },
+    "generation_mode": { "enum": ["deterministic", "model_assisted"] }
+  }
+}
