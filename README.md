@@ -191,3 +191,23 @@ For a private repo, create the repository as private on GitHub first, then repla
 - Only approved email tasks are sent.
 - SMS, LinkedIn, and calendar integrations are adapter-ready but not connected in this build.
 - Secrets are excluded by `.gitignore`.
+## Built with GPT-5.6 and Codex
+
+CallCatch was developed during OpenAI Build Week using GPT-5.6 and Codex as collaborative engineering tools throughout the project.
+
+GPT-5.6 was used to:
+- Design the multi-brain AI architecture.
+- Refine Brain Zero, Brain One and Brain Two responsibilities.
+- Improve prompt engineering and deterministic reasoning.
+- Review the overall system design and product decisions.
+
+Codex was used to:
+- Generate production-ready JavaScript and Node.js code.
+- Build new services and API endpoints.
+- Refactor modules into a modular architecture.
+- Debug runtime errors and validation failures.
+- Create and improve automated tests.
+- Fix production bugs discovered during development.
+- Improve reliability while preserving deterministic behavior.
+
+Rather than generating a single application from one prompt, GPT-5.6 and Codex were used iteratively throughout the engineering process to design, implement, test and refine CallCatch into a working AI Prospect Intelligence platform.
