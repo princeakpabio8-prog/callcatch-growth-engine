@@ -1,4 +1,4 @@
-# CallCatch AI Growth Engine
+# CallCatch – Multi-Brain AI Prospect Intelligence
 
 Internal outbound sales platform for CallCatch. It discovers prospects, scores them, manages a CRM pipeline, generates approval-first outreach, and supports SMTP email sending.
 
