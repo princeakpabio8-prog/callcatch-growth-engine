@@ -100,16 +100,27 @@
     },
     "follow_up_emails": {
       "type": "array",
-      "minItems": 3,
-      "maxItems": 3,
+      "minItems": 4,
+      "maxItems": 4,
       "items": {
         "type": "object",
-        "required": ["step", "recommended_delay_days", "subject", "body", "evidence_ids", "claims"],
+        "required": ["step", "stage", "stage_name", "founder_style", "recommended_delay_days", "subject", "subject_options", "body", "new_idea", "cta", "evidence_ids", "claims"],
         "properties": {
           "step": { "type": "integer" },
+          "stage": { "type": "integer" },
+          "stage_name": { "type": "string" },
+          "founder_style": { "type": "string" },
           "recommended_delay_days": { "type": "integer" },
           "subject": { "type": "string" },
+          "subject_options": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "items": { "type": "string" }
+          },
           "body": { "type": "string" },
+          "new_idea": { "type": "string" },
+          "cta": { "type": "string" },
           "evidence_ids": { "type": "array", "items": { "type": "string" } },
           "claims": { "type": "array", "items": { "type": "string" } }
         }

@@ -114,7 +114,35 @@ If Brain One includes a monetary estimate, phrase it as uncertain:
 
 Never state estimated revenue as certain.
 
-Follow-ups should add context, not repeat the first message.
+Follow-ups must use the Follow-up Intelligence state machine:
+
+- Stage 0: Initial email.
+- Stage 1: Education.
+- Stage 2: Business insight.
+- Stage 3: ROI.
+- Stage 4: Permission close.
+
+Never skip a stage.
+
+Never repeat an idea, subject, CTA, or observation.
+
+Every follow-up must introduce one new idea and stay under 90 words.
+
+Stage 1 teaches something useful without selling.
+
+Stage 2 adds one business observation without repeating the first email.
+
+Stage 3 discusses ROI only from approved Brain One evidence. If evidence is insufficient, do not invent numbers.
+
+Stage 4 is a gentle permission close. Use a tone like "I'll leave this here for now" or "If improving missed-call recovery becomes important later, I'm happy to help."
+
+Follow-ups must never say:
+
+- following up
+- just checking in
+- bumping this
+- wanted to circle back
+- checking in
 
 Do not claim the prospect has a problem unless Brain One evidence supports it.
 

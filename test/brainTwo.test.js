@@ -95,6 +95,18 @@ function approvedBrainOne(overrides = {}) {
           }
         }
       },
+      money_left_on_table: {
+        status: "estimated",
+        low_estimate: 9000,
+        high_estimate: 14000,
+        currency: "$",
+        time_period: "month",
+        calculation_method: "Brain One scenario estimate from emergency-service response friction.",
+        assumptions: ["Urgent callers may contact another contractor if nobody responds."],
+        evidence_ids: ["ev-opp"],
+        confidence: "medium",
+        disclaimer: "Scenario estimate only."
+      },
       score_metadata: {
         module_scores: {
           contactability: { value: 75 },
@@ -157,7 +169,7 @@ test("Brain Two generates deterministic outreach without sending or queuing emai
   assert.equal(result.output.brain_three_handoff.approval_required, true);
   assert.equal(result.output.selected_offer.name, "Missed Call Text-Back");
   assert.equal(result.output.subject_lines.length, 5);
-  assert.equal(result.output.follow_up_emails.length, 3);
+  assert.equal(result.output.follow_up_emails.length, 4);
   assert.equal(state.approvalQueue.length, 0);
   assert.equal(validateBrainTwoOutput(result.output).ok, true);
 });
@@ -193,6 +205,80 @@ test("Brain Two generates five natural subject lines without clickbait", () => {
     assert.ok(words(subject) <= 5, `Subject is too long: ${subject}`);
     assert.doesNotMatch(subject, /limited offer|guaranteed|buy now|click here|urgent!!!/i);
   }
+});
+
+test("Brain Two follow-up state machine progresses through all stages without repetition", () => {
+  const result = runBrainTwo({ lead: lead(), brainOneRun: approvedBrainOne(), runId: "brain2-followups" });
+  const followUps = result.output.follow_up_emails;
+  assert.deepEqual(followUps.map(item => item.stage), [1, 2, 3, 4]);
+  assert.deepEqual(followUps.map(item => item.stage_name), ["Education", "Business insight", "ROI", "Permission close"]);
+  assert.deepEqual(followUps.map(item => item.recommended_delay_days), [3, 7, 10, 14]);
+  assert.equal(new Set(followUps.map(item => item.subject)).size, 4);
+  assert.equal(new Set(followUps.map(item => item.cta)).size, 4);
+  assert.equal(new Set(followUps.map(item => item.new_idea)).size, 4);
+});
+
+test("Brain Two follow-ups avoid automated language and stay under 90 words", () => {
+  const result = runBrainTwo({ lead: lead(), brainOneRun: approvedBrainOne(), runId: "brain2-natural-followups" });
+  for (const email of result.output.follow_up_emails) {
+    assert.ok(words(email.body) <= 90, `${email.stage_name} exceeded 90 words: ${words(email.body)}`);
+    assert.doesNotMatch(email.body, /following up|follow up|just checking in|checking in|bumping this|wanted to circle back/i);
+    assert.doesNotMatch(email.body, /revolutionary|game changing|AI powered|next generation|cutting edge|state of the art/i);
+    assert.doesNotMatch(email.body, /🔥|🚀|✨/);
+  }
+});
+
+test("Brain Two follow-ups generate five unique subject options per stage", () => {
+  const result = runBrainTwo({ lead: lead(), brainOneRun: approvedBrainOne(), runId: "brain2-subject-options" });
+  for (const email of result.output.follow_up_emails) {
+    assert.equal(email.subject_options.length, 5);
+    assert.equal(new Set(email.subject_options).size, 5);
+    for (const subject of email.subject_options) {
+      assert.doesNotMatch(subject, /click here|limited offer|guaranteed|buy now/i);
+    }
+  }
+});
+
+test("Brain Two follow-ups rotate different founder styles", () => {
+  const result = runBrainTwo({ lead: lead(), brainOneRun: approvedBrainOne(), runId: "brain2-founder-styles" });
+  const styles = new Set(result.output.follow_up_emails.map(item => item.founder_style));
+  assert.ok(styles.size >= 3, `Expected at least 3 founder styles, got ${[...styles].join(", ")}`);
+});
+
+test("Brain Two ROI follow-up uses Brain One estimate evidence without inventing numbers", () => {
+  const result = runBrainTwo({ lead: lead(), brainOneRun: approvedBrainOne(), runId: "brain2-roi" });
+  const roi = result.output.follow_up_emails.find(item => item.stage_name === "ROI");
+  assert.match(roi.body, /\$9,000-\$14,000 per month/);
+  assert.match(roi.body, /may be worth|depending on the assumptions/i);
+  assert.ok(roi.evidence_ids.includes("ev-opp"));
+});
+
+test("Brain Two ROI follow-up avoids invented numbers when Brain One estimate is insufficient", () => {
+  const run = approvedBrainOne();
+  run.validatedOutput.money_left_on_table = {
+    status: "insufficient_evidence",
+    low_estimate: null,
+    high_estimate: null,
+    currency: null,
+    time_period: null,
+    calculation_method: null,
+    assumptions: [],
+    evidence_ids: [],
+    confidence: "low",
+    disclaimer: "Insufficient evidence for a responsible monetary estimate."
+  };
+  const result = runBrainTwo({ lead: lead(), brainOneRun: run, runId: "brain2-roi-safe" });
+  const roi = result.output.follow_up_emails.find(item => item.stage_name === "ROI");
+  assert.doesNotMatch(roi.body, /\$|£|€|\d{2,}/);
+  assert.match(roi.body, /would not attach a number without stronger evidence/i);
+});
+
+test("Brain Two permission close is low pressure", () => {
+  const result = runBrainTwo({ lead: lead(), brainOneRun: approvedBrainOne(), runId: "brain2-permission-close" });
+  const close = result.output.follow_up_emails.find(item => item.stage_name === "Permission close");
+  assert.match(close.body, /I'll leave this here for now/);
+  assert.match(close.body, /No pressure either way/);
+  assert.doesNotMatch(close.body, /urgent|last chance|final offer|limited/i);
 });
 
 test("Brain Two preserves Brain One scores and does not recalculate them", () => {

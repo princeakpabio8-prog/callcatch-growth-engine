@@ -26,6 +26,7 @@ function clamp(value, min = 0, max = 100) {
 function flattenBrainOneOutput(value = {}) {
   if (!value.modules) return value || {};
   return {
+    ...value,
     ...(value.modules.foundation?.output || {}),
     ...(value.modules.digital_intelligence?.output || {}),
     ...(value.modules.opportunities?.output || {}),
@@ -342,6 +343,179 @@ function softCta(seed = "") {
   return options[stableIndex(seed, options.length)];
 }
 
+function followUpSubjectOptions(stage = 1, name = "your team", seed = "") {
+  const pools = {
+    1: ["Question about emergency calls", "Small observation", "Quick thought", "Customer expectations", "After-hours calls", "One useful idea"],
+    2: ["One observation", "Question about your website", "Response time", "Small gap", "Idea for your team", "Call flow"],
+    3: ["One ROI thought", "Missed-call math", "Revenue leakage", "Worth considering", "Small numbers", "Response value"],
+    4: ["I'll leave this here", "Closing the loop", "For later", "No pressure", "Keeping this simple", "Last note"]
+  };
+  const pool = pools[stage] || pools[1];
+  const offset = stableIndex(`${name}|${stage}|${seed}`, pool.length);
+  return uniqueArray([...pool.slice(offset), ...pool.slice(0, offset)]).slice(0, 5);
+}
+
+function followUpFounderStyle(seed = "") {
+  const styles = ["Curious", "Helpful", "Technical", "Business owner"];
+  return styles[stableIndex(seed, styles.length)];
+}
+
+function followUpObservationPool(flat = {}, observation = {}) {
+  const opportunity = selectedOpportunity(flat) || {};
+  const digital = flat.digital_health || {};
+  const dna = flat.business_dna || {};
+  const radar = flat.ai_opportunity_radar || {};
+  const entries = [
+    {
+      key: "after-hours calls",
+      sentence: "After-hours calls are tricky because the buyer usually has a problem now, not tomorrow.",
+      evidence_ids: evidenceIdList(opportunity).length ? evidenceIdList(opportunity) : observation.evidence_ids
+    },
+    {
+      key: "customer expectations",
+      sentence: "One thing customers have changed is how little patience they have for waiting after the first call.",
+      evidence_ids: evidenceIdList(dna).length ? evidenceIdList(dna) : observation.evidence_ids
+    },
+    {
+      key: "contact friction",
+      sentence: "Your site gives people a path to reach you, but the fragile part is what happens when nobody can answer right away.",
+      evidence_ids: evidenceIdList(digital).length ? evidenceIdList(digital) : observation.evidence_ids
+    },
+    {
+      key: "lead leakage",
+      sentence: "The leak is usually quiet: the customer never says they called someone else.",
+      evidence_ids: evidenceIdList(radar).length ? evidenceIdList(radar) : observation.evidence_ids
+    },
+    {
+      key: "emergency services",
+      sentence: "Emergency work is different because speed often matters as much as the service itself.",
+      evidence_ids: evidenceIdList(opportunity).length ? evidenceIdList(opportunity) : observation.evidence_ids
+    }
+  ];
+  return entries.filter(item => item.key && item.sentence);
+}
+
+function roiFollowUpLine(flat = {}) {
+  const money = flat.money_left_on_table || {};
+  if (money.status !== "estimated") {
+    return "I would not attach a number without stronger evidence, but the business case is simple: one recovered job can make the response system worth reviewing.";
+  }
+  const low = Number(money.low_estimate);
+  const high = Number(money.high_estimate);
+  if (!Number.isFinite(low) || !Number.isFinite(high) || low <= 0 || high <= 0) {
+    return "I would not attach a number without stronger evidence, but the business case is simple: one recovered job can make the response system worth reviewing.";
+  }
+  const currency = money.currency || "$";
+  const period = compact(money.time_period || "month", 40);
+  return `Brain One's estimate suggests the missed-response gap may be worth roughly ${currency}${Math.round(low).toLocaleString()}-${currency}${Math.round(high).toLocaleString()} per ${period}, depending on the assumptions.`;
+}
+
+function followUpCta(stage = 1) {
+  return {
+    1: "Thought this might be useful.",
+    2: "I can show what I mean.",
+    3: "Worth a quick look?",
+    4: "If it matters later, I'm happy to help."
+  }[stage] || "Happy to show you.";
+}
+
+function followUpBody({ stage, name, newIdea, cta, flat }) {
+  const greeting = shortGreeting(name);
+  if (stage === 1) {
+    return [
+      greeting,
+      "",
+      newIdea.sentence,
+      "",
+      "A fast text reply can buy a little time while the team is busy. It does not need to sell anything; it just tells the caller someone saw them.",
+      "",
+      cta,
+      "",
+      founderSignature(false)
+    ].join("\n");
+  }
+  if (stage === 2) {
+    return [
+      greeting,
+      "",
+      newIdea.sentence,
+      "",
+      "That is the kind of small handoff CallCatch is built for. Not a big system change, more like a safety net around the first missed moment.",
+      "",
+      cta,
+      "",
+      founderSignature(false)
+    ].join("\n");
+  }
+  if (stage === 3) {
+    return [
+      greeting,
+      "",
+      roiFollowUpLine(flat),
+      "",
+      "I think about it less as software cost and more as whether one extra booked job covers the effort.",
+      "",
+      cta,
+      "",
+      founderSignature(false)
+    ].join("\n");
+  }
+  return [
+    greeting,
+    "",
+    "I'll leave this here for now.",
+    "",
+    "If improving missed-call recovery becomes important later, I'm happy to help. No pressure either way.",
+    "",
+    cta,
+    "",
+    founderSignature(false)
+  ].join("\n");
+}
+
+function buildFollowUpStateMachine({ lead = {}, flat = {}, name, observation, angle, offer, runId = "" } = {}) {
+  const ideas = followUpObservationPool(flat, observation);
+  const usedSubjects = new Set();
+  const usedCtas = new Set();
+  const usedIdeas = new Set();
+  const stages = [
+    { step: 1, stage: 1, stage_name: "Education", delay: 3 },
+    { step: 2, stage: 2, stage_name: "Business insight", delay: 7 },
+    { step: 3, stage: 3, stage_name: "ROI", delay: 10 },
+    { step: 4, stage: 4, stage_name: "Permission close", delay: 14 }
+  ];
+  return stages.map(stage => {
+    const seed = `${lead.id || name}|${runId}|${stage.stage}`;
+    const subjectOptions = followUpSubjectOptions(stage.stage, name, seed);
+    const subject = subjectOptions.find(item => !usedSubjects.has(item)) || `${stage.stage_name} note`;
+    usedSubjects.add(subject);
+    const style = followUpFounderStyle(seed);
+    const newIdea = stage.stage === 3
+      ? { key: "roi", sentence: roiFollowUpLine(flat), evidence_ids: evidenceIdList(flat.money_left_on_table || {}) }
+      : stage.stage === 4
+        ? { key: "permission close", sentence: "Permission close", evidence_ids: [] }
+        : (ideas.find(item => !usedIdeas.has(item.key)) || ideas[0] || { key: stage.stage_name, sentence: "A fast response can protect a good customer conversation.", evidence_ids: [] });
+    usedIdeas.add(newIdea.key);
+    const cta = followUpCta(stage.stage);
+    usedCtas.add(cta);
+    const body = followUpBody({ stage: stage.stage, name, newIdea, cta, flat });
+    return {
+      step: stage.step,
+      stage: stage.stage,
+      stage_name: stage.stage_name,
+      founder_style: style,
+      recommended_delay_days: stage.delay,
+      subject,
+      subject_options: subjectOptions,
+      body,
+      new_idea: newIdea.key,
+      cta,
+      evidence_ids: uniqueArray([...angle.evidence_ids, ...offer.evidence_ids, ...(newIdea.evidence_ids || [])]).slice(0, 8),
+      claims: [stage.stage_name, newIdea.key, offer.name]
+    };
+  });
+}
+
 function founderSignature(long = true) {
   return long
     ? ["Best,", "Prince Esien", "Founder | CallCatch", "hello@callcatch.site", "https://callcatch.site"].join("\n")
@@ -451,30 +625,7 @@ function generateMessaging({ lead = {}, flat = {}, persona, angle, offer, runId 
   const firstBody = selectedVariant.body;
   const evidenceIds = uniqueArray([...angle.evidence_ids, ...offer.evidence_ids, ...observation.evidence_ids]).slice(0, 8);
 
-  const followUps = [
-    {
-      step: 1,
-      recommended_delay_days: 3,
-      subject: `Re: ${subjectLines[0]}`,
-      body: `${shortGreeting(name)}\n\nI wanted to follow up on the note I sent after looking at your website.\n\nThe idea was simple: if a good caller reaches out while the team is busy, a fast text reply can keep that conversation from going cold.\n\nIf this is already handled well, no worries. If not, CallCatch may be worth a quick look.\n\n${softCta(`${lead.id || name}|follow1`)}\n\n${founderSignature(false)}`
-    },
-    {
-      step: 2,
-      recommended_delay_days: 7,
-      subject: `Worth a quick look?`,
-      body: `${shortGreeting(name)}\n\nOne more thought, then I will stay out of your inbox.\n\nFor service businesses, the missed-call problem is not always obvious because the customer rarely tells you they moved on. They just call someone else.\n\nCallCatch is meant to quietly catch that moment with a quick text response.\n\nHappy to show you.\n\n${founderSignature(false)}`
-    },
-    {
-      step: 3,
-      recommended_delay_days: 10,
-      subject: `Should I close the loop?`,
-      body: `${shortGreeting(name)}\n\nI do not want to keep chasing you.\n\nI reached out because your site made it look like fast response could matter for the kind of customers you serve. If that is not a focus right now, I can close the loop.\n\nIf useful, I can send a short demo.\n\n${founderSignature(false)}`
-    }
-  ].map(item => ({
-    ...item,
-    evidence_ids: evidenceIds,
-    claims: [angle.angle, offer.name]
-  }));
+  const followUps = buildFollowUpStateMachine({ lead, flat, name, observation, angle, offer, runId });
 
   return {
     selected_style: selectedVariant.style,
@@ -546,7 +697,20 @@ function blockedOutput(eligibility, runId = "") {
     offer_fit_explanation: "Brain Two did not generate outreach because eligibility failed.",
     subject_lines: ["Needs review", "Needs review", "Needs review", "Needs review", "Needs review"],
     first_email: { subject: "Needs review", body: "", evidence_ids: [], claims: [] },
-    follow_up_emails: [1, 2, 3].map(step => ({ step, recommended_delay_days: step === 1 ? 3 : step === 2 ? 7 : 10, subject: "Needs review", body: "", evidence_ids: [], claims: [] })),
+    follow_up_emails: [1, 2, 3, 4].map(step => ({
+      step,
+      stage: step,
+      stage_name: ["Education", "Business insight", "ROI", "Permission close"][step - 1],
+      founder_style: "Unavailable",
+      recommended_delay_days: step === 1 ? 3 : step === 2 ? 7 : step === 3 ? 10 : 14,
+      subject: "Needs review",
+      subject_options: ["Needs review", "Needs review", "Needs review", "Needs review", "Needs review"],
+      body: "",
+      new_idea: "",
+      cta: "",
+      evidence_ids: [],
+      claims: []
+    })),
     concise_cta: "",
     outreach_confidence: { score: 0, level: "low", reasoning: eligibility.reasons.join(" ") || "Blocked." },
     supporting_evidence: [],
@@ -630,7 +794,7 @@ function validateBrainTwoOutput(output = {}) {
   if (!output.eligibility || typeof output.eligibility !== "object") errors.push("eligibility is required");
   validateArray(output.ranked_contact_personas, "ranked_contact_personas", errors);
   validateArray(output.subject_lines, "subject_lines", errors, 5, 5);
-  validateArray(output.follow_up_emails, "follow_up_emails", errors, 3, 3);
+  validateArray(output.follow_up_emails, "follow_up_emails", errors, 4, 4);
   validateArray(output.supporting_evidence, "supporting_evidence", errors);
   validateArray(output.prohibited_claims, "prohibited_claims", errors);
   if (!output.first_email?.body && output.status !== "BLOCKED") errors.push("first_email.body is required when not blocked");
@@ -645,6 +809,34 @@ function validateBrainTwoOutput(output = {}) {
     if (/book a meeting|schedule a call|hop on zoom/i.test(output.first_email.body)) errors.push("first_email.body contains a high-pressure CTA");
   }
   if (!output.brain_three_handoff?.approval_required) errors.push("brain_three_handoff.approval_required must be true");
+  const restrictedFollowUpPhrases = /checking in|just checking in|bumping this|wanted to circle back|following up|follow up|revolutionary|game changing|ai powered|next generation|cutting edge|state of the art|🔥|🚀|✨/i;
+  const followUpSubjects = new Set();
+  const followUpCtas = new Set();
+  const followUpIdeas = new Set();
+  const expectedStages = ["Education", "Business insight", "ROI", "Permission close"];
+  for (const [index, item] of (output.follow_up_emails || []).entries()) {
+    const pathName = `follow_up_emails[${index}]`;
+    if (item.step !== index + 1) errors.push(`${pathName}.step must progress sequentially`);
+    if (item.stage !== index + 1) errors.push(`${pathName}.stage must progress sequentially`);
+    if (item.stage_name !== expectedStages[index]) errors.push(`${pathName}.stage_name must be ${expectedStages[index]}`);
+    if (item.body && wordCount(item.body) > 90) errors.push(`${pathName}.body must not exceed 90 words`);
+    if (item.body && restrictedFollowUpPhrases.test(item.body)) errors.push(`${pathName}.body contains restricted follow-up wording`);
+    if (item.subject && restrictedFollowUpPhrases.test(item.subject)) errors.push(`${pathName}.subject contains restricted follow-up wording`);
+    if (item.subject) {
+      if (followUpSubjects.has(item.subject)) errors.push(`${pathName}.subject must be unique`);
+      followUpSubjects.add(item.subject);
+    }
+    if (item.cta) {
+      if (followUpCtas.has(item.cta)) errors.push(`${pathName}.cta must be unique`);
+      followUpCtas.add(item.cta);
+    }
+    if (item.new_idea) {
+      if (followUpIdeas.has(item.new_idea)) errors.push(`${pathName}.new_idea must be unique`);
+      followUpIdeas.add(item.new_idea);
+    }
+    validateArray(item.subject_options, `${pathName}.subject_options`, errors, 5, 5);
+    if (Array.isArray(item.subject_options) && new Set(item.subject_options).size !== item.subject_options.length) errors.push(`${pathName}.subject_options must be unique`);
+  }
   for (const item of output.supporting_evidence || []) {
     if (!item.claim) errors.push("supporting_evidence.claim is required");
     if (!Array.isArray(item.evidence_ids)) errors.push("supporting_evidence.evidence_ids must be an array");
