@@ -10,6 +10,38 @@ const { fallbackLocation } = require("./usLocations");
 const { readStore } = require("./dataStore");
 
 const cache = new MemoryCache(1000 * 60 * 30);
+const DISCOVERY_LIMITS = {
+  finalCountMax: 50,
+  providerRequestMax: 120,
+  initialCandidateMax: 220,
+  websiteScanConcurrency: 4,
+  websiteScanTimeoutMs: 12000,
+  maxProviderRunMs: 35000,
+  deepResearchMax: 12
+};
+const DIRECTORY_EMAIL_DOMAINS = [
+  "angi.com",
+  "bbb.org",
+  "facebook.com",
+  "homeadvisor.com",
+  "instagram.com",
+  "linkedin.com",
+  "mapquest.com",
+  "nextdoor.com",
+  "thumbtack.com",
+  "yelp.com",
+  "yellowpages.com"
+];
+const DISPOSABLE_EMAIL_DOMAINS = [
+  "mailinator.com",
+  "guerrillamail.com",
+  "10minutemail.com",
+  "tempmail.com",
+  "example.com",
+  "example.org",
+  "example.net",
+  "domain.com"
+];
 
 function normalizeText(value) {
   return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -112,6 +144,53 @@ function websiteStrength(website) {
   return "owned";
 }
 
+function emailDomain(value = "") {
+  return String(value || "").trim().toLowerCase().split("@").pop() || "";
+}
+
+function websiteDomain(value = "") {
+  try {
+    return new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function isUsableBusinessEmail(value = "", lead = {}) {
+  const email = String(value || "").trim().toLowerCase();
+  if (!/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(email)) return false;
+  const local = email.split("@")[0] || "";
+  const domain = emailDomain(email);
+  if (!domain || DISPOSABLE_EMAIL_DOMAINS.some(item => domain === item || domain.endsWith(`.${item}`))) return false;
+  if (DIRECTORY_EMAIL_DOMAINS.some(item => domain === item || domain.endsWith(`.${item}`))) return false;
+  if (/^(no-?reply|do-?not-?reply|donotreply|noreply|example|test|placeholder|fake|invalid)$/i.test(local)) return false;
+  if (/(example|placeholder|test)@/i.test(email)) return false;
+  const siteDomain = websiteDomain(lead.website || lead.facebook || "");
+  if (siteDomain && DIRECTORY_EMAIL_DOMAINS.some(item => siteDomain === item || siteDomain.endsWith(`.${item}`))) return true;
+  return true;
+}
+
+function preferredEmail(emails = [], lead = {}) {
+  const rolePrefixes = /^(info|hello|contact|office|sales|bookings|booking|support|service|admin|reception|dispatch|team|estimate|quotes?)@/i;
+  const usable = [...new Set(emails.map(email => String(email || "").trim().toLowerCase()))]
+    .filter(email => isUsableBusinessEmail(email, lead));
+  return usable.find(email => rolePrefixes.test(email)) || usable[0] || "";
+}
+
+function hasEnoughDiscoveryEvidence(lead = {}, scan = {}) {
+  return Boolean(
+    lead.business
+    && lead.email
+    && (
+      scan.ok
+      || lead.website
+      || lead.phone
+      || lead.address
+      || lead.description
+    )
+  );
+}
+
 function researchUrl(lead) {
   return lead.website || lead.facebook || "";
 }
@@ -165,10 +244,18 @@ function deepQualityScore(lead) {
 
 function normalizeCountry(value = "") {
   const key = String(value || "").trim().toLowerCase();
+  if (!key) return "US";
+  if (["us", "usa", "united states", "united states of america"].includes(key)) return "US";
   if (["ca", "canada"].includes(key)) return "CA";
   if (["uk", "gb", "united kingdom"].includes(key)) return "GB";
+  if (["au", "australia"].includes(key)) return "AU";
+  if (["de", "germany"].includes(key)) return "DE";
+  if (["fr", "france"].includes(key)) return "FR";
+  if (["es", "spain"].includes(key)) return "ES";
+  if (["ie", "ireland"].includes(key)) return "IE";
+  if (["nl", "netherlands"].includes(key)) return "NL";
   if (["eu", "europe"].includes(key)) return "EU";
-  return "US";
+  return "UNSUPPORTED";
 }
 
 function countryLabel(code = "US") {
@@ -176,9 +263,16 @@ function countryLabel(code = "US") {
     US: "United States",
     CA: "Canada",
     GB: "United Kingdom",
-    EU: "Europe"
+    AU: "Australia",
+    DE: "Germany",
+    FR: "France",
+    ES: "Spain",
+    IE: "Ireland",
+    NL: "Netherlands",
+    EU: "Europe",
+    UNSUPPORTED: "Unsupported"
   };
-  return labels[normalizeCountry(code)] || "United States";
+  return labels[normalizeCountry(code)] || "Unsupported";
 }
 
 function isUnitedStates(country = "US") {
@@ -197,14 +291,34 @@ function suggestedMarkets({ country = "US", trade = "HVAC" } = {}) {
     GB: [
       ["London", ""], ["Manchester", ""], ["Birmingham", ""], ["Leeds", ""], ["Bristol", ""], ["Glasgow", ""]
     ],
+    AU: [
+      ["Sydney", "NSW"], ["Melbourne", "VIC"], ["Brisbane", "QLD"], ["Perth", "WA"], ["Adelaide", "SA"]
+    ],
+    DE: [
+      ["Berlin", ""], ["Munich", ""], ["Hamburg", ""], ["Frankfurt", ""], ["Cologne", ""]
+    ],
+    FR: [
+      ["Paris", ""], ["Lyon", ""], ["Marseille", ""], ["Toulouse", ""], ["Nice", ""]
+    ],
+    ES: [
+      ["Madrid", ""], ["Barcelona", ""], ["Valencia", ""], ["Seville", ""], ["Zaragoza", ""]
+    ],
+    IE: [
+      ["Dublin", ""], ["Cork", ""], ["Galway", ""], ["Limerick", ""], ["Waterford", ""]
+    ],
+    NL: [
+      ["Amsterdam", ""], ["Rotterdam", ""], ["Utrecht", ""], ["The Hague", ""], ["Eindhoven", ""]
+    ],
     EU: [
       ["Dublin", "Ireland"], ["Amsterdam", "Netherlands"], ["Berlin", "Germany"], ["Munich", "Germany"], ["Paris", "France"], ["Madrid", "Spain"], ["Barcelona", "Spain"], ["Stockholm", "Sweden"]
     ]
   };
-  return (markets[normalizeCountry(country)] || markets.US).map(([city, state]) => ({
+  const normalized = normalizeCountry(country);
+  if (!markets[normalized]) return [];
+  return markets[normalized].map(([city, state]) => ({
     city,
     state,
-    country: normalizeCountry(country),
+    country: normalized,
     reason: `${trade} demand and service-call volume are usually strong in this market.`
   }));
 }
@@ -325,6 +439,14 @@ async function runProviders(params) {
     },
     providersAttempted: [],
     providers: {},
+    providerAvailability: {
+      brave: braveConfigured(),
+      serper: serperConfigured(),
+      openstreetmap: false
+    },
+    reducedCapacityMode: !braveConfigured(),
+    selectedProvider: "",
+    fallbackUsed: false,
     locationResolved: false,
     locationSource: "",
     mapSearchSkipped: false
@@ -355,7 +477,18 @@ async function runProviders(params) {
     }
   }
   const providers = [];
+  if (braveConfigured()) {
+    diagnostics.providersAttempted.push("brave");
+    providers.push(withTimeout(searchBrave({
+      trade: params.trade,
+      location,
+      count: params.count,
+      maxQueries: params.maxQueries,
+      maxPages: params.maxPages
+    }), DISCOVERY_LIMITS.maxProviderRunMs, "Brave search"));
+  }
   if (location.bbox) {
+    diagnostics.providerAvailability.openstreetmap = true;
     diagnostics.providersAttempted.push("openstreetmap");
     providers.push(withTimeout(searchOpenStreetMap({
       trade: params.trade,
@@ -365,14 +498,6 @@ async function runProviders(params) {
   } else {
     errors.push("Map search skipped because the market could not be geocoded; web search providers will still run.");
     diagnostics.mapSearchSkipped = true;
-  }
-  if (braveConfigured()) {
-    diagnostics.providersAttempted.push("brave");
-    providers.push(withTimeout(searchBrave({
-      trade: params.trade,
-      location,
-      count: params.count
-    }), 10000, "Brave search"));
   }
   if (serperConfigured()) {
     diagnostics.providersAttempted.push("serper");
@@ -396,8 +521,10 @@ async function runProviders(params) {
         status: "fulfilled",
         returned: (result.value.leads || []).length,
         cached: Boolean(result.value.cached),
-        source: result.value.source || providerName
+        source: result.value.source || providerName,
+        diagnostics: result.value.diagnostics || {}
       };
+      if (!diagnostics.selectedProvider && (result.value.leads || []).length) diagnostics.selectedProvider = providerName;
     } else {
       errors.push(`Lead provider failed: ${result.reason.message}`);
       diagnostics.providers[providerName] = {
@@ -409,6 +536,8 @@ async function runProviders(params) {
   }
 
   diagnostics.rawProviderLeads = leads.length;
+  diagnostics.fallbackUsed = Boolean(braveConfigured() && diagnostics.providers.brave?.status === "failed" && leads.length);
+  if (!diagnostics.selectedProvider && leads.length) diagnostics.selectedProvider = "mixed";
   return { leads, errors, cached, location, diagnostics };
 }
 
@@ -451,13 +580,156 @@ async function savedCrmFallback(input, count, errors = []) {
   }
 }
 
+function newReadinessDiagnostics(target) {
+  return {
+    target,
+    candidatesInspected: 0,
+    websitesChecked: 0,
+    emailsFound: 0,
+    emailsRejected: 0,
+    outreachReady: 0,
+    skipped: {
+      duplicate: 0,
+      existing: 0,
+      noWebsite: 0,
+      noEmail: 0,
+      invalidEmail: 0,
+      insufficientEvidence: 0,
+      scanFailed: 0
+    },
+    targetReached: false,
+    exhaustionReason: ""
+  };
+}
+
+async function inspectCandidateForEmail(lead, errors, readiness) {
+  readiness.candidatesInspected += 1;
+  let scan = {};
+  const candidateEmails = [lead.email].filter(Boolean);
+  const url = researchUrl(lead);
+  if (!url && !candidateEmails.length) {
+    readiness.skipped.noWebsite += 1;
+    return null;
+  }
+
+  if (url) {
+    readiness.websitesChecked += 1;
+    scan = await withTimeout(scanWebsite(url), DISCOVERY_LIMITS.websiteScanTimeoutMs, `Website email scan for ${lead.business}`)
+      .catch(error => {
+        readiness.skipped.scanFailed += 1;
+        errors.push(`Website email scan failed for ${lead.business}: ${error.message}`);
+        return { ok: false, emails: [], error: error.message };
+      });
+    candidateEmails.push(...(scan.emails || []));
+  }
+
+  readiness.emailsFound += candidateEmails.filter(Boolean).length;
+  const email = preferredEmail(candidateEmails, lead);
+  if (!email) {
+    if (candidateEmails.length) readiness.skipped.invalidEmail += 1;
+    else readiness.skipped.noEmail += 1;
+    readiness.emailsRejected += candidateEmails.filter(Boolean).length;
+    return null;
+  }
+
+  const enriched = enrichProspect({ ...lead, email, phone: lead.phone || (scan.phones || [])[0] || "" }, scan);
+  if (!hasEnoughDiscoveryEvidence(enriched, scan)) {
+    readiness.skipped.insufficientEvidence += 1;
+    return null;
+  }
+
+  return {
+    ...enriched,
+    email,
+    websiteIntelligence: enriched.websiteIntelligence || scan,
+    researchDepth: scan.researchDepth || enriched.researchDepth || "email-ready",
+    discoveryStatus: "outreach-ready"
+  };
+}
+
+async function collectOutreachReadyLeads(candidates, { count, errors }) {
+  const readiness = newReadinessDiagnostics(count);
+  const selected = [];
+  const seenEmails = new Set();
+  const maxCandidates = Math.min(Math.max(count * 10, 60), DISCOVERY_LIMITS.initialCandidateMax);
+  const queue = candidates.slice(0, maxCandidates);
+
+  for (let index = 0; index < queue.length && selected.length < count; index += DISCOVERY_LIMITS.websiteScanConcurrency) {
+    const batch = queue.slice(index, index + DISCOVERY_LIMITS.websiteScanConcurrency);
+    const inspected = await Promise.all(batch.map(lead => inspectCandidateForEmail(lead, errors, readiness)));
+    for (const lead of inspected.filter(Boolean)) {
+      const email = emailIdentity(lead.email);
+      if (!email || seenEmails.has(email)) {
+        readiness.skipped.duplicate += 1;
+        continue;
+      }
+      seenEmails.add(email);
+      selected.push(lead);
+      readiness.outreachReady = selected.length;
+      if (selected.length >= count) break;
+    }
+  }
+
+  readiness.outreachReady = selected.length;
+  readiness.targetReached = selected.length >= count;
+  readiness.exhaustionReason = readiness.targetReached
+    ? "target_reached"
+    : queue.length >= maxCandidates
+      ? "candidate_safety_cap_reached"
+      : "provider_search_space_exhausted";
+  return { leads: selected, readiness };
+}
+
 async function searchLeads(input = {}) {
   const trade = input.trade || "HVAC";
   const country = normalizeCountry(input.country || input.countryCode || "US");
   const radius = Number(input.radius || 25);
   const area = buildArea(input);
-  const count = Math.max(1, Math.min(Number(input.count) || 10, 50));
+  const count = Math.max(1, Math.min(Number(input.count) || 10, DISCOVERY_LIMITS.finalCountMax));
   const wantsDeepResearch = input.deepResearch === true;
+  if (country === "UNSUPPORTED") {
+    return {
+      leads: [],
+      source: "Unsupported country",
+      count: 0,
+      cached: false,
+      errors: [`Unsupported country "${input.country || input.countryCode}". CallCatch did not search the wrong country.`],
+      search: {
+        trade,
+        area,
+        radius,
+        city: input.city || "",
+        state: input.state || "",
+        country,
+        countryLabel: countryLabel(country),
+        deepResearch: wantsDeepResearch,
+        serperEnabled: serperConfigured(),
+        braveEnabled: braveConfigured(),
+        emailReadyOnly: true,
+        emailReady: 0,
+        needsEmail: 0,
+        skippedContacted: 0,
+        skippedExisting: 0,
+        quality: "unsupported",
+        suggestions: []
+      },
+      diagnostics: {
+        providerInputs: { trade, area, country, requestedCount: count },
+        providerAvailability: { brave: braveConfigured(), serper: serperConfigured(), openstreetmap: false },
+        reducedCapacityMode: !braveConfigured(),
+        unsupportedCountry: true,
+        funnel: {
+          requestedFinalCount: count,
+          finalLeads: 0,
+          finalEmailReady: 0,
+          finalNeedsEmail: 0,
+          targetReached: false,
+          exhaustionReason: "unsupported_country"
+        },
+        likelyBottlenecks: ["Unsupported country was rejected instead of silently searching the United States"]
+      }
+    };
+  }
   const existingProspects = await existingProspectIndex();
   const key = JSON.stringify({
     trade,
@@ -474,7 +746,17 @@ async function searchLeads(input = {}) {
   const cached = cache.get(key);
   if (cached) return { ...cached, cached: true };
 
-  const providerResult = await runProviders({ trade, area, state: input.state, city: input.city, country, count: Math.min(count * 3, 60) });
+  const providerRequestCount = Math.min(Math.max(count * 6, 40), DISCOVERY_LIMITS.providerRequestMax);
+  const providerResult = await runProviders({
+    trade,
+    area,
+    state: input.state,
+    city: input.city,
+    country,
+    count: providerRequestCount,
+    maxQueries: Math.min(Math.max(Math.ceil(count / 3), 6), 12),
+    maxPages: 2
+  });
   const rawProviderCount = providerResult.leads.length;
   const dedupedProviderLeads = dedupe(providerResult.leads);
   const rawLeads = dedupedProviderLeads.map(enrichLead);
@@ -487,13 +769,13 @@ async function searchLeads(input = {}) {
       return false;
     })
     .sort((a, b) => b.aiLeadQualityScore - a.aiLeadQualityScore);
-  let leads = afterExistingFilterLeads.slice(0, Math.max(count * 4, count));
+  let leads = afterExistingFilterLeads.slice(0, DISCOVERY_LIMITS.initialCandidateMax);
   if (!leads.length && rawLeads.length && skippedExisting) {
     providerResult.errors.push(`Skipped ${skippedExisting} prospect${skippedExisting === 1 ? "" : "s"} already in CRM or Pipeline for this market. Try the suggested markets or another nearby city.`);
   }
   if (serperConfigured()) {
     leads = await withTimeout(
-      enrichWithSerperWebsites(leads, { limit: Math.min(8, Math.max(count, 4)) }),
+      enrichWithSerperWebsites(leads, { limit: Math.min(Math.max(count * 3, 12), 36) }),
       12000,
       "Serper website enrichment"
     ).catch(error => {
@@ -502,16 +784,18 @@ async function searchLeads(input = {}) {
     });
     leads = dedupe(leads).map(enrichLead);
   } else if (braveConfigured()) {
-    leads = await enrichWithBraveWebsites(leads, { limit: Math.min(12, Math.max(count * 2, 8)) });
+    leads = await enrichWithBraveWebsites(leads, { limit: Math.min(Math.max(count * 3, 12), 36) });
     leads = dedupe(leads).map(enrichLead);
   }
   const afterWebsiteEnrichment = leads.length;
   const beforeDeepResearch = leads.length;
-  leads = !wantsDeepResearch
-    ? leads.sort((a, b) => (b.email ? 1 : 0) - (a.email ? 1 : 0) || b.aiLeadQualityScore - a.aiLeadQualityScore).slice(0, count)
-    : await deepResearchLeads(leads, { count, errors: providerResult.errors });
+  const readinessResult = await collectOutreachReadyLeads(leads, { count, errors: providerResult.errors });
+  leads = readinessResult.leads;
+  if (wantsDeepResearch && leads.length) {
+    leads = await deepResearchLeads(leads, { count, errors: providerResult.errors });
+  }
   if (!leads.length && beforeDeepResearch) {
-    providerResult.errors.push(`Deep research checked ${beforeDeepResearch} candidate businesses but could not keep usable prospects. Try a nearby city, a larger radius, or another trade.`);
+    providerResult.errors.push(`Discovery checked ${beforeDeepResearch} candidate businesses but could not find usable business emails. Try a nearby city, broaden the trade, or verify Brave is configured.`);
   }
   let source = serperConfigured()
     ? "OpenStreetMap + Nominatim + Serper"
@@ -541,9 +825,9 @@ async function searchLeads(input = {}) {
       serperEnabled: serperConfigured(),
       braveEnabled: braveConfigured(),
       candidatesResearched: beforeDeepResearch,
-      emailReadyOnly: false,
+      emailReadyOnly: true,
       emailReady: leads.filter(lead => lead.email).length,
-      needsEmail: leads.filter(lead => !lead.email).length,
+      needsEmail: 0,
       skippedContacted: skippedExisting,
       skippedExisting,
       quality: leads.length >= count ? "strong" : leads.length > 0 ? "partial" : "no-results",
@@ -553,46 +837,48 @@ async function searchLeads(input = {}) {
       ...providerResult.diagnostics,
       funnel: {
         requestedFinalCount: count,
-        providerRequestedCount: Math.min(count * 3, 60),
+        providerRequestedCount: providerRequestCount,
         rawProviderLeads: rawProviderCount,
         afterProviderDedupe: dedupedProviderLeads.length,
         afterRatingReviewFilters: afterRatingFilters.length,
         skippedExisting,
         afterExistingFilter: afterExistingFilterLeads.length,
-        initialCandidateCap: Math.max(count * 4, count),
-        beforeWebsiteEnrichment: Math.min(afterExistingFilterLeads.length, Math.max(count * 4, count)),
+        initialCandidateCap: DISCOVERY_LIMITS.initialCandidateMax,
+        beforeWebsiteEnrichment: Math.min(afterExistingFilterLeads.length, DISCOVERY_LIMITS.initialCandidateMax),
         websiteEnrichmentLimit: serperConfigured()
-          ? Math.min(8, Math.max(count, 4))
+          ? Math.min(Math.max(count * 3, 12), 36)
           : braveConfigured()
-            ? Math.min(12, Math.max(count * 2, 8))
+            ? Math.min(Math.max(count * 3, 12), 36)
             : 0,
         afterWebsiteEnrichment,
         deepResearchRequested: wantsDeepResearch,
-        deepResearchCandidateLimit: wantsDeepResearch ? Math.min(Math.max(count * 2, 8), 12) : 0,
+        deepResearchCandidateLimit: wantsDeepResearch ? DISCOVERY_LIMITS.deepResearchMax : 0,
         candidatesResearched: beforeDeepResearch,
+        ...readinessResult.readiness,
         finalLeads: leads.length,
         finalEmailReady: leads.filter(lead => lead.email).length,
-        finalNeedsEmail: leads.filter(lead => !lead.email).length
+        finalNeedsEmail: 0
       },
       caps: {
-        frontendMaxFinalCount: 50,
-        providerRequestMax: 60,
+        frontendMaxFinalCount: DISCOVERY_LIMITS.finalCountMax,
+        providerRequestMax: DISCOVERY_LIMITS.providerRequestMax,
         openStreetMapElementMax: 120,
         serperTermsMax: 3,
         serperPerTermMax: 20,
         bravePerQueryMax: 20,
-        websiteEnrichmentMax: serperConfigured() ? 8 : braveConfigured() ? 12 : 0,
-        deepResearchMax: 12,
+        websiteEnrichmentMax: serperConfigured() || braveConfigured() ? 36 : 0,
+        deepResearchMax: DISCOVERY_LIMITS.deepResearchMax,
         dailyGrowthDefaultSearches: 8,
         dailyGrowthDefaultCountPerSearch: 8
       },
       likelyBottlenecks: [
-        Math.min(count * 3, 60) <= 60 ? "provider candidate request is capped before broad market exhaustion" : "",
-        serperConfigured() ? "Serper website enrichment checks at most 8 candidates per search" : "",
-        braveConfigured() ? "Brave website enrichment checks at most 12 candidates per search" : "",
-        wantsDeepResearch ? "Deep research checks at most 12 candidates per search" : "",
+        !braveConfigured() ? "Reduced-capacity mode: Brave Search is not configured" : "",
+        providerRequestCount <= DISCOVERY_LIMITS.providerRequestMax ? "provider candidate request is safely capped before broad market exhaustion" : "",
+        serperConfigured() ? "Serper website enrichment is optional and bounded" : "",
+        braveConfigured() ? "Brave website enrichment checks a bounded candidate pool" : "",
+        wantsDeepResearch ? "Deep research remains capped to protect performance" : "",
         skippedExisting ? "Existing CRM/Pipeline filtering removed candidates before final queue" : "",
-        !leads.filter(lead => lead.email).length ? "Few final leads have public email addresses" : ""
+        !leads.filter(lead => lead.email).length ? "No usable business emails were found in the inspected search space" : ""
       ].filter(Boolean)
     }
   };
@@ -601,4 +887,13 @@ async function searchLeads(input = {}) {
   return payload;
 }
 
-module.exports = { searchLeads };
+module.exports = {
+  searchLeads,
+  __test: {
+    collectOutreachReadyLeads,
+    hasEnoughDiscoveryEvidence,
+    isUsableBusinessEmail,
+    normalizeCountry,
+    preferredEmail
+  }
+};

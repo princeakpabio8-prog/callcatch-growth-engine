@@ -26,10 +26,22 @@ function countryName(value = "") {
     uk: "United Kingdom",
     gb: "United Kingdom",
     "united kingdom": "United Kingdom",
+    au: "Australia",
+    australia: "Australia",
+    de: "Germany",
+    germany: "Germany",
+    fr: "France",
+    france: "France",
+    es: "Spain",
+    spain: "Spain",
+    ie: "Ireland",
+    ireland: "Ireland",
+    nl: "Netherlands",
+    netherlands: "Netherlands",
     europe: "Europe",
     eu: "Europe"
   };
-  return countries[key] || value || "United States";
+  return countries[key] || value || "Unsupported";
 }
 
 function countryCodes(value = "") {
@@ -37,6 +49,12 @@ function countryCodes(value = "") {
   if (["us", "usa", "united states"].includes(key)) return "us";
   if (["ca", "canada"].includes(key)) return "ca";
   if (["uk", "gb", "united kingdom"].includes(key)) return "gb";
+  if (["au", "australia"].includes(key)) return "au";
+  if (["de", "germany"].includes(key)) return "de";
+  if (["fr", "france"].includes(key)) return "fr";
+  if (["es", "spain"].includes(key)) return "es";
+  if (["ie", "ireland"].includes(key)) return "ie";
+  if (["nl", "netherlands"].includes(key)) return "nl";
   if (["europe", "eu"].includes(key)) return "gb,ie,fr,de,nl,be,es,it,pt,se,no,dk,fi,ch,at,pl";
   return "";
 }
@@ -45,7 +63,14 @@ function shortCountryCode(value = "") {
   const country = countryName(value).toLowerCase();
   if (country === "canada") return "CA";
   if (country === "united kingdom") return "GB";
+  if (country === "australia") return "AU";
+  if (country === "germany") return "DE";
+  if (country === "france") return "FR";
+  if (country === "spain") return "ES";
+  if (country === "ireland") return "IE";
+  if (country === "netherlands") return "NL";
   if (country === "europe") return "EU";
+  if (country === "unsupported") return "UNSUPPORTED";
   return "US";
 }
 

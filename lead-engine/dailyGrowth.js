@@ -23,9 +23,10 @@ const DEFAULT_DAILY_GROWTH = {
   },
   trades: ["HVAC", "Plumbing", "Electrical", "Roofing"],
   scoreThreshold: 75,
+  emailReadyTarget: 25,
   countPerSearch: 8,
   radius: 25,
-  maxSearchesPerRun: 8,
+  maxSearchesPerRun: 24,
   sendEnabled: false
 };
 
@@ -123,15 +124,28 @@ async function runDailyGrowth({ state, config: rawConfig }) {
   const existingKeys = new Set((state.leads || []).map(leadKey));
   const discovered = [];
   const errors = [];
+  const target = Math.max(1, Number(config.emailReadyTarget || config.countPerSearch || 8));
+  let searchesRun = 0;
+  let duplicateOrExisting = 0;
+  let noEmailDiscarded = 0;
 
   for (const search of searchPlan) {
+    if (discovered.length >= target) break;
     try {
-      const result = await searchLeads(search);
+      searchesRun += 1;
+      const remaining = Math.max(1, target - discovered.length);
+      const result = await searchLeads({ ...search, count: Math.min(Number(config.countPerSearch || 8), remaining) });
       for (const lead of result.leads || []) {
+        if (!hasEmail(lead)) {
+          noEmailDiscarded += 1;
+          continue;
+        }
         const key = leadKey(lead);
         if (!existingKeys.has(key)) {
           existingKeys.add(key);
           discovered.push({ ...lead, state: lead.state || search.state, city: lead.city || search.city });
+        } else {
+          duplicateOrExisting += 1;
         }
       }
     } catch (error) {
@@ -181,8 +195,14 @@ async function runDailyGrowth({ state, config: rawConfig }) {
     startedAt,
     finishedAt: new Date().toISOString(),
     automationLevel: config.automationLevel,
-    searchesRun: searchPlan.length,
+    searchesRun,
+    searchLimit: searchPlan.length,
+    emailReadyTarget: target,
+    targetReached: discovered.length >= target,
+    stoppedReason: discovered.length >= target ? "email_ready_target_reached" : "search_plan_exhausted",
     newBusinesses: discovered.length,
+    duplicateOrExisting,
+    noEmailDiscarded,
     qualified: qualified.length,
     emailsReady: tasks.filter(task => task.channel === "email").length,
     linkedinReady: tasks.filter(task => task.channel === "linkedin").length,

@@ -23,6 +23,24 @@ function configured() {
   return Boolean(process.env.BRAVE_SEARCH_API_KEY);
 }
 
+function countryForBrave(location = {}) {
+  const value = String(location.countryCode || location.country || "").trim().toLowerCase();
+  if (["ca", "canada"].includes(value)) return "CA";
+  if (["gb", "uk", "united kingdom"].includes(value)) return "GB";
+  if (["au", "australia"].includes(value)) return "AU";
+  if (["de", "germany"].includes(value)) return "DE";
+  if (["fr", "france"].includes(value)) return "FR";
+  if (["es", "spain"].includes(value)) return "ES";
+  if (["ie", "ireland"].includes(value)) return "IE";
+  if (["nl", "netherlands"].includes(value)) return "NL";
+  if (["eu", "europe"].includes(value)) return "GB";
+  return "US";
+}
+
+function unique(values = []) {
+  return [...new Set(values.filter(Boolean).map(value => String(value).replace(/\s+/g, " ").trim()).filter(Boolean))];
+}
+
 function cleanTitle(value = "") {
   return String(value || "")
     .replace(/\s+\|.*$/g, "")
@@ -71,19 +89,20 @@ function cityStateFromLocation(location = {}, fallback = {}) {
   };
 }
 
-async function braveSearch(query, { count = 10, local = true } = {}) {
+async function braveSearch(query, { count = 10, local = true, country = "US", offset = 0 } = {}) {
   if (!configured()) return null;
-  const key = `brave:${query}:${count}:${local}`;
+  const key = `brave:${country}:${query}:${count}:${local}:${offset}`;
   const cached = cache.get(key);
   if (cached) return cached;
 
   const url = new URL(BRAVE_ENDPOINT);
   url.searchParams.set("q", query);
-  url.searchParams.set("country", "US");
+  url.searchParams.set("country", country || "US");
   url.searchParams.set("search_lang", "en");
-  url.searchParams.set("ui_lang", "en-US");
+  url.searchParams.set("ui_lang", country === "GB" ? "en-GB" : "en-US");
   url.searchParams.set("safesearch", "moderate");
   url.searchParams.set("count", String(Math.max(1, Math.min(Number(count) || 10, 20))));
+  if (Number(offset) > 0) url.searchParams.set("offset", String(Math.max(0, Number(offset) || 0)));
   url.searchParams.set("extra_snippets", "true");
   if (local) url.searchParams.set("enable_rich_callback", "1");
 
@@ -102,6 +121,55 @@ async function braveSearch(query, { count = 10, local = true } = {}) {
 
   cache.set(key, payload);
   return payload;
+}
+
+function nearbyMarkets(location = {}) {
+  const city = String(location.city || "").trim();
+  const state = String(location.state || "").trim();
+  const country = countryForBrave(location);
+  const metros = {
+    "US:dallas": ["Dallas", "Fort Worth", "Arlington", "Plano", "Irving"],
+    "US:houston": ["Houston", "Sugar Land", "The Woodlands", "Pasadena", "Pearland"],
+    "US:phoenix": ["Phoenix", "Mesa", "Scottsdale", "Glendale", "Tempe"],
+    "US:miami": ["Miami", "Fort Lauderdale", "Hialeah", "Hollywood", "Doral"],
+    "CA:toronto": ["Toronto", "Mississauga", "Brampton", "Vaughan", "Markham"],
+    "GB:london": ["London", "Croydon", "Wembley", "Ealing", "Ilford"],
+    "GB:manchester": ["Manchester", "Salford", "Stockport", "Bolton", "Oldham"],
+    "DE:berlin": ["Berlin", "Potsdam", "Spandau", "Charlottenburg", "Neukolln"]
+  };
+  const key = `${country}:${city.toLowerCase()}`;
+  const expanded = metros[key] || [city];
+  return unique(expanded.map(item => [item, state].filter(Boolean).join(" "))).slice(0, 5);
+}
+
+function buildBraveDiscoveryQueries({ trade, location, maxQueries = 10 } = {}) {
+  const { getTradeConfig } = require("../trades");
+  const config = getTradeConfig(trade);
+  const terms = unique([
+    trade,
+    ...(config.searchTerms || []),
+    `${trade} company`,
+    `${trade} contractor`
+  ]).slice(0, 6);
+  const markets = nearbyMarkets(location);
+  const primaryMarket = markets[0] || [location.city, location.state].filter(Boolean).join(" ") || location.displayName || "";
+  const queryTemplates = [
+    term => `${term} ${primaryMarket} contact email`,
+    term => `${term} ${primaryMarket} contact`,
+    term => `${term} ${primaryMarket} website`,
+    term => `emergency ${term} ${primaryMarket}`,
+    term => `${term} near ${primaryMarket}`,
+    term => `${term} ${markets[1] || primaryMarket} contact email`,
+    term => `${term} ${markets[2] || primaryMarket} website`
+  ];
+  const queries = [];
+  for (const term of terms) {
+    for (const template of queryTemplates) {
+      queries.push(template(term));
+      if (queries.length >= maxQueries) return unique(queries).slice(0, maxQueries);
+    }
+  }
+  return unique(queries).slice(0, maxQueries);
 }
 
 function normalizeLocationResult(result = {}, context = {}) {
@@ -155,24 +223,69 @@ function normalizeWebResult(result = {}, context = {}) {
   };
 }
 
-async function searchBrave({ trade, location, count }) {
+async function searchBrave({ trade, location, count, maxQueries = 8, maxPages = 2 }) {
   if (!configured()) return { leads: [], cached: false, disabled: true };
-  const query = `${trade} companies in ${location.city || location.displayName} ${location.state || ""}`;
-  const payload = await braveSearch(query, { count: Math.min(Number(count) || 10, 20), local: true });
-  const locations = payload?.locations?.results || [];
-  const web = payload?.web?.results || [];
-  const leads = [
-    ...locations.map(result => normalizeLocationResult(result, { trade, location })),
-    ...web.map(result => normalizeWebResult(result, { trade, location }))
-  ].filter(lead => lead.business && (lead.website || lead.phone || lead.address));
-  return { leads, cached: false, source: "Brave Search" };
+  const country = countryForBrave(location);
+  const queries = buildBraveDiscoveryQueries({ trade, location, maxQueries });
+  const leads = [];
+  const failures = [];
+  const queryDiagnostics = [];
+  const targetRaw = Math.min(Math.max((Number(count) || 10) * 5, 60), 180);
+
+  for (const query of queries) {
+    for (let page = 0; page < Math.max(1, Math.min(Number(maxPages) || 1, 3)); page += 1) {
+      const offset = page * 20;
+      try {
+        const payload = await braveSearch(query, { count: 20, local: true, country, offset });
+        const locations = payload?.locations?.results || [];
+        const web = payload?.web?.results || [];
+        const normalized = [
+          ...locations.map(result => normalizeLocationResult(result, { trade, location })),
+          ...web.map(result => normalizeWebResult(result, { trade, location }))
+        ].filter(lead => lead.business && (lead.website || lead.phone || lead.address));
+        leads.push(...normalized);
+        queryDiagnostics.push({ query, page: page + 1, returned: normalized.length });
+        if (!normalized.length) break;
+        if (leads.length >= targetRaw) {
+          return {
+            leads,
+            cached: false,
+            source: "Brave Search",
+            diagnostics: {
+              country,
+              queriesAttempted: queryDiagnostics.length,
+              queryResults: queryDiagnostics,
+              failures,
+              stoppedReason: "raw_target_reached"
+            }
+          };
+        }
+      } catch (error) {
+        failures.push({ query, page: page + 1, error: error.message });
+        break;
+      }
+    }
+  }
+
+  return {
+    leads,
+    cached: false,
+    source: "Brave Search",
+    diagnostics: {
+      country,
+      queriesAttempted: queryDiagnostics.length,
+      queryResults: queryDiagnostics,
+      failures,
+      stoppedReason: failures.length && !leads.length ? "provider_failed" : "search_space_exhausted"
+    }
+  };
 }
 
 async function findOfficialWebsite(lead = {}) {
   if (!configured() || !lead.business) return lead;
   const cityState = [lead.city, lead.state].filter(Boolean).join(" ");
   const query = `"${lead.business}" ${cityState} official website ${lead.trade || ""}`;
-  const payload = await braveSearch(query, { count: 5, local: false });
+  const payload = await braveSearch(query, { count: 5, local: false, country: countryForBrave(lead) });
   const results = payload?.web?.results || [];
   const official = results.find(result => result.url && !isDirectoryUrl(result.url));
   const facebook = results.find(result => /facebook\.com/i.test(result.url || ""));
@@ -199,6 +312,8 @@ async function enrichWithBraveWebsites(leads = [], { limit = 12 } = {}) {
 }
 
 module.exports = {
+  buildBraveDiscoveryQueries,
+  countryForBrave,
   configured,
   enrichWithBraveWebsites,
   searchBrave

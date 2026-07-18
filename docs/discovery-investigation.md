@@ -26,12 +26,14 @@ Processing:
    - OpenStreetMap/Overpass searches map data.
    - Brave Search runs only when `BRAVE_SEARCH_API_KEY` is configured.
    - Serper runs only when `SERPER_API_KEY` is configured.
-5. Results are deduped.
+5. Results are deduped across providers, queries, and pages.
 6. Rating/review filters are applied.
 7. Existing prospects are removed.
-8. A capped candidate pool is enriched with websites.
-9. Optional deep website research runs.
-10. Final results are sorted with email-ready leads first.
+8. A capped candidate pool is enriched with official websites.
+9. Websites are scanned for usable business emails.
+10. Businesses without usable emails are excluded from active outreach results.
+11. Optional deep website research runs only after email readiness.
+12. Final results contain outreach-ready leads only.
 
 Output:
 
@@ -47,16 +49,19 @@ Output:
 | Area | Current Limit |
 | --- | --- |
 | Final leads per manual search | 50 |
-| Provider request count | `min(count * 3, 60)` |
+| Provider request count | `min(max(count * 6, 40), 120)` |
 | OpenStreetMap element cap | 120 |
 | Serper search terms | 3 |
 | Serper results per term | 20 |
 | Brave results per query | 20 |
-| Serper website enrichment | 8 candidates |
-| Brave website enrichment | 12 candidates |
+| Brave query variations | 6 to 12 |
+| Brave pages per query | 2 |
+| Serper website enrichment | up to 36 candidates |
+| Brave website enrichment | up to 36 candidates |
 | Deep research | 12 candidates |
-| Daily Growth searches per run | 8 |
+| Daily Growth searches per run | 24 |
 | Daily Growth leads per search | 8 |
+| Daily Growth email-ready target | 25 |
 
 ## Funnel Example
 
@@ -65,17 +70,18 @@ For a user request such as `HVAC in Dallas, TX` with `count=10`:
 | Stage | Maximum Before Real-World Drop-Off |
 | --- | ---: |
 | User asks for final leads | 10 |
-| Provider candidate request | 30 |
+| Provider candidate request | 60 |
 | OpenStreetMap elements | 120 |
 | Serper web/place candidates, if enabled | Up to 60 before dedupe |
-| Brave web/location candidates, if enabled | Up to 20 before dedupe |
+| Brave web/location candidates, if enabled | Multiple queries and pages, capped safely |
 | After provider dedupe | Variable |
 | After rating/review filters | Variable |
 | After existing CRM/Pipeline filter | Variable |
-| Initial candidate pool | 40 |
-| Website enrichment | 8 with Serper, 12 with Brave |
+| Initial candidate pool | Up to 220 |
+| Website enrichment | Up to 36 with Serper or Brave |
+| Email validation | Removes no-reply, test, disposable, directory, and malformed emails |
 | Deep research, if enabled | 12 |
-| Final lead list | 10 |
+| Final lead list | 10 email-ready leads, or fewer if safely exhausted |
 
 The current system is sampling from a small candidate window. It is not exhausting Dallas, Phoenix, London, Toronto, Berlin, or other large markets.
 
@@ -104,20 +110,28 @@ Observed funnel in each timeout case:
 | Final leads | 0 |
 | Email-ready leads | 0 |
 
-This means the public map source alone is not enough for reliable high-volume lead discovery. Search APIs must be configured and the candidate window must be widened.
+This means the public map source alone is not enough for reliable high-volume lead discovery. Search APIs must be configured, and discovery must keep inspecting candidates until it reaches the requested email-ready target or safely exhausts its search space.
+
+## Fix Implemented
+
+- Brave is now the primary broad discovery provider when configured.
+- Brave uses multiple natural query variations per trade/location.
+- Brave supports controlled pagination through result offsets.
+- Brave search country handling is no longer US-only.
+- Discovery now rejects unsupported countries instead of silently converting them to the United States.
+- Australia and individual supported European countries are recognized.
+- Discovery now filters final results to outreach-ready leads with usable business email addresses.
+- Businesses without usable emails are counted in diagnostics instead of being returned as active outreach work.
+- Daily Growth now aims for an email-ready target and keeps searching across planned markets until the target is reached or the search plan is exhausted.
 
 ## Bottlenecks
 
-1. Provider candidate caps are too small for large markets.
-2. There is no pagination or tiling for OpenStreetMap/Overpass.
-3. OpenStreetMap can time out and then discovery has no usable fallback unless Brave or Serper is configured.
-4. Brave is hardcoded to US search settings, which weakens Canada, UK, and Europe discovery.
-5. Serper is present in code but only works when `SERPER_API_KEY` is configured.
-6. Serper maps broad Europe searches to `gb`, which limits country-specific European reach.
-7. Australia is not supported by `normalizeCountry()`.
-8. Daily Growth only runs 8 searches per run by default.
-9. Daily Growth only keeps leads with email and score >= 75, so many discovered businesses never enter the working queue.
-10. Existing CRM/Pipeline filtering removes already-seen companies before the final list. This is useful for avoiding duplicates, but it can make a repeated city look empty.
+1. OpenStreetMap can still time out, so Brave should be configured for production breadth.
+2. OpenStreetMap still does not tile very large bounding boxes.
+3. Serper is present in code but only works when `SERPER_API_KEY` is configured.
+4. Serper maps broad Europe searches to `gb`, which limits country-specific European reach.
+5. Existing CRM/Pipeline filtering removes already-seen companies before the final list. This is useful for avoiding duplicates, but it can make a repeated city look empty.
+6. Final outreach-ready volume depends on how many public websites expose usable business emails.
 
 ## Answers
 
@@ -138,21 +152,17 @@ It stops in the discovery provider layer and candidate-enrichment layer:
 
 Single biggest bottleneck:
 
-The largest bottleneck is the early discovery candidate window: provider results are capped and not paginated, then only 8 to 12 candidates get website enrichment. In practice, if OpenStreetMap times out and Serper/Brave is unavailable or weak for that country, no fresh prospects can populate.
+The remaining largest bottleneck is provider availability: if Brave is not configured, discovery runs in reduced-capacity mode and may depend heavily on OpenStreetMap, which can time out. With Brave configured, the bottleneck moves to public email availability on company websites.
 
 Can discovery produce more leads safely?
 
 Yes. The system can produce more without adding more industries first. The next fixes should broaden market coverage and provider depth:
 
-- enable and verify Serper in production;
-- make Brave country-aware;
-- add country support for Australia and more Europe markets;
-- add paginated/multi-query provider planning;
+- keep Brave configured in production;
 - tile large map searches instead of one large Overpass query;
-- increase candidate enrichment limits behind safe rate limits;
-- separate "discovered" leads from "email-ready" leads in Daily Growth.
+- add optional non-paid public sources where permitted;
+- monitor diagnostics for no-email and invalid-email drop-off.
 
 Are additional industries necessary?
 
 Not yet. The existing trade list is already broad. The discovery bottleneck is provider depth and qualification flow, not the number of industries.
-
