@@ -23,7 +23,7 @@ const { assertProductionStorageReady, audit, mutateStore, newId, readStore, stor
 const { resolveHost, resolvePort } = require("./lead-engine/runtimeConfig");
 const { buildCampaign, buildSequenceTasks } = require("./lead-engine/campaigns");
 const { DEFAULT_DAILY_GROWTH, automationCapabilities, mergeConfig, runDailyGrowth } = require("./lead-engine/dailyGrowth");
-const { activeProvider, configured: emailConfigured, emailConfig, parseEmail, sendEmail } = require("./lead-engine/emailAdapter");
+const { activeProvider, configured: emailConfigured, emailConfig, parseEmail, sanitizeEmailError, sendEmail, verifyEmailTransport } = require("./lead-engine/emailAdapter");
 const { configured: smsConfigured, normalizePhone, sendSms, smsConfig } = require("./lead-engine/smsAdapter");
 const {
   applyBrainOneReviewState,
@@ -2084,18 +2084,59 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  if (req.method === "GET" && url.pathname === "/api/email/verify") {
+    const config = emailConfig();
+    const provider = activeProvider(config);
+    try {
+      const result = await verifyEmailTransport(config);
+      log("info", "email_verify_succeeded", {
+        provider,
+        host: config.host || "",
+        port: config.port,
+        secure: config.secure,
+        fromDomain: parseEmail(config.from).split("@").pop() || ""
+      });
+      return send(res, 200, {
+        ok: true,
+        provider,
+        verified: !!result.verified
+      });
+    } catch (error) {
+      const safe = sanitizeEmailError(error);
+      log("error", "email_verify_failed", {
+        provider,
+        host: config.host || "",
+        port: config.port,
+        secure: config.secure,
+        fromDomain: parseEmail(config.from).split("@").pop() || "",
+        error: safe
+      });
+      return send(res, 400, {
+        ok: false,
+        provider,
+        verified: false,
+        error: safe.message,
+        responseCode: safe.responseCode || ""
+      });
+    }
+  }
+
   if (req.method === "POST" && url.pathname === "/api/email/send-test") {
     try {
       const body = await readJson(req);
+      if (body.test !== true) {
+        return send(res, 400, { error: "Test flag is required before sending a test email." });
+      }
       const result = await sendEmail({
         to: body.to,
-        subject: body.subject || "CallCatch email test",
-        body: body.body || "This is a CallCatch email delivery test."
+        subject: body.subject || "CallCatch test email - delivery check",
+        body: body.body || "This is a CallCatch email delivery test. No prospect outreach or follow-up was triggered."
       });
       await audit("email_test_sent", { to: result.to, messageId: result.messageId });
       return send(res, 200, result);
     } catch (error) {
-      return send(res, 400, { error: error.message });
+      const safe = sanitizeEmailError(error);
+      return send(res, 400, { error: safe.message, responseCode: safe.responseCode || "" });
     }
   }
 
@@ -2192,9 +2233,10 @@ const server = http.createServer(async (req, res) => {
             lead.sentEmails = lead.sentEmails.slice(0, 100);
             sent.push({ id: item.id, business: item.business, to, messageId: sendResult.messageId });
           } catch (error) {
+            const safe = sanitizeEmailError(error);
             item.status = "Send Failed";
-            item.error = error.message;
-            failed.push({ id: item.id, business: item.business, error: error.message });
+            item.error = safe.message;
+            failed.push({ id: item.id, business: item.business, error: safe.message, responseCode: safe.responseCode || "" });
           }
         }
 

@@ -3,6 +3,9 @@ const tls = require("tls");
 const fs = require("fs");
 const path = require("path");
 
+let smtpClientFactory = smtpClient;
+let emailLogger = entry => console.log(JSON.stringify(entry));
+
 function loadEmailSettingsFile() {
   const file = path.join(__dirname, "..", "email-settings.env");
   if (!fs.existsSync(file)) return {};
@@ -27,21 +30,32 @@ function setting(fileSettings, key, fallback = "") {
 function emailConfig() {
   const fileSettings = loadEmailSettingsFile();
   const provider = setting(fileSettings, "EMAIL_PROVIDER", "auto").toLowerCase();
+  const port = Number(setting(fileSettings, "SMTP_PORT", 465));
+  const timeoutMs = Number(setting(fileSettings, "SMTP_TIMEOUT_MS", 15000));
   return {
     provider,
     resendApiKey: setting(fileSettings, "RESEND_API_KEY"),
     brevoApiKey: setting(fileSettings, "BREVO_API_KEY"),
     host: setting(fileSettings, "SMTP_HOST"),
-    port: Number(setting(fileSettings, "SMTP_PORT", 465)),
-    secure: String(setting(fileSettings, "SMTP_SECURE", "true")).toLowerCase() !== "false",
+    port: Number.isFinite(port) && port > 0 ? port : 465,
+    secure: parseBoolean(setting(fileSettings, "SMTP_SECURE", "true"), true),
     user: setting(fileSettings, "SMTP_USER"),
     pass: setting(fileSettings, "SMTP_PASS"),
     from: setting(fileSettings, "SMTP_FROM", setting(fileSettings, "SMTP_USER")),
     fromName: setting(fileSettings, "SMTP_FROM_NAME", "CallCatch"),
     replyTo: setting(fileSettings, "SMTP_REPLY_TO", setting(fileSettings, "SMTP_FROM", setting(fileSettings, "SMTP_USER"))),
-    timeoutMs: Number(setting(fileSettings, "SMTP_TIMEOUT_MS", 15000)),
+    timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 15000,
     source: Object.keys(fileSettings).length ? "email-settings.env" : "environment"
   };
+}
+
+function parseBoolean(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  const text = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "y", "on"].includes(text)) return true;
+  if (["false", "0", "no", "n", "off"].includes(text)) return false;
+  return fallback;
 }
 
 function configured(config = emailConfig()) {
@@ -63,6 +77,57 @@ function parseEmail(value) {
   const text = String(value || "").trim();
   const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   return match ? match[0] : "";
+}
+
+function emailDomain(value) {
+  const email = parseEmail(value);
+  return email.includes("@") ? email.split("@").pop().toLowerCase() : "";
+}
+
+function smtpResponseCode(error) {
+  if (error?.responseCode) return error.responseCode;
+  const match = String(error?.message || error || "").match(/\b([245]\d{2})\b/);
+  return match ? Number(match[1]) : undefined;
+}
+
+function sanitizeEmailError(error) {
+  const message = String(error?.publicMessage || error?.message || error || "Email send failed");
+  const cleaned = message
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
+    .replace(/\b[A-Za-z0-9+/]{24,}={0,2}\b/g, "[redacted]")
+    .replace(/(pass(word)?|api[-_ ]?key|secret|token)\s*[:=]\s*\S+/gi, "$1=[redacted]");
+  return {
+    name: error?.name || "EmailError",
+    message: cleaned.slice(0, 500),
+    code: error?.code || "",
+    command: error?.smtpCommand || error?.command || "",
+    responseCode: smtpResponseCode(error)
+  };
+}
+
+function safeEmailMeta({ config = emailConfig(), recipient = "", route = "", task = {} } = {}) {
+  return {
+    provider: activeProvider(config),
+    host: config.host || "",
+    port: config.port || "",
+    secure: !!config.secure,
+    fromDomain: emailDomain(config.from),
+    recipientDomain: emailDomain(recipient),
+    route,
+    taskId: task?.id || "",
+    leadId: task?.leadId || ""
+  };
+}
+
+function logEmail(level, message, meta = {}) {
+  try {
+    emailLogger({
+      time: new Date().toISOString(),
+      level,
+      message,
+      ...meta
+    });
+  } catch {}
 }
 
 function formatAddress(email, name = "") {
@@ -118,12 +183,15 @@ function plainTextToHtml(text) {
 
 function smtpClient(config) {
   const timeoutMs = Number(config.timeoutMs || 15000);
-  const socket = config.secure
+  let socket = config.secure
     ? tls.connect({ host: config.host, port: config.port, servername: config.host })
     : net.connect({ host: config.host, port: config.port });
 
   let buffer = "";
-  socket.setTimeout(timeoutMs);
+  function applyTimeout() {
+    socket.setTimeout(timeoutMs);
+  }
+  applyTimeout();
 
   function readResponse() {
     return new Promise((resolve, reject) => {
@@ -158,16 +226,59 @@ function smtpClient(config) {
     });
   }
 
-  async function command(line, expected) {
+  async function command(line, expected, label = line) {
     socket.write(`${line}\r\n`);
     const response = await readResponse();
     if (expected && !expected.some(code => response.startsWith(code))) {
-      throw new Error(`SMTP command failed: ${line} -> ${response.trim()}`);
+      const error = new Error(`SMTP command failed at ${label}: ${response.trim()}`);
+      error.smtpCommand = label;
+      error.responseCode = Number(response.slice(0, 3)) || undefined;
+      throw error;
     }
     return response;
   }
 
-  return { socket, readResponse, command };
+  async function startTls() {
+    await command("STARTTLS", ["220"], "STARTTLS");
+    socket.removeAllListeners("data");
+    socket.removeAllListeners("error");
+    socket.removeAllListeners("timeout");
+    socket = tls.connect({ socket, servername: config.host });
+    buffer = "";
+    applyTimeout();
+    await new Promise((resolve, reject) => {
+      const onSecure = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = error => {
+        cleanup();
+        reject(error);
+      };
+      const onTimeout = () => {
+        cleanup();
+        socket.destroy();
+        reject(new Error(`SMTP STARTTLS timed out after ${Math.round(timeoutMs / 1000)} seconds`));
+      };
+      const cleanup = () => {
+        socket.off("secureConnect", onSecure);
+        socket.off("error", onError);
+        socket.off("timeout", onTimeout);
+      };
+      socket.once("secureConnect", onSecure);
+      socket.once("error", onError);
+      socket.once("timeout", onTimeout);
+    });
+  }
+
+  return {
+    get socket() {
+      return socket;
+    },
+    readResponse,
+    command,
+    startTls
+  };
 }
 
 async function sendViaResend({ recipient, subject, body, lead, task, config }) {
@@ -255,16 +366,20 @@ async function sendViaSmtp({ recipient, subject, body, config }) {
     body
   ].join("\r\n");
 
-  const client = smtpClient(config);
+  const client = smtpClientFactory(config);
   try {
     await client.readResponse();
-    await client.command(`EHLO callcatch.local`, ["250"]);
-    await client.command("AUTH LOGIN", ["334"]);
-    await client.command(encodeBase64(config.user), ["334"]);
-    await client.command(encodeBase64(config.pass), ["235"]);
-    await client.command(`MAIL FROM:<${parseEmail(config.from)}>`, ["250"]);
-    await client.command(`RCPT TO:<${recipient}>`, ["250", "251"]);
-    await client.command("DATA", ["354"]);
+    let ehlo = await client.command(`EHLO callcatch.local`, ["250"], "EHLO");
+    if (!config.secure && /STARTTLS/i.test(ehlo) && client.startTls) {
+      await client.startTls();
+      ehlo = await client.command(`EHLO callcatch.local`, ["250"], "EHLO_AFTER_STARTTLS");
+    }
+    await client.command("AUTH LOGIN", ["334"], "AUTH_LOGIN");
+    await client.command(encodeBase64(config.user), ["334"], "AUTH_USERNAME");
+    await client.command(encodeBase64(config.pass), ["235"], "AUTH_PASSWORD");
+    await client.command(`MAIL FROM:<${parseEmail(config.from)}>`, ["250"], "MAIL_FROM");
+    await client.command(`RCPT TO:<${recipient}>`, ["250", "251"], "RCPT_TO");
+    await client.command("DATA", ["354"], "DATA");
     client.socket.write(`${escapeData(message)}\r\n.\r\n`);
     const dataResponse = await client.readResponse();
     if (!dataResponse.startsWith("250")) {
@@ -279,6 +394,32 @@ async function sendViaSmtp({ recipient, subject, body, config }) {
       messageId,
       sentAt: new Date().toISOString()
     };
+  } finally {
+    client.socket.end();
+  }
+}
+
+async function verifyEmailTransport(config = emailConfig()) {
+  if (!configured(config)) {
+    throw new Error("Email provider is not configured");
+  }
+  const provider = activeProvider(config);
+  if (provider !== "smtp") {
+    return { ok: true, provider, verified: true, mode: "api-configured" };
+  }
+  const client = smtpClientFactory(config);
+  try {
+    await client.readResponse();
+    let ehlo = await client.command("EHLO callcatch.local", ["250"], "EHLO");
+    if (!config.secure && /STARTTLS/i.test(ehlo) && client.startTls) {
+      await client.startTls();
+      ehlo = await client.command("EHLO callcatch.local", ["250"], "EHLO_AFTER_STARTTLS");
+    }
+    await client.command("AUTH LOGIN", ["334"], "AUTH_LOGIN");
+    await client.command(encodeBase64(config.user), ["334"], "AUTH_USERNAME");
+    await client.command(encodeBase64(config.pass), ["235"], "AUTH_PASSWORD");
+    await client.command("QUIT", ["221"], "QUIT");
+    return { ok: true, provider, verified: true };
   } finally {
     client.socket.end();
   }
@@ -299,17 +440,42 @@ async function sendEmail({ to, subject, body, lead, task }, config = emailConfig
   const finalBody = parsed.body || body || task?.body || "";
 
   const provider = activeProvider(config);
-  if (provider === "resend") return sendViaResend({ recipient, subject: finalSubject, body: finalBody, lead, task, config });
-  if (provider === "brevo") return sendViaBrevo({ recipient, subject: finalSubject, body: finalBody, lead, task, config });
-  if (provider === "smtp") return sendViaSmtp({ recipient, subject: finalSubject, body: finalBody, config });
-  throw new Error("Email provider is not configured");
+  const meta = safeEmailMeta({ config, recipient, route: "sendEmail", task });
+  logEmail("info", "email_send_started", meta);
+  try {
+    let result;
+    if (provider === "resend") result = await sendViaResend({ recipient, subject: finalSubject, body: finalBody, lead, task, config });
+    else if (provider === "brevo") result = await sendViaBrevo({ recipient, subject: finalSubject, body: finalBody, lead, task, config });
+    else if (provider === "smtp") result = await sendViaSmtp({ recipient, subject: finalSubject, body: finalBody, config });
+    else throw new Error("Email provider is not configured");
+    logEmail("info", "email_send_succeeded", { ...meta, provider: result.provider || provider, messageId: result.messageId || "" });
+    return result;
+  } catch (error) {
+    const safe = sanitizeEmailError(error);
+    logEmail("error", "email_send_failed", { ...meta, error: safe });
+    const publicError = new Error(safe.message);
+    publicError.publicMessage = safe.message;
+    publicError.code = safe.code;
+    publicError.responseCode = safe.responseCode;
+    publicError.smtpCommand = safe.command;
+    throw publicError;
+  }
 }
 
 module.exports = {
+  __setEmailLoggerForTests(logger) {
+    emailLogger = logger || (() => {});
+  },
+  __setSmtpClientFactoryForTests(factory) {
+    smtpClientFactory = factory || smtpClient;
+  },
   activeProvider,
   configured,
   emailConfig,
   formatAddress,
   parseEmail,
-  sendEmail
+  parseBoolean,
+  sanitizeEmailError,
+  sendEmail,
+  verifyEmailTransport
 };

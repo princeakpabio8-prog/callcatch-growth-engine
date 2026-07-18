@@ -1,4 +1,4 @@
-const { sendEmail, parseEmail } = require("./emailAdapter");
+const { sendEmail, parseEmail, sanitizeEmailError } = require("./emailAdapter");
 const { normalizePhone, sendSms } = require("./smsAdapter");
 const { outreachAssets } = require("./prospectIntelligence");
 const { scanWebsite } = require("./websiteScanner");
@@ -339,11 +339,12 @@ async function sendTaskNow(state, taskId) {
     state.auditLog.unshift({ id: newId("audit"), at: result.sentAt, action: `${task.channel}_sent`, details: { taskId: task.id, leadId: lead.id, to } });
     return { sent: true, task, result };
   } catch (error) {
+    const safeError = sanitizeEmailError(error);
     task.status = "Send Failed";
-    task.error = error.message;
+    task.error = safeError.message;
     sendingState(state).metrics.failed += 1;
-    state.auditLog.unshift({ id: newId("audit"), at: nowIso(), action: `${task.channel}_send_failed`, details: { taskId: task.id, error: error.message } });
-    return { sent: false, failed: true, error: error.message, task };
+    state.auditLog.unshift({ id: newId("audit"), at: nowIso(), action: `${task.channel}_send_failed`, details: { taskId: task.id, error: safeError.message, responseCode: safeError.responseCode || "" } });
+    return { sent: false, failed: true, error: safeError.message, responseCode: safeError.responseCode, task };
   }
 }
 
