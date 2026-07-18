@@ -1,6 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const emailAdapter = require("../lead-engine/emailAdapter");
 const { sendTaskNow } = require("../lead-engine/sendingEngine");
@@ -18,11 +20,25 @@ const SMTP_ENV = {
   SMTP_TIMEOUT_MS: "30000"
 };
 
+const RESEND_ENV = {
+  EMAIL_PROVIDER: "resend",
+  RESEND_API_KEY: "re_mock_api_token",
+  RESEND_FROM: "hello@callcatch.site",
+  RESEND_FROM_NAME: "Prince Akpabio | CallCatch",
+  RESEND_REPLY_TO: "prince@example.com",
+  SMTP_HOST: undefined,
+  SMTP_USER: undefined,
+  SMTP_PASS: undefined,
+  SMTP_FROM: undefined,
+  SMTP_REPLY_TO: undefined
+};
+
 async function withEnv(nextEnv, fn) {
   const previous = {};
   for (const key of Object.keys(nextEnv)) {
     previous[key] = process.env[key];
-    process.env[key] = nextEnv[key];
+    if (nextEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = nextEnv[key];
   }
   try {
     return await fn();
@@ -78,7 +94,18 @@ test.afterEach(() => {
   emailAdapter.__setSmtpClientFactoryForTests();
   emailAdapter.__setSmtpSocketConnectorsForTests();
   emailAdapter.__setEmailLoggerForTests();
+  if (test.originalFetch) global.fetch = test.originalFetch;
 });
+
+function mockFetch(responseFactory) {
+  test.originalFetch = test.originalFetch || global.fetch;
+  const calls = [];
+  global.fetch = async (url, options = {}) => {
+    calls.push({ url, options, body: options.body ? JSON.parse(options.body) : {} });
+    return responseFactory(url, options, calls[calls.length - 1]);
+  };
+  return calls;
+}
 
 test("SMTP config parsing keeps Gmail provider and numeric timeout", async () => {
   await withEnv(SMTP_ENV, () => {
@@ -273,4 +300,153 @@ test("SMTP verify falls back to IPv4 after IPv6 AggregateError without sending e
     assert.ok(commands.some(item => /^AUTH LOGIN/i.test(item)));
     assert.ok(!commands.some(item => /^DATA/i.test(item)));
   });
+});
+
+test("EMAIL_PROVIDER=resend selects Resend with explicit sender and reply-to", async () => {
+  await withEnv(RESEND_ENV, () => {
+    const config = emailAdapter.emailConfig();
+    assert.equal(emailAdapter.activeProvider(config), "resend");
+    assert.equal(emailAdapter.configured(config), true);
+    assert.equal(config.from, "hello@callcatch.site");
+    assert.equal(config.fromName, "Prince Akpabio | CallCatch");
+    assert.equal(config.replyTo, "prince@example.com");
+  });
+});
+
+test("Resend configuration requires API key and valid From address", async () => {
+  await withEnv({ ...RESEND_ENV, RESEND_API_KEY: "" }, () => {
+    const config = emailAdapter.emailConfig();
+    assert.equal(emailAdapter.configured(config), false);
+  });
+  await withEnv({ ...RESEND_ENV, RESEND_FROM: "" }, () => {
+    const config = emailAdapter.emailConfig();
+    assert.equal(emailAdapter.configured(config), false);
+  });
+});
+
+test("Resend verification is configuration-only and validates Reply-To", async () => {
+  await withEnv(RESEND_ENV, async () => {
+    const calls = mockFetch(() => {
+      throw new Error("Resend verify must not call fetch");
+    });
+    const result = await emailAdapter.verifyEmailTransport();
+    assert.equal(result.verified, true);
+    assert.equal(result.mode, "configuration-only");
+    assert.equal(result.fromDomain, "callcatch.site");
+    assert.equal(result.replyToDomain, "example.com");
+    assert.equal(calls.length, 0);
+  });
+
+  await withEnv({ ...RESEND_ENV, RESEND_REPLY_TO: "not-an-email" }, async () => {
+    await assert.rejects(
+      () => emailAdapter.verifyEmailTransport(),
+      /Email provider is not configured|RESEND_REPLY_TO/
+    );
+  });
+});
+
+test("mocked Resend success sends formatted From and Reply-To without SMTP attempt", async () => {
+  await withEnv(RESEND_ENV, async () => {
+    emailAdapter.__setSmtpClientFactoryForTests(() => {
+      throw new Error("SMTP must not be used when Resend is selected");
+    });
+    const calls = mockFetch(async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return { id: "resend_mock_123" };
+      }
+    }));
+    const result = await emailAdapter.sendEmail({
+      to: "owner@example.net",
+      subject: "CallCatch test",
+      body: "Mocked Resend body"
+    });
+    assert.equal(result.provider, "Resend");
+    assert.equal(result.messageId, "resend_mock_123");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "https://api.resend.com/emails");
+    assert.equal(calls[0].body.from, "\"Prince Akpabio | CallCatch\" <hello@callcatch.site>");
+    assert.equal(calls[0].body.reply_to, "\"Prince Akpabio | CallCatch\" <prince@example.com>");
+    assert.deepEqual(calls[0].body.to, ["owner@example.net"]);
+    assert.equal(calls[0].body.subject, "CallCatch test");
+    assert.ok(calls[0].options.headers.Authorization.startsWith("Bearer "));
+  });
+});
+
+test("mocked Resend failure returns sanitized HTTP status and does not leak API key", async () => {
+  await withEnv(RESEND_ENV, async () => {
+    mockFetch(async () => ({
+      ok: false,
+      status: 403,
+      async json() {
+        return { message: "Domain sender rejected for hello@callcatch.site and token re_mock_api_token" };
+      }
+    }));
+    await assert.rejects(
+      () => emailAdapter.sendEmail({ to: "owner@example.net", subject: "Test", body: "Body" }),
+      error => {
+        assert.equal(error.responseCode, 403);
+        assert.doesNotMatch(error.message, /re_mock_api_token/);
+        assert.doesNotMatch(error.message, /hello@callcatch\.site/);
+        return true;
+      }
+    );
+  });
+});
+
+test("sendTaskNow marks CRM and audit as sent after mocked Resend success", async () => {
+  await withEnv(RESEND_ENV, async () => {
+    mockFetch(async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return { id: "resend_sent_task" };
+      }
+    }));
+    const state = {
+      leads: [{ id: "lead_resend", business: "Resend HVAC", email: "owner@example.net", stage: "New", timeline: [] }],
+      approvalQueue: [{ id: "task_resend", leadId: "lead_resend", channel: "email", status: "Approved", title: "Cold Email", body: "Subject: Hi\n\nBody" }],
+      auditLog: []
+    };
+    const result = await sendTaskNow(state, "task_resend");
+    assert.equal(result.sent, true);
+    assert.equal(state.approvalQueue[0].status, "Sent");
+    assert.equal(state.leads[0].stage, "Contacted");
+    assert.equal(state.leads[0].sentEmails[0].provider, "Resend");
+    assert.equal(state.auditLog[0].action, "email_sent");
+  });
+});
+
+test("failed mocked Resend send is not marked as sent", async () => {
+  await withEnv(RESEND_ENV, async () => {
+    mockFetch(async () => ({
+      ok: false,
+      status: 422,
+      async json() {
+        return { message: "Invalid sender" };
+      }
+    }));
+    const state = {
+      leads: [{ id: "lead_resend", business: "Resend HVAC", email: "owner@example.net", stage: "New", timeline: [] }],
+      approvalQueue: [{ id: "task_resend", leadId: "lead_resend", channel: "email", status: "Approved", title: "Cold Email", body: "Subject: Hi\n\nBody" }],
+      auditLog: []
+    };
+    const result = await sendTaskNow(state, "task_resend");
+    assert.equal(result.sent, false);
+    assert.equal(result.failed, true);
+    assert.equal(result.responseCode, 422);
+    assert.equal(state.approvalQueue[0].status, "Send Failed");
+    assert.equal(state.leads[0].stage, "New");
+    assert.equal(state.leads[0].sentEmails, undefined);
+    assert.equal(state.auditLog[0].action, "email_send_failed");
+  });
+});
+
+test("test-email route requires explicit test flag before send", () => {
+  const serverSource = fs.readFileSync(path.join(__dirname, "..", "callcatch-lead-server.js"), "utf8");
+  assert.match(serverSource, /url\.pathname === "\/api\/email\/send-test"/);
+  assert.match(serverSource, /body\.test !== true/);
+  assert.match(serverSource, /Test flag is required before sending a test email/);
+  assert.match(serverSource, /CallCatch test email - delivery check/);
 });

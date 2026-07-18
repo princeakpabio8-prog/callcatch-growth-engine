@@ -149,7 +149,7 @@ http://127.0.0.1:8787/api/network-check
 
 ## Environment Variables
 
-Variable names are documented in `.env.example`. Real values must be configured locally or in Render and must never be committed.
+Variable names are documented in `.env.example`. Real values must be configured locally or in Railway and must never be committed.
 
 Core server and storage:
 
@@ -164,6 +164,9 @@ Email and SMS:
 ```text
 EMAIL_PROVIDER
 RESEND_API_KEY
+RESEND_FROM
+RESEND_FROM_NAME
+RESEND_REPLY_TO
 RESEND_WEBHOOK_SECRET
 BREVO_API_KEY
 SMTP_HOST
@@ -182,6 +185,18 @@ TWILIO_FROM_NUMBER
 TWILIO_MESSAGING_SERVICE_SID
 TWILIO_TIMEOUT_MS
 ```
+
+Production email should use Resend:
+
+```text
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=<set in Railway>
+RESEND_FROM=hello@callcatch.site
+RESEND_FROM_NAME=Prince Akpabio | CallCatch
+RESEND_REPLY_TO=<personal Gmail inbox set in Railway>
+```
+
+The `callcatch.site` domain must be verified inside Resend before production sending. The `RESEND_FROM` address may be `hello@callcatch.site` even if that private mailbox does not exist, because replies are directed to `RESEND_REPLY_TO`. SMTP variables are not required while `EMAIL_PROVIDER=resend`; Gmail SMTP remains available only as a fallback provider.
 
 Lead enrichment and intelligence:
 

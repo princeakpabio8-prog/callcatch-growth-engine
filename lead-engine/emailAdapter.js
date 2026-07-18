@@ -28,26 +28,38 @@ function loadEmailSettingsFile() {
 }
 
 function setting(fileSettings, key, fallback = "") {
-  return process.env[key] || fileSettings[key] || fallback;
+  if (Object.prototype.hasOwnProperty.call(process.env, key)) return process.env[key];
+  return fileSettings[key] || fallback;
 }
 
 function emailConfig() {
   const fileSettings = loadEmailSettingsFile();
   const provider = setting(fileSettings, "EMAIL_PROVIDER", "auto").toLowerCase();
+  const resendApiKey = setting(fileSettings, "RESEND_API_KEY");
+  const effectiveProvider = provider === "resend" || (provider === "auto" && resendApiKey) ? "resend" : provider;
   const port = Number(setting(fileSettings, "SMTP_PORT", 465));
   const timeoutMs = Number(setting(fileSettings, "SMTP_TIMEOUT_MS", 15000));
+  const smtpFrom = setting(fileSettings, "SMTP_FROM", setting(fileSettings, "SMTP_USER"));
+  const resendFrom = setting(fileSettings, "RESEND_FROM", smtpFrom);
+  const smtpFromName = setting(fileSettings, "SMTP_FROM_NAME", "CallCatch");
+  const resendFromName = setting(fileSettings, "RESEND_FROM_NAME", smtpFromName);
+  const smtpReplyTo = setting(fileSettings, "SMTP_REPLY_TO", smtpFrom);
+  const resendReplyTo = setting(fileSettings, "RESEND_REPLY_TO", smtpReplyTo);
   return {
     provider,
-    resendApiKey: setting(fileSettings, "RESEND_API_KEY"),
+    resendApiKey,
+    resendFrom,
+    resendFromName,
+    resendReplyTo,
     brevoApiKey: setting(fileSettings, "BREVO_API_KEY"),
     host: setting(fileSettings, "SMTP_HOST"),
     port: Number.isFinite(port) && port > 0 ? port : 465,
     secure: parseBoolean(setting(fileSettings, "SMTP_SECURE", "true"), true),
     user: setting(fileSettings, "SMTP_USER"),
     pass: setting(fileSettings, "SMTP_PASS"),
-    from: setting(fileSettings, "SMTP_FROM", setting(fileSettings, "SMTP_USER")),
-    fromName: setting(fileSettings, "SMTP_FROM_NAME", "CallCatch"),
-    replyTo: setting(fileSettings, "SMTP_REPLY_TO", setting(fileSettings, "SMTP_FROM", setting(fileSettings, "SMTP_USER"))),
+    from: effectiveProvider === "resend" ? resendFrom : smtpFrom,
+    fromName: effectiveProvider === "resend" ? resendFromName : smtpFromName,
+    replyTo: effectiveProvider === "resend" ? resendReplyTo : smtpReplyTo,
     timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 15000,
     source: Object.keys(fileSettings).length ? "email-settings.env" : "environment"
   };
@@ -63,10 +75,10 @@ function parseBoolean(value, fallback = false) {
 }
 
 function configured(config = emailConfig()) {
-  if (config.provider === "resend") return Boolean(config.resendApiKey && config.from);
+  if (config.provider === "resend") return Boolean(config.resendApiKey && parseEmail(config.from));
   if (config.provider === "brevo") return Boolean(config.brevoApiKey && config.from);
   if (config.provider === "smtp") return Boolean(config.host && config.port && config.user && config.pass && config.from);
-  return Boolean((config.resendApiKey || config.brevoApiKey || (config.host && config.port && config.user && config.pass)) && config.from);
+  return Boolean((config.resendApiKey || config.brevoApiKey || (config.host && config.port && config.user && config.pass)) && parseEmail(config.from));
 }
 
 function encodeBase64(value) {
@@ -88,6 +100,13 @@ function emailDomain(value) {
   return email.includes("@") ? email.split("@").pop().toLowerCase() : "";
 }
 
+function maskEmail(value) {
+  const email = parseEmail(value);
+  if (!email) return "";
+  const [local, domain] = email.split("@");
+  return `${local.slice(0, 2)}***@${domain}`;
+}
+
 function smtpResponseCode(error) {
   if (error?.responseCode) return error.responseCode;
   const match = String(error?.message || error || "").match(/\b([245]\d{2})\b/);
@@ -98,6 +117,7 @@ function sanitizeMessage(value) {
   return String(value || "")
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
     .replace(/\bsk-[A-Za-z0-9_-]+\b/g, "[redacted]")
+    .replace(/\bre_[A-Za-z0-9_-]+\b/g, "[redacted]")
     .replace(/\b[A-Za-z0-9+/]{24,}={0,2}\b/g, "[redacted]")
     .replace(/(pass(word)?|api[-_ ]?key|secret|token)\s*[:=]\s*\S+/gi, "$1=[redacted]")
     .slice(0, 500);
@@ -377,6 +397,8 @@ function smtpClient(config) {
 
 async function sendViaResend({ recipient, subject, body, lead, task, config }) {
   if (!config.resendApiKey) throw new Error("RESEND_API_KEY is not configured");
+  if (!parseEmail(config.from)) throw new Error("RESEND_FROM is not configured");
+  if (config.replyTo && !parseEmail(config.replyTo)) throw new Error("RESEND_REPLY_TO is not a valid email address");
   const response = await fetchWithTimeout("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -398,7 +420,10 @@ async function sendViaResend({ recipient, subject, body, lead, task, config }) {
   }, config.timeoutMs);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload.message || payload.error || `Resend API failed with ${response.status}`);
+    const error = new Error(payload.message || payload.error || `Resend API failed with ${response.status}`);
+    error.responseCode = response.status;
+    error.code = "RESEND_API_ERROR";
+    throw error;
   }
   return {
     ok: true,
@@ -498,6 +523,19 @@ async function verifyEmailTransport(config = emailConfig()) {
     throw new Error("Email provider is not configured");
   }
   const provider = activeProvider(config);
+  if (provider === "resend") {
+    if (!config.resendApiKey) throw new Error("RESEND_API_KEY is not configured");
+    if (!parseEmail(config.from)) throw new Error("RESEND_FROM is not a valid email address");
+    if (config.replyTo && !parseEmail(config.replyTo)) throw new Error("RESEND_REPLY_TO is not a valid email address");
+    return {
+      ok: true,
+      provider,
+      verified: true,
+      mode: "configuration-only",
+      fromDomain: emailDomain(config.from),
+      replyToDomain: emailDomain(config.replyTo)
+    };
+  }
   if (provider !== "smtp") {
     return { ok: true, provider, verified: true, mode: "api-configured" };
   }
@@ -574,6 +612,7 @@ module.exports = {
   configured,
   emailConfig,
   formatAddress,
+  maskEmail,
   parseEmail,
   parseBoolean,
   sanitizeEmailError,

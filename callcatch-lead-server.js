@@ -23,7 +23,7 @@ const { assertProductionStorageReady, audit, mutateStore, newId, readStore, stor
 const { resolveHost, resolvePort } = require("./lead-engine/runtimeConfig");
 const { buildCampaign, buildSequenceTasks } = require("./lead-engine/campaigns");
 const { DEFAULT_DAILY_GROWTH, automationCapabilities, mergeConfig, runDailyGrowth } = require("./lead-engine/dailyGrowth");
-const { activeProvider, configured: emailConfigured, emailConfig, parseEmail, sanitizeEmailError, sendEmail, verifyEmailTransport } = require("./lead-engine/emailAdapter");
+const { activeProvider, configured: emailConfigured, emailConfig, maskEmail, parseEmail, sanitizeEmailError, sendEmail, verifyEmailTransport } = require("./lead-engine/emailAdapter");
 const { configured: smsConfigured, normalizePhone, sendSms, smsConfig } = require("./lead-engine/smsAdapter");
 const {
   applyBrainOneReviewState,
@@ -483,7 +483,7 @@ function pipelineMemoryReport(state = {}) {
 }
 
 async function resendRequest(pathname, config) {
-  if (!config.resendApiKey) throw new Error("RESEND_API_KEY is not configured on Render");
+  if (!config.resendApiKey) throw new Error("RESEND_API_KEY is not configured in the server environment");
   const response = await fetch(`https://api.resend.com${pathname}`, {
     headers: {
       Authorization: `Bearer ${config.resendApiKey}`,
@@ -2074,11 +2074,14 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, {
       configured: emailConfigured(config),
       provider,
-      host: config.host || "",
-      port: config.port,
-      secure: config.secure,
-      from: config.from || "",
+      host: provider === "smtp" ? (config.host || "") : "",
+      port: provider === "smtp" ? config.port : "",
+      secure: provider === "smtp" ? config.secure : "",
+      from: maskEmail(config.from),
+      fromDomain: parseEmail(config.from).split("@").pop() || "",
       fromName: config.fromName || "",
+      replyTo: maskEmail(config.replyTo),
+      replyToDomain: parseEmail(config.replyTo).split("@").pop() || "",
       apiConfigured: provider === "resend" || provider === "brevo",
       user: config.user ? config.user.replace(/^(.{2}).*(@.*)?$/, "$1***$2") : ""
     });
@@ -2099,7 +2102,10 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, {
         ok: true,
         provider,
-        verified: !!result.verified
+        verified: !!result.verified,
+        mode: result.mode || "",
+        fromDomain: result.fromDomain || (parseEmail(config.from).split("@").pop() || ""),
+        replyToDomain: result.replyToDomain || (parseEmail(config.replyTo).split("@").pop() || "")
       });
     } catch (error) {
       const safe = sanitizeEmailError(error);
