@@ -234,75 +234,261 @@ function shortGreeting(name) {
   return name && name !== "your team" ? `Hi ${name} team,` : "Hi there,";
 }
 
-function evidenceLine(angle = {}) {
-  return angle.claim_type === "evidence_backed"
-    ? `I noticed one area worth looking at: ${angle.angle}.`
-    : `One area that may be worth looking at is ${angle.angle.toLowerCase()}.`;
+function wordCount(value = "") {
+  return compact(value, 4000).split(/\s+/).filter(Boolean).length;
 }
 
-function generateMessaging({ lead = {}, flat = {}, persona, angle, offer } = {}) {
-  const name = businessName(lead, flat);
-  const cta = "Would you be open to a quick 10-minute walkthrough next week?";
-  const subjectLines = uniqueArray([
-    `Quick idea for ${name}`,
-    `Question for your ${persona.persona.toLowerCase()}`,
-    `One response-speed idea`
-  ]).slice(0, 3);
-  while (subjectLines.length < 3) subjectLines.push(`Thought this might help ${name}`);
+function stableIndex(seed = "", length = 1) {
+  if (length <= 1) return 0;
+  let hash = 2166136261;
+  for (const char of String(seed || "")) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % length;
+}
 
-  const firstBody = [
-    shortGreeting(name),
+function evidenceTextEntries(flat = {}) {
+  const evidenceLog = Array.isArray(flat.evidence_log) ? flat.evidence_log : [];
+  const facts = Array.isArray(flat.confirmed_facts) ? flat.confirmed_facts : [];
+  return [
+    ...evidenceLog.map(item => ({
+      text: compact(item.excerpt || item.summary || item.title || item.value || "", 220),
+      evidence_ids: item.id ? [item.id] : [],
+      source_type: item.source_type || "",
+      source_url: item.source_url || ""
+    })),
+    ...facts.map(item => ({
+      text: compact(item.claim || item.summary || "", 220),
+      evidence_ids: Array.isArray(item.evidence_ids) ? item.evidence_ids : [],
+      source_type: "confirmed_fact",
+      source_url: ""
+    }))
+  ].filter(item => item.text);
+}
+
+function observationFromText(entry = {}, lead = {}, flat = {}) {
+  const text = compact(entry.text, 220);
+  const lower = text.toLowerCase();
+  const service = compact((flat.business_dna?.primary_services || [])[0] || lead.trade || "service", 60);
+  if (/24\/7|24-7|after.?hours|emergency|urgent/.test(lower)) {
+    return { sentence: `I noticed your website mentions emergency service.`, evidence_ids: entry.evidence_ids || [] };
+  }
+  if (/book|booking|schedule|appointment|contact form|form/.test(lower)) {
+    return { sentence: `I noticed your website points people toward a booking or contact form.`, evidence_ids: entry.evidence_ids || [] };
+  }
+  if (/financ|payment plan|monthly payment/.test(lower)) {
+    return { sentence: `I saw that your website mentions financing options.`, evidence_ids: entry.evidence_ids || [] };
+  }
+  if (/commercial|business|facility|property manager/.test(lower)) {
+    return { sentence: `I noticed your website speaks to commercial customers.`, evidence_ids: entry.evidence_ids || [] };
+  }
+  if (/review|testimonial|rated|stars|trusted/.test(lower)) {
+    return { sentence: `I noticed your website leans on customer trust signals.`, evidence_ids: entry.evidence_ids || [] };
+  }
+  if (service) {
+    return { sentence: `I was looking through your website and saw the focus on ${service}.`, evidence_ids: entry.evidence_ids || [] };
+  }
+  return { sentence: `I was looking through your website and noticed the service details you share for customers.`, evidence_ids: entry.evidence_ids || [] };
+}
+
+function websiteObservation(lead = {}, flat = {}) {
+  const entries = evidenceTextEntries(flat);
+  const websiteEntry = entries.find(item => /website|official|page/i.test(item.source_type || "") || /^https?:\/\//i.test(item.source_url || ""));
+  const entry = websiteEntry || entries[0];
+  if (entry) return observationFromText(entry, lead, flat);
+  const service = compact((flat.business_dna?.primary_services || [])[0] || lead.trade || "", 60);
+  return {
+    sentence: service
+      ? `I was looking through the approved research and saw the focus on ${service}.`
+      : "I was looking through the approved research on your business.",
+    evidence_ids: primaryEvidence(flat).slice(0, 2)
+  };
+}
+
+function revenueLine(flat = {}) {
+  const money = flat.money_left_on_table || {};
+  if (money.status !== "estimated") return "";
+  const low = Number(money.low_estimate);
+  const high = Number(money.high_estimate);
+  if (!Number.isFinite(low) || !Number.isFinite(high) || low <= 0 || high <= 0) return "";
+  const currency = money.currency || "$";
+  const period = money.time_period ? ` per ${money.time_period}` : "";
+  return `Based on the approved estimate, improving response may be worth roughly ${currency}${Math.round(low).toLocaleString()}-${currency}${Math.round(high).toLocaleString()}${period}, depending on the assumptions.`;
+}
+
+function naturalSubjectLines(name, style = "A") {
+  const pool = [
+    "Quick question",
+    "Noticed something",
+    "Question about your website",
+    "Idea for your team",
+    "One thing I noticed",
+    "Small idea",
+    "Worth a look?",
+    name && name !== "your team" ? `Question for ${name}` : "Question for your team"
+  ];
+  const offset = stableIndex(`${name}|${style}|subjects`, pool.length);
+  return uniqueArray([...pool.slice(offset), ...pool.slice(0, offset)]).slice(0, 5);
+}
+
+function softCta(seed = "") {
+  const options = [
+    "Worth a quick look?",
+    "Happy to show you.",
+    "If useful, I can send a short demo.",
+    "I can show what I mean."
+  ];
+  return options[stableIndex(seed, options.length)];
+}
+
+function founderSignature(long = true) {
+  return long
+    ? ["Best,", "Prince Esien", "Founder | CallCatch", "hello@callcatch.site", "https://callcatch.site"].join("\n")
+    : ["Best,", "Prince"].join("\n");
+}
+
+function styleEmail({ style, name, observation, offer, angle, cta, revenue = "" }) {
+  const greeting = shortGreeting(name);
+  const problem = angle.claim_type === "evidence_backed"
+    ? "When a customer reaches out and nobody can respond right away, that moment can decide whether they wait or call someone else."
+    : "For service teams, the small gap is often the calls that arrive while everyone is already busy.";
+  const intro = "That is why I built CallCatch. It texts missed callers within seconds, so the conversation stays warm until someone can follow up.";
+  if (style === "B") {
+    return [
+      greeting,
+      "",
+      observation.sentence,
+      "",
+      `${problem} ${revenue || "It may be a simple place to protect more of the demand you already worked to earn."}`,
+      "",
+      `${intro}`,
+      "",
+      "I built it after seeing how often good conversations are lost before anyone has a chance to reply. I am not assuming this is urgent, but it looked relevant enough to mention.",
+      "",
+      "The goal is just to keep a real prospect engaged until the team can respond.",
+      "",
+      offer.name ? `For your team, the fit looks like ${offer.name.toLowerCase()}.` : "",
+      "",
+      cta,
+      "",
+      founderSignature()
+    ].join("\n").replace(/\n{3,}/g, "\n\n");
+  }
+  if (style === "C") {
+    return [
+      greeting,
+      "",
+      `${observation.sentence} It made me wonder how calls are handled when the team is tied up on another job.`,
+      "",
+      "Most people with an urgent issue do not wait long or leave a voicemail. They usually call the next company that answers.",
+      "",
+      `${intro} ${revenue || "Nothing heavy, just a response safety net for the moments that are easy to miss."}`,
+      "",
+      cta,
+      "",
+      founderSignature()
+    ].join("\n");
+  }
+  return [
+    greeting,
     "",
-    evidenceLine(angle),
+    observation.sentence,
     "",
-    `That is why I built CallCatch. ${offer.description}`,
+    "I built CallCatch for one simple reason: missed callers often move on before a busy team can call back.",
     "",
-    `I thought it might be useful for the ${persona.persona.toLowerCase()} because ${offer.reasoning.toLowerCase()}`,
+    `${offer.description} ${revenue || "It might be useful if even a few good calls slip through during busy hours."} I am not trying to overcomplicate it, just pointing out a small gap that is easy to miss.`,
     "",
     cta,
     "",
-    "Best,",
-    "Prince Esien",
-    "Founder | CallCatch",
-    "hello@callcatch.site",
-    "https://callcatch.site"
+    founderSignature()
   ].join("\n");
+}
+
+function qualityCheckEmail(body = "", observation = {}) {
+  const lower = body.toLowerCase();
+  const wc = wordCount(body);
+  const banned = ["revolutionary", "game changing", "ai powered", "next generation", "cutting edge", "state of the art"];
+  const bannedHits = banned.filter(item => lower.includes(item));
+  const ctaOk = /worth a quick look|happy to show you|short demo|show what i mean/i.test(body)
+    && !/book a meeting|schedule a call|hop on zoom/i.test(body);
+  const observationOk = observation.sentence && body.includes(observation.sentence);
+  const lengthOk = wc >= 90 && wc <= 170;
+  const shortParagraphs = body.split(/\n{2,}/).every(paragraph => paragraph.split(/[.!?]+/).filter(Boolean).length <= 3);
+  const passed = !bannedHits.length && ctaOk && observationOk && lengthOk && shortParagraphs;
+  const base = passed ? 10 : 8;
+  return {
+    human_sounding: base,
+    personalization: observationOk ? 10 : 8,
+    specificity: observationOk ? 10 : 8,
+    reading_ease: shortParagraphs && wc <= 170 ? 10 : 8,
+    founder_authenticity: !bannedHits.length && ctaOk ? 10 : 8,
+    word_count: wc,
+    passed,
+    notes: passed ? "Passed deterministic founder-tone quality gate." : "Needs rewrite before use."
+  };
+}
+
+function generateMessaging({ lead = {}, flat = {}, persona, angle, offer, runId = "" } = {}) {
+  const name = businessName(lead, flat);
+  const observation = websiteObservation(lead, flat);
+  const styleLabels = ["A", "B", "C"];
+  const selectedStyle = styleLabels[stableIndex(`${lead.id || ""}|${name}|${runId || ""}`, styleLabels.length)];
+  const cta = softCta(`${lead.id || name}|${selectedStyle}`);
+  const subjectLines = naturalSubjectLines(name, selectedStyle);
+  const revenue = revenueLine(flat);
+  const variants = styleLabels.map(style => {
+    const body = styleEmail({ style, name, observation, offer, angle, cta: softCta(`${lead.id || name}|${style}`), revenue });
+    return {
+      style,
+      body,
+      quality_check: qualityCheckEmail(body, observation)
+    };
+  });
+  const selectedVariant = variants.find(item => item.style === selectedStyle && item.quality_check.passed)
+    || variants.find(item => item.quality_check.passed)
+    || variants[0];
+  const firstBody = selectedVariant.body;
+  const evidenceIds = uniqueArray([...angle.evidence_ids, ...offer.evidence_ids, ...observation.evidence_ids]).slice(0, 8);
 
   const followUps = [
     {
       step: 1,
       recommended_delay_days: 3,
       subject: `Re: ${subjectLines[0]}`,
-      body: `${shortGreeting(name)}\n\nJust wanted to follow up on the response-speed idea I sent over.\n\nIf missed or delayed responses are already handled well, no worries. If not, CallCatch may be a simple safety net to look at.\n\n${cta}\n\nBest,\nPrince`
+      body: `${shortGreeting(name)}\n\nI wanted to follow up on the note I sent after looking at your website.\n\nThe idea was simple: if a good caller reaches out while the team is busy, a fast text reply can keep that conversation from going cold.\n\nIf this is already handled well, no worries. If not, CallCatch may be worth a quick look.\n\n${softCta(`${lead.id || name}|follow1`)}\n\n${founderSignature(false)}`
     },
     {
       step: 2,
       recommended_delay_days: 7,
       subject: `Worth a quick look?`,
-      body: `${shortGreeting(name)}\n\nOne reason I reached out is that callers often move on quickly when they cannot reach a business.\n\nCallCatch is built to keep those people engaged by text until someone can follow up.\n\nHappy to show you the workflow in a few minutes if useful.\n\nBest,\nPrince`
+      body: `${shortGreeting(name)}\n\nOne more thought, then I will stay out of your inbox.\n\nFor service businesses, the missed-call problem is not always obvious because the customer rarely tells you they moved on. They just call someone else.\n\nCallCatch is meant to quietly catch that moment with a quick text response.\n\nHappy to show you.\n\n${founderSignature(false)}`
     },
     {
       step: 3,
       recommended_delay_days: 10,
       subject: `Should I close the loop?`,
-      body: `${shortGreeting(name)}\n\nI do not want to crowd your inbox.\n\nIf improving missed-call response is not a priority right now, I can close the loop. If it is worth exploring, I can send over a quick walkthrough time.\n\nBest,\nPrince`
+      body: `${shortGreeting(name)}\n\nI do not want to keep chasing you.\n\nI reached out because your site made it look like fast response could matter for the kind of customers you serve. If that is not a focus right now, I can close the loop.\n\nIf useful, I can send a short demo.\n\n${founderSignature(false)}`
     }
   ].map(item => ({
     ...item,
-    evidence_ids: uniqueArray([...angle.evidence_ids, ...offer.evidence_ids]).slice(0, 8),
+    evidence_ids: evidenceIds,
     claims: [angle.angle, offer.name]
   }));
 
   return {
+    selected_style: selectedVariant.style,
     subject_lines: subjectLines,
     first_email: {
       subject: subjectLines[0],
       body: firstBody,
-      evidence_ids: uniqueArray([...angle.evidence_ids, ...offer.evidence_ids]).slice(0, 8),
+      evidence_ids: evidenceIds,
       claims: [angle.angle, offer.name]
     },
     follow_up_emails: followUps,
-    concise_cta: cta
+    concise_cta: cta,
+    quality_check: selectedVariant.quality_check,
+    outreach_variants: variants.map(item => ({ style: item.style, quality_check: item.quality_check }))
   };
 }
 
@@ -358,7 +544,7 @@ function blockedOutput(eligibility, runId = "") {
     selected_outreach_angle: { angle: "Unavailable", reasoning: "Brain Two is blocked by eligibility rules.", claim_type: "soft_hypothesis", evidence_ids: [] },
     selected_offer: { name: "Unavailable", description: "Brain Two is blocked.", reasoning: "Brain Two is blocked by eligibility rules.", evidence_ids: [] },
     offer_fit_explanation: "Brain Two did not generate outreach because eligibility failed.",
-    subject_lines: ["Needs review", "Needs review", "Needs review"],
+    subject_lines: ["Needs review", "Needs review", "Needs review", "Needs review", "Needs review"],
     first_email: { subject: "Needs review", body: "", evidence_ids: [], claims: [] },
     follow_up_emails: [1, 2, 3].map(step => ({ step, recommended_delay_days: step === 1 ? 3 : step === 2 ? 7 : 10, subject: "Needs review", body: "", evidence_ids: [], claims: [] })),
     concise_cta: "",
@@ -384,7 +570,7 @@ function runBrainTwo({ lead = {}, brainOneRun = {}, runId = "", createdAt = nowI
   const persona = personas[0];
   const angle = chooseAngle(lead, flat);
   const offer = chooseOffer(lead, flat);
-  const messaging = generateMessaging({ lead, flat, persona, angle, offer });
+  const messaging = generateMessaging({ lead, flat, persona, angle, offer, runId });
   const paths = contactPaths(lead, flat);
   const confidence = confidenceScore({ eligibility, persona, angle, offer, paths });
   const prohibited = prohibitedClaims(flat);
@@ -443,11 +629,21 @@ function validateBrainTwoOutput(output = {}) {
   if (!["READY", "NEEDS_REVIEW", "BLOCKED"].includes(output.status)) errors.push("status is invalid");
   if (!output.eligibility || typeof output.eligibility !== "object") errors.push("eligibility is required");
   validateArray(output.ranked_contact_personas, "ranked_contact_personas", errors);
-  validateArray(output.subject_lines, "subject_lines", errors, 3, 3);
+  validateArray(output.subject_lines, "subject_lines", errors, 5, 5);
   validateArray(output.follow_up_emails, "follow_up_emails", errors, 3, 3);
   validateArray(output.supporting_evidence, "supporting_evidence", errors);
   validateArray(output.prohibited_claims, "prohibited_claims", errors);
   if (!output.first_email?.body && output.status !== "BLOCKED") errors.push("first_email.body is required when not blocked");
+  if (output.first_email?.body && output.status !== "BLOCKED") {
+    const count = wordCount(output.first_email.body);
+    if (count > 170) errors.push("first_email.body must not exceed 170 words");
+    if (count < 90) errors.push("first_email.body should contain at least 90 words");
+    const lower = output.first_email.body.toLowerCase();
+    for (const banned of ["revolutionary", "game changing", "ai powered", "next generation", "cutting edge", "state of the art"]) {
+      if (lower.includes(banned)) errors.push(`first_email.body contains banned phrase: ${banned}`);
+    }
+    if (/book a meeting|schedule a call|hop on zoom/i.test(output.first_email.body)) errors.push("first_email.body contains a high-pressure CTA");
+  }
   if (!output.brain_three_handoff?.approval_required) errors.push("brain_three_handoff.approval_required must be true");
   for (const item of output.supporting_evidence || []) {
     if (!item.claim) errors.push("supporting_evidence.claim is required");

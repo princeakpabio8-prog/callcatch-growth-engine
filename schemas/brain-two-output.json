@@ -84,8 +84,8 @@
     "offer_fit_explanation": { "type": "string" },
     "subject_lines": {
       "type": "array",
-      "minItems": 3,
-      "maxItems": 3,
+      "minItems": 5,
+      "maxItems": 5,
       "items": { "type": "string" }
     },
     "first_email": {

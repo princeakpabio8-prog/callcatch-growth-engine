@@ -125,6 +125,10 @@ function lead(overrides = {}) {
   };
 }
 
+function words(value = "") {
+  return String(value || "").replace(/\s+/g, " ").trim().split(/\s+/).filter(Boolean).length;
+}
+
 test("Brain Two is blocked until Brain One is completed and approved", () => {
   assert.equal(evaluateBrainTwoEligibility({ lead: lead(), brainOneRun: null }).eligible, false);
   assert.equal(evaluateBrainTwoEligibility({ lead: lead(), brainOneRun: approvedBrainOne({ executionStatus: "running" }) }).eligible, false);
@@ -152,10 +156,43 @@ test("Brain Two generates deterministic outreach without sending or queuing emai
   assert.equal(result.output.status, "READY");
   assert.equal(result.output.brain_three_handoff.approval_required, true);
   assert.equal(result.output.selected_offer.name, "Missed Call Text-Back");
-  assert.equal(result.output.subject_lines.length, 3);
+  assert.equal(result.output.subject_lines.length, 5);
   assert.equal(result.output.follow_up_emails.length, 3);
   assert.equal(state.approvalQueue.length, 0);
   assert.equal(validateBrainTwoOutput(result.output).ok, true);
+});
+
+test("Brain Two first email sounds founder-written and references one specific website observation", () => {
+  const result = runBrainTwo({ lead: lead(), brainOneRun: approvedBrainOne(), runId: "brain2-quality" });
+  const email = result.output.first_email.body;
+  assert.match(email, /I noticed your website mentions emergency service\./);
+  assert.equal((email.match(/I noticed|I saw|I was looking through|I came across/g) || []).length, 1);
+  assert.ok(words(email) >= 90, `Expected at least 90 words, got ${words(email)}`);
+  assert.ok(words(email) <= 170, `Expected at most 170 words, got ${words(email)}`);
+  assert.doesNotMatch(email, /revolutionary|game changing|AI powered|next generation|cutting edge|state of the art/i);
+  assert.doesNotMatch(email, /book a meeting|schedule a call|hop on Zoom/i);
+  assert.match(email, /Worth a quick look|Happy to show you|short demo|show what I mean/i);
+  assert.equal(result.output.quality_check.passed, true);
+  assert.ok(Object.values(result.output.quality_check).filter(value => Number.isInteger(value)).every(value => value >= 9));
+});
+
+test("Brain Two rotates three founder outreach styles across prospects", () => {
+  const styles = new Set();
+  for (const id of ["lead-a", "lead-b", "lead-c", "lead-d", "lead-e", "lead-f"]) {
+    const result = runBrainTwo({ lead: lead({ id, business: `Spring HVAC ${id}` }), brainOneRun: approvedBrainOne({ businessId: id }), runId: `brain2-${id}` });
+    styles.add(result.output.selected_style);
+  }
+  assert.deepEqual([...styles].sort(), ["A", "B", "C"]);
+});
+
+test("Brain Two generates five natural subject lines without clickbait", () => {
+  const result = runBrainTwo({ lead: lead(), brainOneRun: approvedBrainOne(), runId: "brain2-subjects" });
+  assert.equal(result.output.subject_lines.length, 5);
+  assert.equal(new Set(result.output.subject_lines).size, 5);
+  for (const subject of result.output.subject_lines) {
+    assert.ok(words(subject) <= 5, `Subject is too long: ${subject}`);
+    assert.doesNotMatch(subject, /limited offer|guaranteed|buy now|click here|urgent!!!/i);
+  }
 });
 
 test("Brain Two preserves Brain One scores and does not recalculate them", () => {
