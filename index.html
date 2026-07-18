@@ -714,7 +714,10 @@
     let selectedId = leads[0]?.id || "";
     const $ = id => document.getElementById(id);
     const PRODUCTION_API_BASE = "https://callcatch-growth-engine.onrender.com";
-    function apiUrl(path){ return window.location.protocol === "file:" ? `${PRODUCTION_API_BASE}${path}` : path; }
+    function apiUrl(path){
+      const isStaticHost = window.location.protocol === "file:" || window.location.hostname.endsWith("github.io");
+      return isStaticHost ? `${PRODUCTION_API_BASE}${path}` : path;
+    }
 
     function markDirty(){ dataVersion += 1; derivedCache.stamp = -1; }
     function save(){ markDirty(); localStorage.setItem("ccProspectsV2", JSON.stringify(leads)); localStorage.setItem("ccApprovalQueueV2", JSON.stringify(queue)); localStorage.setItem("ccSettingsV2", JSON.stringify(settings)); }
