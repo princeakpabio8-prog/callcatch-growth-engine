@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
 
 const emailAdapter = require("../lead-engine/emailAdapter");
 const { sendTaskNow } = require("../lead-engine/sendingEngine");
@@ -75,6 +76,7 @@ function installFakeSmtp({ failAt = "", failMessage = "", ehlo = "250 smtp.gmail
 
 test.afterEach(() => {
   emailAdapter.__setSmtpClientFactoryForTests();
+  emailAdapter.__setSmtpSocketConnectorsForTests();
   emailAdapter.__setEmailLoggerForTests();
 });
 
@@ -176,5 +178,99 @@ test("failed send is not marked as sent and records sanitized CRM failure", asyn
     assert.equal(state.leads[0].sentEmails, undefined);
     assert.equal(state.auditLog[0].action, "email_send_failed");
     assert.doesNotMatch(state.approvalQueue[0].error, /mock-app-pass-placeholder/);
+  });
+});
+
+test("nested AggregateError sanitization preserves safe socket diagnostics only", () => {
+  const ipv6 = new Error("connect ENETUNREACH 2607:f8b0::1 user@example.com api_key=mock-api-token");
+  ipv6.code = "ENETUNREACH";
+  ipv6.errno = -101;
+  ipv6.syscall = "connect";
+  ipv6.hostname = "smtp.gmail.com";
+  ipv6.address = "2607:f8b0::1";
+  ipv6.port = 465;
+  const ipv4 = new Error("connect ETIMEDOUT 142.250.102.109:465");
+  ipv4.code = "ETIMEDOUT";
+  ipv4.syscall = "connect";
+  ipv4.hostname = "smtp.gmail.com";
+  ipv4.address = "142.250.102.109";
+  ipv4.port = 465;
+  const aggregate = new AggregateError([ipv6], "SMTP connect failed");
+  aggregate.cause = ipv4;
+
+  const safe = emailAdapter.sanitizeEmailError(aggregate);
+  assert.equal(safe.name, "AggregateError");
+  assert.equal(safe.causes.length, 2);
+  assert.deepEqual(
+    safe.causes.map(item => item.code).sort(),
+    ["ENETUNREACH", "ETIMEDOUT"]
+  );
+  assert.equal(safe.causes[0].hostname, "smtp.gmail.com");
+  assert.equal(safe.causes[0].port, 465);
+  assert.doesNotMatch(JSON.stringify(safe), /user@example\.com/);
+  assert.doesNotMatch(JSON.stringify(safe), /mock-api-token/);
+});
+
+test("SMTP verify falls back to IPv4 after IPv6 AggregateError without sending email", async () => {
+  await withEnv(SMTP_ENV, async () => {
+    const connectorCalls = [];
+    const commands = [];
+
+    function makeSocket({ fail, family }) {
+      const socket = new EventEmitter();
+      socket.setTimeout = () => {};
+      socket.destroy = () => {
+        socket.destroyed = true;
+      };
+      socket.end = () => {
+        commands.push("END");
+      };
+      socket.write = line => {
+        commands.push(line.trim());
+        const label = line.trim();
+        setImmediate(() => {
+          if (/^EHLO/i.test(label)) socket.emit("data", Buffer.from("250 smtp.gmail.com\r\n"));
+          else if (/^AUTH LOGIN/i.test(label)) socket.emit("data", Buffer.from("334 VXNlcm5hbWU6\r\n"));
+          else if (/^QUIT/i.test(label)) socket.emit("data", Buffer.from("221 2.0.0 closing connection\r\n"));
+          else if (commands.filter(item => /^[A-Za-z0-9+/]+=*$/.test(item)).length === 1) socket.emit("data", Buffer.from("334 UGFzc3dvcmQ6\r\n"));
+          else socket.emit("data", Buffer.from("235 2.7.0 Accepted\r\n"));
+        });
+      };
+      setImmediate(() => {
+        if (fail) {
+          const ipv6 = new Error("connect ENETUNREACH 2607:f8b0::1");
+          ipv6.code = "ENETUNREACH";
+          ipv6.syscall = "connect";
+          ipv6.hostname = "smtp.gmail.com";
+          ipv6.address = "2607:f8b0::1";
+          ipv6.port = 465;
+          socket.emit("error", new AggregateError([ipv6], "All connection attempts failed"));
+        } else {
+          socket.emit("data", Buffer.from("220 smtp.gmail.com ESMTP\r\n"));
+        }
+      });
+      socket.family = family || "";
+      return socket;
+    }
+
+    emailAdapter.__setEmailLoggerForTests(() => {});
+    emailAdapter.__setSmtpSocketConnectorsForTests({
+      netConnect: options => {
+        connectorCalls.push(options);
+        return makeSocket({ fail: !options.family, family: options.family });
+      },
+      tlsConnect: options => {
+        connectorCalls.push(options);
+        return makeSocket({ fail: !options.family, family: options.family });
+      }
+    });
+
+    const result = await emailAdapter.verifyEmailTransport();
+    assert.equal(result.verified, true);
+    assert.equal(connectorCalls.length, 2);
+    assert.equal(connectorCalls[0].family, undefined);
+    assert.equal(connectorCalls[1].family, 4);
+    assert.ok(commands.some(item => /^AUTH LOGIN/i.test(item)));
+    assert.ok(!commands.some(item => /^DATA/i.test(item)));
   });
 });

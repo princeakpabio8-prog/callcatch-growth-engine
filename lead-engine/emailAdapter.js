@@ -5,6 +5,10 @@ const path = require("path");
 
 let smtpClientFactory = smtpClient;
 let emailLogger = entry => console.log(JSON.stringify(entry));
+let smtpSocketConnectors = {
+  netConnect: options => net.connect(options),
+  tlsConnect: options => tls.connect(options)
+};
 
 function loadEmailSettingsFile() {
   const file = path.join(__dirname, "..", "email-settings.env");
@@ -90,18 +94,57 @@ function smtpResponseCode(error) {
   return match ? Number(match[1]) : undefined;
 }
 
-function sanitizeEmailError(error) {
-  const message = String(error?.publicMessage || error?.message || error || "Email send failed");
-  const cleaned = message
+function sanitizeMessage(value) {
+  return String(value || "")
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
+    .replace(/\bsk-[A-Za-z0-9_-]+\b/g, "[redacted]")
     .replace(/\b[A-Za-z0-9+/]{24,}={0,2}\b/g, "[redacted]")
-    .replace(/(pass(word)?|api[-_ ]?key|secret|token)\s*[:=]\s*\S+/gi, "$1=[redacted]");
+    .replace(/(pass(word)?|api[-_ ]?key|secret|token)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+    .slice(0, 500);
+}
+
+function errorCauses(error, seen = new Set()) {
+  if (!error || seen.has(error)) return [];
+  seen.add(error);
+  const nested = [];
+  if (Array.isArray(error.errors)) nested.push(...error.errors);
+  if (error.cause) nested.push(error.cause);
+  for (const item of nested) {
+    nested.push(...errorCauses(item, seen));
+  }
+  return nested.filter(Boolean);
+}
+
+function sanitizedErrorDetails(error) {
   return {
-    name: error?.name || "EmailError",
-    message: cleaned.slice(0, 500),
+    name: error?.name || "Error",
+    message: sanitizeMessage(error?.message || error),
     code: error?.code || "",
+    errno: error?.errno || "",
+    syscall: error?.syscall || "",
+    hostname: error?.hostname || error?.host || "",
+    address: error?.address || "",
+    port: error?.port || "",
     command: error?.smtpCommand || error?.command || "",
-    responseCode: smtpResponseCode(error)
+    responseCode: smtpResponseCode(error) || ""
+  };
+}
+
+function sanitizeEmailError(error) {
+  const details = sanitizedErrorDetails(error);
+  const causes = errorCauses(error).map(sanitizedErrorDetails);
+  return {
+    name: details.name || "EmailError",
+    message: details.message || "Email send failed",
+    code: details.code,
+    errno: details.errno,
+    syscall: details.syscall,
+    hostname: details.hostname,
+    address: details.address,
+    port: details.port,
+    command: details.command,
+    responseCode: details.responseCode || undefined,
+    causes
   };
 }
 
@@ -181,17 +224,62 @@ function plainTextToHtml(text) {
     .replace(/\r?\n/g, "<br>");
 }
 
+function smtpSocketOptions(config, family) {
+  const options = {
+    host: config.host,
+    port: config.port
+  };
+  if (family) options.family = family;
+  if (config.secure) options.servername = config.host;
+  return options;
+}
+
+function connectSmtpSocket(config, family) {
+  const options = smtpSocketOptions(config, family);
+  return config.secure
+    ? smtpSocketConnectors.tlsConnect(options)
+    : smtpSocketConnectors.netConnect(options);
+}
+
+function shouldRetryIpv4(config, error, retried) {
+  if (retried) return false;
+  if (!/smtp\.gmail\.com$/i.test(String(config.host || ""))) return false;
+  const details = [sanitizedErrorDetails(error), ...errorCauses(error).map(sanitizedErrorDetails)];
+  return details.some(item =>
+    item.name === "AggregateError"
+    || item.code === "ENETUNREACH"
+    || item.code === "EHOSTUNREACH"
+    || (item.address && String(item.address).includes(":"))
+  );
+}
+
 function smtpClient(config) {
   const timeoutMs = Number(config.timeoutMs || 15000);
-  let socket = config.secure
-    ? tls.connect({ host: config.host, port: config.port, servername: config.host })
-    : net.connect({ host: config.host, port: config.port });
+  let socket = connectSmtpSocket(config);
+  let retriedIpv4 = false;
 
   let buffer = "";
   function applyTimeout() {
     socket.setTimeout(timeoutMs);
   }
   applyTimeout();
+
+  async function retryIpv4After(error) {
+    retriedIpv4 = true;
+    try {
+      socket.destroy();
+    } catch {}
+    socket = connectSmtpSocket(config, 4);
+    buffer = "";
+    applyTimeout();
+    logEmail("warn", "smtp_ipv4_fallback_started", {
+      provider: "smtp",
+      host: config.host || "",
+      port: config.port || "",
+      secure: !!config.secure,
+      error: sanitizeEmailError(error)
+    });
+  }
 
   function readResponse() {
     return new Promise((resolve, reject) => {
@@ -202,6 +290,12 @@ function smtpClient(config) {
       };
       const onError = error => {
         cleanup();
+        if (shouldRetryIpv4(config, error, retriedIpv4)) {
+          retryIpv4After(error)
+            .then(() => readResponse().then(resolve, reject))
+            .catch(reject);
+          return;
+        }
         reject(error);
       };
       const onTimeout = () => {
@@ -243,7 +337,7 @@ function smtpClient(config) {
     socket.removeAllListeners("data");
     socket.removeAllListeners("error");
     socket.removeAllListeners("timeout");
-    socket = tls.connect({ socket, servername: config.host });
+    socket = smtpSocketConnectors.tlsConnect({ socket, servername: config.host });
     buffer = "";
     applyTimeout();
     await new Promise((resolve, reject) => {
@@ -458,6 +552,7 @@ async function sendEmail({ to, subject, body, lead, task }, config = emailConfig
     publicError.code = safe.code;
     publicError.responseCode = safe.responseCode;
     publicError.smtpCommand = safe.command;
+    publicError.causes = safe.causes;
     throw publicError;
   }
 }
@@ -469,6 +564,12 @@ module.exports = {
   __setSmtpClientFactoryForTests(factory) {
     smtpClientFactory = factory || smtpClient;
   },
+  __setSmtpSocketConnectorsForTests(connectors) {
+    smtpSocketConnectors = connectors || {
+      netConnect: options => net.connect(options),
+      tlsConnect: options => tls.connect(options)
+    };
+  },
   activeProvider,
   configured,
   emailConfig,
@@ -476,6 +577,7 @@ module.exports = {
   parseEmail,
   parseBoolean,
   sanitizeEmailError,
+  sanitizedErrorDetails,
   sendEmail,
   verifyEmailTransport
 };

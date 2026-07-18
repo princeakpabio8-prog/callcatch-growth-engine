@@ -344,7 +344,7 @@ async function sendTaskNow(state, taskId) {
     task.error = safeError.message;
     sendingState(state).metrics.failed += 1;
     state.auditLog.unshift({ id: newId("audit"), at: nowIso(), action: `${task.channel}_send_failed`, details: { taskId: task.id, error: safeError.message, responseCode: safeError.responseCode || "" } });
-    return { sent: false, failed: true, error: safeError.message, responseCode: safeError.responseCode, task };
+    return { sent: false, failed: true, error: safeError.message, responseCode: safeError.responseCode, causes: safeError.causes || [], task };
   }
 }
 

@@ -2115,8 +2115,17 @@ const server = http.createServer(async (req, res) => {
         ok: false,
         provider,
         verified: false,
-        error: safe.message,
-        responseCode: safe.responseCode || ""
+        error: safe.name === "AggregateError" ? "AggregateError" : safe.message,
+        message: safe.message,
+        code: safe.code || "",
+        errno: safe.errno || "",
+        syscall: safe.syscall || "",
+        hostname: safe.hostname || "",
+        address: safe.address || "",
+        port: safe.port || "",
+        command: safe.command || "",
+        responseCode: safe.responseCode || "",
+        causes: safe.causes || []
       });
     }
   }
@@ -2136,7 +2145,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, result);
     } catch (error) {
       const safe = sanitizeEmailError(error);
-      return send(res, 400, { error: safe.message, responseCode: safe.responseCode || "" });
+      return send(res, 400, { error: safe.message, responseCode: safe.responseCode || "", causes: safe.causes || [] });
     }
   }
 
@@ -2236,7 +2245,7 @@ const server = http.createServer(async (req, res) => {
             const safe = sanitizeEmailError(error);
             item.status = "Send Failed";
             item.error = safe.message;
-            failed.push({ id: item.id, business: item.business, error: safe.message, responseCode: safe.responseCode || "" });
+            failed.push({ id: item.id, business: item.business, error: safe.message, responseCode: safe.responseCode || "", causes: safe.causes || [] });
           }
         }
 
