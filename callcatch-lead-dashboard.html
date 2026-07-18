@@ -595,8 +595,8 @@
       <section class="view" id="automation">
         <div class="top"><div><h1>Campaigns & Approval Queue</h1><p class="sub">Create multi-step campaigns. Emails send only after approval and SMTP setup.</p></div><div class="actions"><button class="btn" id="syncBtn" type="button">Sync All</button><button class="btn" id="refreshDraftsBtn" type="button">Refresh Email Drafts</button><button class="btn" id="emailStatusBtn" type="button">Check Email</button><button class="btn" id="sendApprovedBtn" type="button">Send All Approved</button><button class="btn primary" id="generateQueueBtn" type="button">Enroll Qualified Leads</button></div></div>
         <div class="panel"><div class="form-grid"><div><label for="campaignName">Campaign Name</label><input id="campaignName" value="Default Outbound Sequence"></div><div><label for="campaignFit">Minimum Fit Score</label><input id="campaignFit" type="number" value="68"></div><div><label for="campaignTrade">Trade Filter</label><select id="campaignTrade"><option value="">All trades</option></select></div><div><label>Safety</label><input value="Review before sending" disabled></div></div><p class="hint">Sequence: Day 1 email, Day 3 LinkedIn, Day 5 follow-up email, Day 7 phone reminder, Day 10 final email.</p></div>
-        <div class="panel" style="margin-top:12px;"><h2>Email Adapter</h2><div class="form-grid"><div><label for="testEmail">Test Recipient</label><input id="testEmail" placeholder="you@example.com"></div><div><label>Status</label><input id="emailStatus" value="Not checked" disabled></div><div><label>Provider</label><input id="emailProvider" value="-" disabled></div><div><label>Action</label><button class="btn primary" id="sendTestBtn" type="button">Send Email Test</button></div></div><p class="hint">Email API keys and SMTP credentials stay in Render environment variables. The browser never stores your sending secrets.</p></div>
-        <div class="panel mobile-non-email" style="margin-top:12px;"><h2>SMS Adapter</h2><div class="form-grid"><div><label for="testSms">Test Phone</label><input id="testSms" placeholder="+15551234567"></div><div><label>Status</label><input id="smsStatus" value="Not checked" disabled></div><div><label>Provider</label><input id="smsProvider" value="-" disabled></div><div><label>Action</label><button class="btn primary" id="sendSmsTestBtn" type="button">Send SMS Test</button></div></div><p class="hint">Twilio credentials stay in Render. Use E.164 phone format, for example +12145550123.</p></div>
+        <div class="panel" style="margin-top:12px;"><h2>Email Adapter</h2><div class="form-grid"><div><label for="testEmail">Test Recipient</label><input id="testEmail" placeholder="you@example.com"></div><div><label>Status</label><input id="emailStatus" value="Not checked" disabled></div><div><label>Provider</label><input id="emailProvider" value="-" disabled></div><div><label>Action</label><button class="btn primary" id="sendTestBtn" type="button">Send Email Test</button></div></div><p class="hint">Email API keys and SMTP credentials stay in Railway environment variables. The browser never stores your sending secrets.</p></div>
+        <div class="panel mobile-non-email" style="margin-top:12px;"><h2>SMS Adapter</h2><div class="form-grid"><div><label for="testSms">Test Phone</label><input id="testSms" placeholder="+15551234567"></div><div><label>Status</label><input id="smsStatus" value="Not checked" disabled></div><div><label>Provider</label><input id="smsProvider" value="-" disabled></div><div><label>Action</label><button class="btn primary" id="sendSmsTestBtn" type="button">Send SMS Test</button></div></div><p class="hint">Twilio credentials stay in Railway. Use E.164 phone format, for example +12145550123.</p></div>
         <div class="panel" style="margin-top:12px;"><h2>Smart Sending</h2><div class="stats" id="sendingStats"></div><div class="form-grid"><div><label for="maxHour">Max Emails / Hour</label><input id="maxHour" type="number" value="20"></div><div><label for="maxDay">Max Emails / Day</label><input id="maxDay" type="number" value="100"></div><div><label for="minDelay">Min Delay Seconds</label><input id="minDelay" type="number" value="45"></div><div><label for="maxDelay">Max Delay Seconds</label><input id="maxDelay" type="number" value="180"></div></div><div class="actions"><button class="btn" id="saveSendingBtn" type="button">Save Limits</button><button class="btn" id="runDueBtn" type="button">Run Due Scheduled</button><button class="btn" id="followupBtn" type="button">Run Follow-up Sequence</button></div><p class="hint" id="sendProgress">Sequence: Email #1, wait 3 days, Follow-up #1, wait 4 more days, Final Follow-up. Replies stop the remaining sequence.</p></div>
         <div class="panel" style="margin-top:12px;"><h2>Follow-up Command Center</h2><p class="hint">Email follow-ups are generated only when they are due. Replies stop the sequence automatically.</p><div class="queue" id="followupCenter"></div></div>
         <div class="panel" style="margin-top:12px;"><h2>Reply Tracking</h2><div class="form-grid"><div><label for="replyLead">Lead ID</label><input id="replyLead" placeholder="lead id"></div><div><label for="replyTask">Task ID</label><input id="replyTask" placeholder="optional task id"></div><div><label for="replyFrom">From</label><input id="replyFrom" placeholder="reply@example.com"></div><div><label>Action</label><button class="btn primary" id="recordReplyBtn" type="button">Record Reply</button></div></div><textarea id="replyBody" placeholder="Paste reply text here"></textarea></div>
@@ -713,7 +713,7 @@
     let setupChecksLoaded = false;
     let selectedId = leads[0]?.id || "";
     const $ = id => document.getElementById(id);
-    const PRODUCTION_API_BASE = "https://callcatch-growth-engine.onrender.com";
+    const PRODUCTION_API_BASE = "https://callcatch-growth-engine-production.up.railway.app";
     function apiUrl(path){ return window.location.protocol === "file:" ? `${PRODUCTION_API_BASE}${path}` : path; }
 
     function markDirty(){ dataVersion += 1; derivedCache.stamp = -1; }
@@ -757,7 +757,7 @@
         });
       } catch (error) {
         const target = apiUrl("/health");
-        throw new Error(`Cannot reach CallCatch backend at ${target}. Open https://callcatch-growth-engine.onrender.com/ directly, or wait for Render to finish waking up, then try again.`);
+        throw new Error(`Cannot reach CallCatch backend at ${target}. Open https://callcatch-growth-engine-production.up.railway.app/ directly, or wait for Railway to finish waking up, then try again.`);
       }
       const payload = await parseApiResponse(response, path);
       if (!response.ok) {
@@ -972,7 +972,7 @@
           approvalQueue: queue.length,
           sentEmailTasks: sentEmailTasks().length,
           contactedProspects: contactedProspects().length,
-          message: "Could not read Render pipeline memory. Using this browser's local memory."
+          message: "Could not read Railway pipeline memory. Using this browser's local memory."
         };
         return pipelineMemory;
       }
@@ -2370,12 +2370,12 @@
         return { label: "Needs Setup", tone: "bad" };
       };
       const items = [
-        ["Render Backend", setupState.backend, setupState.backend === false ? "Could not verify Render yet. Tap Refresh Checks." : "Live app is reachable."],
+        ["Railway Backend", setupState.backend, setupState.backend === false ? "Could not verify Railway yet. Tap Refresh Checks." : "Live app is reachable."],
         ["Lead Sources", setupState.leadSources, setupState.leadSources === false ? "Public source check did not pass yet. Discovery can still try live search." : "Public discovery APIs respond."],
         ["Serper Search", setupState.serper, setupState.serper ? "Website finder is active." : "Optional: add SERPER_API_KEY to find more official websites.", true],
         ["Email Provider", setupState.email, setupState.email === false ? "Email sending is not verified yet. Check provider settings if sending fails." : "Resend, Brevo, or SMTP is configured."],
         ["SMS Provider", setupState.sms, setupState.sms === false ? "Twilio is optional and hidden on mobile." : "Twilio is configured.", true],
-        ["CRM Sync", setupState.crm, setupState.crm === false ? "CRM sync has not been verified yet." : "Leads and queue are synced with Render."],
+        ["CRM Sync", setupState.crm, setupState.crm === false ? "CRM sync has not been verified yet." : "Leads and queue are synced with Railway."],
         ["Approval Queue", setupState.approvalQueue || leads.length > 0, queueDetail]
       ].filter(([label]) => !(mobileEmailFocus() && label === "SMS Provider"));
       $("setupChecklist").innerHTML = items.map(([label, ok, detail, optional])=>{
@@ -2681,7 +2681,7 @@
       const memoryStorage = $("pipelineMemoryStorage");
       const memoryStats = $("pipelineMemoryStats");
       if (memoryText) memoryText.textContent = pipelineMemory?.message || "Pipeline memory has not been checked yet. Tap Refresh Contacted.";
-      if (memoryStorage) memoryStorage.textContent = pipelineMemory?.storage || (serverSynced ? "Render" : "Local");
+      if (memoryStorage) memoryStorage.textContent = pipelineMemory?.storage || (serverSynced ? "Railway" : "Local");
       if (memoryStats) {
         const stats = [
           ["CRM Leads", pipelineMemory?.leads ?? leads.length],
@@ -2983,7 +2983,7 @@
         const skippedWorked = (payload.search?.skippedExisting || payload.search?.skippedContacted || lastImportStats.skippedWorked) ? ` Skipped ${payload.search?.skippedExisting || payload.search?.skippedContacted || lastImportStats.skippedWorked} already in CRM/Pipeline.` : "";
         const researched = payload.search?.candidatesResearched ? ` Checked ${payload.search.candidatesResearched} candidates.` : "";
         const guidance = payload.leads.length ? "" : " Try one of the suggested markets below or broaden the radius.";
-        const sourceTip = payload.search?.serperEnabled ? "" : " Deep web search is off; add SERPER_API_KEY on Render for more websites and emails.";
+        const sourceTip = payload.search?.serperEnabled ? "" : " Deep web search is off; add SERPER_API_KEY on Railway for more websites and emails.";
         $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} CRM prospects from ${payload.source || "public sources"}. Email-ready: ${emailReadyCount}. Needs email: ${needsEmailCount}.${researched}${skipped}${duplicates}${skippedWorked}${warning}${guidance}${sourceTip} Open a lead and use Research + Draft for deeper scanning.`;
         if ((payload.leads || []).length) switchView("crm");
         toast(`${added} prospects added`);
@@ -3201,10 +3201,10 @@
     }
     async function sendNow(taskId){
       try {
-        $("sendProgress").textContent = "Syncing approval queue with Render...";
+        $("sendProgress").textContent = "Syncing approval queue with Railway...";
         const synced = await syncCrm(true);
         if (!synced) {
-          const message = "Cannot send yet because the approval queue did not sync with Render. Refresh the Render app and try again.";
+          const message = "Cannot send yet because the approval queue did not sync with Railway. Refresh the Railway backend and try again.";
           $("sendProgress").textContent = message;
           toast(message);
           return false;
@@ -3218,7 +3218,7 @@
           save();
           render();
         }
-        $("sendProgress").textContent = `Sending ${localTask?.channel === "sms" ? "SMS" : "email"} through Render...`;
+        $("sendProgress").textContent = `Sending ${localTask?.channel === "sms" ? "SMS" : "email"} through Railway...`;
         const result = await api("/api/sending/send-now", { method:"POST", body: JSON.stringify({ taskId }) });
         if (result.sent) markEmailSentLocally(taskId, result.task || {});
         if (result.rateLimited && localTask) {
@@ -3254,7 +3254,7 @@
       try {
         const synced = await syncCrm(true);
         if (!synced) {
-          const message = "Cannot schedule yet because the approval queue did not sync with Render. Refresh the Render app and try again.";
+          const message = "Cannot schedule yet because the approval queue did not sync with Railway. Refresh the Railway backend and try again.";
           $("sendProgress").textContent = message;
           toast(message);
           return;
@@ -3466,7 +3466,7 @@ Helping home service businesses recover missed revenue.`;
       TRADES.forEach(t=>{ $("trade").append(new Option(t,t)); $("tradeFilter").append(new Option(t,t)); $("campaignTrade").append(new Option(t,t)); $("territoryTrade").append(new Option(t,t)); });
       STAGES.forEach(s=>{ $("stageFilter").append(new Option(s,s)); $("territoryStage").append(new Option(s,s)); });
       $("finderStatus").textContent = window.location.protocol === "file:"
-        ? `File preview mode: API calls will use ${PRODUCTION_API_BASE}. For best results, open the Render app directly.`
+        ? `File preview mode: API calls will use ${PRODUCTION_API_BASE}. For best results, open the Railway backend directly.`
         : "API connected through this app. Search results become CRM records automatically.";
       $("country").onchange = () => {
         const country = selectedCountry();
