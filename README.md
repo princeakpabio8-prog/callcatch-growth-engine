@@ -223,7 +223,7 @@ npm run check
 
 The current repository test suite covers Brain Zero, Brain One, Brain One handoff reliability, Brain Two, and manual prospect flows.
 
-Latest local verification: 131 passing tests.
+Latest local verification: 140 passing tests.
 
 ## Deployment
 
@@ -241,6 +241,32 @@ GitHub Pages frontend:
 - Folder: `/root`
 
 The GitHub Pages `index.html` calls the Render backend for API requests.
+
+## Railway Migration
+
+Use this sequence when moving the backend from Render to Railway. Do not delete Render or change the GitHub Pages API endpoint until Railway has been tested privately.
+
+1. Create a Railway project from this GitHub repository.
+2. Add a Railway PostgreSQL service.
+3. Configure the required Railway environment variables from `.env.example`.
+4. Run exactly one application replica during migration.
+5. Export the Render PostgreSQL database.
+6. Import the backup into Railway PostgreSQL.
+7. Start and test the Railway backend before changing GitHub Pages.
+8. Verify `/health` reports PostgreSQL storage.
+9. Test Gmail SMTP with one harmless test email to your own address only.
+10. Update `PRODUCTION_API_BASE` only after every Railway test passes.
+11. Monitor Railway and Render separately.
+12. Take a final Render backup before retiring Render.
+
+Safe PowerShell backup templates:
+
+```powershell
+pg_dump --format=custom --no-owner --no-acl --file callcatch-render-backup.dump $env:RENDER_DATABASE_URL
+pg_restore --clean --if-exists --no-owner --no-acl --dbname $env:RAILWAY_DATABASE_URL callcatch-render-backup.dump
+```
+
+Warning: Render and Railway must not run scheduled automation against the same production database at the same time. Keep one production writer active while testing the migration.
 
 ## Safety and Human Control
 

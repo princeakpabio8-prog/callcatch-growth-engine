@@ -19,7 +19,8 @@ const {
   runBrainZeroEvidenceCollection
 } = require("./lead-engine/brainZeroService");
 const { enrichProspect, outreachAssets } = require("./lead-engine/prospectIntelligence");
-const { audit, mutateStore, newId, readStore, storageMode } = require("./lead-engine/dataStore");
+const { assertProductionStorageReady, audit, mutateStore, newId, readStore, storageMode, storageStatus } = require("./lead-engine/dataStore");
+const { resolveHost, resolvePort } = require("./lead-engine/runtimeConfig");
 const { buildCampaign, buildSequenceTasks } = require("./lead-engine/campaigns");
 const { DEFAULT_DAILY_GROWTH, automationCapabilities, mergeConfig, runDailyGrowth } = require("./lead-engine/dailyGrowth");
 const { activeProvider, configured: emailConfigured, emailConfig, parseEmail, sendEmail } = require("./lead-engine/emailAdapter");
@@ -56,8 +57,8 @@ const {
   validateManualProspectInput
 } = require("./lead-engine/manualProspect");
 
-const PORT = Number(process.env.PORT || 8787);
-const HOST = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
+const PORT = resolvePort();
+const HOST = resolveHost();
 const PUBLIC_DIR = __dirname;
 const BRAIN_ONE_MAX_DURATION_MS = Number(process.env.BRAIN_ONE_MAX_DURATION_MS || 300000);
 let automationRunning = false;
@@ -69,7 +70,8 @@ function sanitizedError(error) {
     process.env.SMTP_PASS,
     process.env.TWILIO_AUTH_TOKEN,
     process.env.SERPER_API_KEY,
-    process.env.BRAVE_SEARCH_API_KEY
+    process.env.BRAVE_SEARCH_API_KEY,
+    process.env.DATABASE_URL
   ].filter(Boolean);
   let stack = String(error?.stack || error?.message || error || "");
   for (const secret of secretPatterns) {
@@ -1259,7 +1261,8 @@ const server = http.createServer(async (req, res) => {
       },
       automation: ["daily-growth", "campaign-sequences", "approval-first-autopilot"],
       sendingEngine: ["send-now", "bulk-send", "scheduled-send", "rate-limits", "reply-tracking"],
-      storage: storageMode(),
+      storage: storageStatus(),
+      storageMode: storageMode(),
       email: {
         configured: emailConfigured(),
         provider: activeProvider(emailConfig()),
@@ -2481,22 +2484,35 @@ async function recoverStaleBrainOneRuns() {
   }
 }
 
-server.listen(PORT, HOST, () => {
-  log("info", "server_started", {
-    url: HOST === "0.0.0.0" ? `http://0.0.0.0:${PORT}` : `http://127.0.0.1:${PORT}`,
-    requiresApiKey: false,
-    nvidiaModel: resolvedNvidiaModel(),
-    nvidiaTimeoutMs: resolvedNvidiaTimeoutMs(),
-    requestTimeoutMs: server.requestTimeout,
-    headersTimeoutMs: server.headersTimeout
+async function startServer() {
+  try {
+    await assertProductionStorageReady();
+  } catch (error) {
+    log("error", "production_storage_startup_failed", { error: sanitizedError(error) });
+    process.exitCode = 1;
+    return;
+  }
+
+  server.listen(PORT, HOST, () => {
+    log("info", "server_started", {
+      url: HOST === "0.0.0.0" ? `http://0.0.0.0:${PORT}` : `http://127.0.0.1:${PORT}`,
+      requiresApiKey: false,
+      storage: storageStatus(),
+      nvidiaModel: resolvedNvidiaModel(),
+      nvidiaTimeoutMs: resolvedNvidiaTimeoutMs(),
+      requestTimeoutMs: server.requestTimeout,
+      headersTimeoutMs: server.headersTimeout
+    });
+    log("info", "brain_one_nvidia_config", {
+      message: "NVIDIA startup config resolved",
+      model: resolvedNvidiaModel(),
+      timeoutMs: resolvedNvidiaTimeoutMs()
+    });
+    recoverStaleBrainZeroRuns();
+    recoverStaleBrainOneRuns();
+    runBackgroundAutomation();
+    setInterval(runBackgroundAutomation, 30 * 60 * 1000);
   });
-  log("info", "brain_one_nvidia_config", {
-    message: "NVIDIA startup config resolved",
-    model: resolvedNvidiaModel(),
-    timeoutMs: resolvedNvidiaTimeoutMs()
-  });
-  recoverStaleBrainZeroRuns();
-  recoverStaleBrainOneRuns();
-  runBackgroundAutomation();
-  setInterval(runBackgroundAutomation, 30 * 60 * 1000);
-});
+}
+
+startServer();

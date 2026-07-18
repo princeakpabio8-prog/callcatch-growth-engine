@@ -1,5 +1,6 @@
 const fs = require("fs/promises");
 const path = require("path");
+const { isCloudRuntime, isProduction } = require("./runtimeConfig");
 
 const DATA_DIR = path.join(__dirname, "..", "data");
 const DB_FILE = path.join(DATA_DIR, "callcatch-crm.json");
@@ -21,16 +22,31 @@ let writeQueue = Promise.resolve();
 let poolPromise = null;
 let postgresUnavailableReason = "";
 
+function databaseError(message) {
+  const error = new Error(message);
+  error.code = "DATABASE_UNAVAILABLE";
+  return error;
+}
+
 function databaseUrl() {
   return String(process.env.DATABASE_URL || "").trim();
 }
 
 function sslConfig() {
-  if (!process.env.RENDER && !/sslmode=require/i.test(databaseUrl())) return false;
+  if (!isCloudRuntime() && !/sslmode=require/i.test(databaseUrl())) return false;
   return { rejectUnauthorized: false };
 }
 
+function requireProductionDatabase() {
+  if (!isProduction()) return;
+  if (!databaseUrl()) {
+    postgresUnavailableReason = "DATABASE_URL is required in production";
+    throw databaseError("DATABASE_URL is required when NODE_ENV=production.");
+  }
+}
+
 async function getPool() {
+  requireProductionDatabase();
   if (!databaseUrl()) return null;
   if (poolPromise) return poolPromise;
   poolPromise = (async () => {
@@ -39,6 +55,7 @@ async function getPool() {
       ({ Pool } = require("pg"));
     } catch (error) {
       postgresUnavailableReason = "pg dependency is not installed";
+      if (isProduction()) throw databaseError("PostgreSQL dependency is not available in production.");
       return null;
     }
     const pool = new Pool({
@@ -55,10 +72,13 @@ async function getPool() {
       `);
       return pool;
     } catch (error) {
-      postgresUnavailableReason = error.message;
+      postgresUnavailableReason = "PostgreSQL initialization failed";
       try {
         await pool.end();
       } catch {}
+      if (isProduction()) {
+        throw databaseError("PostgreSQL initialization failed. Check DATABASE_URL and database availability.");
+      }
       return null;
     }
   })();
@@ -143,11 +163,51 @@ function storageMode() {
   return "json-file";
 }
 
+function storageStatus() {
+  if (databaseUrl()) {
+    return {
+      provider: "postgres",
+      connected: !postgresUnavailableReason,
+      error: postgresUnavailableReason || ""
+    };
+  }
+  if (isProduction()) {
+    return {
+      provider: "postgres",
+      connected: false,
+      error: "DATABASE_URL is required in production"
+    };
+  }
+  return {
+    provider: "json",
+    connected: true,
+    error: ""
+  };
+}
+
+async function assertProductionStorageReady() {
+  requireProductionDatabase();
+  if (!isProduction()) return storageStatus();
+  const pool = await getPool();
+  if (!pool) {
+    throw databaseError("PostgreSQL is required when NODE_ENV=production.");
+  }
+  return storageStatus();
+}
+
+function __resetForTests() {
+  poolPromise = null;
+  postgresUnavailableReason = "";
+}
+
 module.exports = {
+  __resetForTests,
+  assertProductionStorageReady,
   audit,
   mutateStore,
   newId,
   readStore,
   storageMode,
+  storageStatus,
   writeStore
 };
