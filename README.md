@@ -1,213 +1,268 @@
-# CallCatch – Multi-Brain AI Prospect Intelligence
+# CallCatch - Multi-Brain AI Prospect Intelligence
 
-Internal outbound sales platform for CallCatch. It discovers prospects, scores them, manages a CRM pipeline, generates approval-first outreach, and supports SMTP email sending.
+![CallCatch Growth Engine banner](docs/images/callcatch-banner.png)
 
-## Features
+**AI prospecting. Deeper intelligence. Human-approved outreach.**
 
-- AI prospect discovery using free public data providers.
-- CRM records with stages, notes, timeline, follow-up date, and assigned team member.
-- CallCatch Fit Score, revenue opportunity estimate, website quality score, digital presence score, and response priority.
-- Website scanner for public emails, phone numbers, contact forms, booking/chat signals, social links, emergency messaging, and financing language.
-- Optional Serper website finder to discover official business websites before email scanning.
-- Campaign approval queue.
-- Smart sending engine with send-now, send-all-approved, scheduled sends, rate limits, follow-up generation, reply tracking, and meeting-intent detection.
-- SMTP email adapter.
-- CSV, Excel-compatible, JSON, clipboard, and PDF exports.
-- Production storage with Render Postgres support and local JSON fallback.
+[![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![JavaScript](https://img.shields.io/badge/JavaScript-ES2023-F7DF1E?logo=javascript&logoColor=111)](https://developer.mozilla.org/en-US/docs/Web/JavaScript)
+[![GPT-5.6](https://img.shields.io/badge/GPT--5.6-AI%20Architecture-111827)](#how-gpt-56-and-codex-were-used)
+[![Codex](https://img.shields.io/badge/Built%20with-Codex-111827)](#how-gpt-56-and-codex-were-used)
+[![Render](https://img.shields.io/badge/Backend-Render-46E3B7)](https://render.com/)
+[![GitHub Pages](https://img.shields.io/badge/Frontend-GitHub%20Pages-222?logo=github)](https://pages.github.com/)
+
+CallCatch is an AI-assisted prospect intelligence system for outbound growth teams. It researches companies before outreach is created, separates evidence gathering from opportunity analysis, and keeps humans in control of every outreach decision.
+
+The system is organized into three specialized brains: evidence collection, opportunity intelligence, and outreach intelligence. Each layer has its own responsibility, validation rules, and approval boundary.
+
+## Live Links
+
+- Repository: [https://github.com/princeakpabio8-prog/callcatch-growth-engine](https://github.com/princeakpabio8-prog/callcatch-growth-engine)
+- Demo: [https://princeakpabio8-prog.github.io/callcatch-growth-engine/](https://princeakpabio8-prog.github.io/callcatch-growth-engine/)
+
+## Key Features
+
+- Evidence-first prospect research using public business information.
+- Brain Zero: collects, validates, and structures company evidence.
+- Brain One: generates Business DNA, Digital Health, Trust, AI Discoverability, Future Readiness, Hidden Opportunities, Opportunity Radar, estimated money left on the table, and a CONTACT or DO NOT CONTACT decision.
+- Brain Two: generates the ideal contact persona, outreach angle, subject lines, personalized first email, three follow-ups, offer recommendation, and outreach confidence.
+- Deterministic scoring and evidence references.
+- Human approval gates between intelligence and outreach.
+- No automatic email sending from the intelligence workflow.
+- CRM pipeline with stages, notes, follow-up dates, and activity history.
+- Manual company analysis by company name and website.
+- Failure-stage diagnostics and regression testing.
+- Public frontend demo through GitHub Pages.
+- Secure backend integration with environment variables excluded from Git.
+
+## Three-Brain Architecture
+
+![CallCatch three-brain architecture](docs/images/callcatch-architecture.png)
+
+| Brain | Input | Output |
+| --- | --- | --- |
+| Brain Zero - Evidence Collection | Company name, website, and public sources | Structured and validated evidence |
+| Brain One - Opportunity Intelligence | Approved Brain Zero evidence | Scores, opportunity report, financial impact, hidden opportunities, and contact decision |
+| Brain Two - Outreach Intelligence | Approved Brain One report | Contact persona, outreach strategy, subject lines, email draft, follow-up sequence, and confidence score |
+
+Brain Two never sends emails automatically. It creates outreach intelligence for review, then the existing approval-first sending workflow remains responsible for delivery.
+
+## How GPT-5.6 and Codex Were Used
+
+CallCatch was built during OpenAI Build Week with GPT-5.6 and Codex as collaborative engineering tools.
+
+GPT-5.6 helped design the multi-brain architecture, prompt contracts, scoring boundaries, product decisions, and debugging strategy. It was used to refine how the system separates evidence, intelligence, and outreach rather than treating prospecting as a single generic prompt.
+
+Codex implemented the Node.js services, API endpoints, validation layers, tests, refactors, bug fixes, GitHub Pages setup, and deployment changes. It also helped preserve existing behavior while the architecture evolved.
+
+This was built iteratively. The project was not generated from one prompt; it was shaped through repeated implementation, testing, production debugging, and design tightening.
+
+## Technology Stack
+
+- JavaScript
+- Node.js
+- Express-style HTTP server using Node's built-in HTTP module
+- HTML, CSS, and JavaScript frontend
+- GPT-5.6
+- Codex
+- NVIDIA-hosted model API for Brain One runtime
+- Serper and Brave Search API adapters for lead enrichment
+- SMTP, Resend, and Brevo email adapters
+- Twilio SMS adapter
+- Render backend
+- GitHub Pages frontend
+- GitHub
+- REST APIs
+- JSON
+- Optional Render Postgres through `pg`, with local JSON fallback
+
+## Project Structure
+
+```text
+.
+|-- index.html                         # GitHub Pages dashboard entry point
+|-- callcatch-lead-dashboard.html      # Main dashboard source used locally and on Render
+|-- callcatch-lead-server.js           # Node.js backend, API routes, jobs, and orchestration
+|-- package.json                       # Start, syntax check, and test scripts
+|-- render.yaml                        # Render service configuration
+|-- .env.example                       # Environment variable names without secrets
+|-- brains/
+|   |-- brain-one-runtime.md           # Brain One runtime instructions
+|   `-- brain-two-runtime.md           # Brain Two runtime instructions
+|-- docs/
+|   |-- brain-one-frozen.md            # Frozen Brain One contract
+|   `-- images/                        # README visuals
+|-- lead-engine/
+|   |-- brainZeroService.js            # Evidence collection service
+|   |-- brainOneService.js             # Opportunity intelligence service
+|   |-- brainTwoService.js             # Outreach intelligence service
+|   |-- dataStore.js                   # Local JSON and database storage layer
+|   |-- emailAdapter.js                # Resend, Brevo, and SMTP sending adapters
+|   |-- sendingEngine.js               # Approval-first sending and follow-up flow
+|   |-- websiteScanner.js              # Public website scanner
+|   `-- providers/                     # OpenStreetMap, Nominatim, Serper, and Brave adapters
+|-- schemas/                           # Strict JSON contracts for Brain outputs
+`-- test/                              # Regression and service tests
+```
 
 ## Local Setup
 
-Install Node.js 20 or newer.
+Clone the repository:
 
-From this folder:
+```powershell
+git clone https://github.com/princeakpabio8-prog/callcatch-growth-engine.git
+cd callcatch-growth-engine
+```
+
+Install dependencies:
+
+```powershell
+npm install
+```
+
+Configure environment variables using `.env.example`. Do not put real secrets in Git. For local email testing, use an ignored local file such as `email-settings.env` or set variables in your shell.
+
+Start the server:
 
 ```powershell
 npm start
 ```
 
-Or run the required start command directly:
+The start script runs:
 
 ```powershell
 node callcatch-lead-server.js
 ```
 
-Open:
+Open the local app:
 
 ```text
 http://127.0.0.1:8787/
 ```
 
-Health check:
+Useful checks:
 
 ```text
 http://127.0.0.1:8787/health
-```
-
-Network check:
-
-```text
 http://127.0.0.1:8787/api/network-check
 ```
 
-## Production Storage
-
-For Render, add a Render Postgres database and set `DATABASE_URL` to the database Internal Database URL. CallCatch will automatically use Postgres when `DATABASE_URL` is present. If `DATABASE_URL` is blank, it falls back to the local JSON file.
-
-Check storage mode at:
-
-```text
-/health
-```
-
-## Email Sending
-
-Do not commit real email API keys or SMTP passwords.
-
-For local use, create `email-settings.env` from `.env.example` or set environment variables before starting the server.
-
-Recommended Render email setup:
-
-```env
-EMAIL_PROVIDER=auto
-RESEND_API_KEY=
-SMTP_FROM=hello@callcatch.site
-SMTP_FROM_NAME=CallCatch
-SMTP_REPLY_TO=hello@callcatch.site
-```
-
-With `EMAIL_PROVIDER=auto`, CallCatch uses Resend first when `RESEND_API_KEY` is present, Brevo second when `BREVO_API_KEY` is present, then SMTP as a fallback.
-
-For Resend inbound replies, point Resend inbound routing/webhooks to:
-
-```text
-https://your-render-app.onrender.com/api/webhooks/resend/inbound
-```
-
-Replies are stored on the lead timeline, stop remaining follow-ups, and appear in the CallCatch reply inbox.
-
-Optional Brevo setup:
-
-```env
-EMAIL_PROVIDER=brevo
-BREVO_API_KEY=
-SMTP_FROM=hello@callcatch.site
-SMTP_FROM_NAME=CallCatch
-SMTP_REPLY_TO=hello@callcatch.site
-```
-
-SMTP fallback variables:
-
-```env
-EMAIL_PROVIDER=smtp
-SMTP_HOST=
-SMTP_PORT=465
-SMTP_SECURE=true
-SMTP_USER=
-SMTP_PASS=
-SMTP_FROM=
-SMTP_FROM_NAME=CallCatch
-SMTP_REPLY_TO=
-SMTP_TIMEOUT_MS=15000
-```
-
-Twilio SMS setup:
-
-```env
-SMS_PROVIDER=twilio
-TWILIO_ACCOUNT_SID=
-TWILIO_AUTH_TOKEN=
-TWILIO_FROM_NUMBER=
-TWILIO_MESSAGING_SERVICE_SID=
-TWILIO_TIMEOUT_MS=15000
-```
-
-SMS sending uses the same approval queue as email. A text message is not sent until the task is approved and the user clicks `Send Now` or `Send All Approved`.
-
-For a Twilio trial account, recipient phone numbers usually must be verified in Twilio before SMS can be delivered. Use E.164 phone format such as `+12145550123`.
-
-## Follow-up Sequence Automation
-
-CallCatch automatically manages the standard outreach sequence:
-
-- Email #1 is sent from an approved email task.
-- After 3 days with no reply, CallCatch creates `Follow-up #1`.
-- After `Follow-up #1` is sent, CallCatch waits 4 more days.
-- If there is still no reply, CallCatch creates `Final Follow-up`.
-- Any reply stops the remaining follow-up tasks for that lead.
-
-In `Assisted` mode, follow-ups are generated into the Approval Queue for review. In `Auto Pilot` mode, due sequence emails can be approved and sent automatically by the server background runner.
-
-On Render, add these in the service Environment tab.
-
-## Render Deployment
-
-Create a new Render Web Service from this repository.
-
-Recommended settings:
-
-- Runtime: Node
-- Build Command: leave blank or use `npm install`
-- Start Command: `node callcatch-lead-server.js`
-- Node version: Node 20+
-
-Render provides `PORT` automatically. The server binds to `0.0.0.0` on Render.
-
-### Important Production Note
-
-This local build stores CRM data in `data/callcatch-crm.json`. Render disks are ephemeral unless you attach a persistent disk. For serious production use, move storage to a database such as Postgres.
-
 ## Environment Variables
 
-Copy `.env.example` into your Render environment variables. Do not commit real values.
+Variable names are documented in `.env.example`. Real values must be configured locally or in Render and must never be committed.
 
-No Google Cloud or paid lead API key is required for the public-source discovery engine.
+Core server and storage:
 
-Optional lead enrichment:
-
-```env
-SERPER_API_KEY=
+```text
+PORT
+HOST
+DATABASE_URL
 ```
 
-When `SERPER_API_KEY` is set, CallCatch uses Serper to find official business websites and then scans those sites for public emails.
+Email and SMS:
 
-## GitHub Push Commands
+```text
+EMAIL_PROVIDER
+RESEND_API_KEY
+RESEND_WEBHOOK_SECRET
+BREVO_API_KEY
+SMTP_HOST
+SMTP_PORT
+SMTP_SECURE
+SMTP_USER
+SMTP_PASS
+SMTP_FROM
+SMTP_FROM_NAME
+SMTP_REPLY_TO
+SMTP_TIMEOUT_MS
+SMS_PROVIDER
+TWILIO_ACCOUNT_SID
+TWILIO_AUTH_TOKEN
+TWILIO_FROM_NUMBER
+TWILIO_MESSAGING_SERVICE_SID
+TWILIO_TIMEOUT_MS
+```
 
-From this folder:
+Lead enrichment and intelligence:
+
+```text
+SERPER_API_KEY
+BRAVE_SEARCH_API_KEY
+NVIDIA_API_KEY
+NVIDIA_MODEL
+NVIDIA_API_URL
+NVIDIA_TIMEOUT_MS
+BRAIN_ONE_MAX_DURATION_MS
+BRAIN_ZERO_TOTAL_TIMEOUT_MS
+BRAIN_ZERO_PAGE_TIMEOUT_MS
+BRAIN_ZERO_CRAWL_TIMEOUT_MS
+BRAIN_ZERO_TECHNICAL_TIMEOUT_MS
+BRAIN_ZERO_MAX_PAGES
+BRAIN_ZERO_MAX_CONCURRENT_REQUESTS
+BRAIN_ZERO_CACHE_TTL_MS
+BRAIN_ZERO_MAX_ACTIVE_RUNS
+BRAIN_ZERO_MAX_RESPONSE_BYTES
+BRAIN_ZERO_MAX_REDIRECTS
+```
+
+Future adapter placeholders are also listed in `.env.example` for SendGrid, Mailgun, AWS SES, Gmail, Microsoft, Calendly, Slack, HubSpot, and Salesforce.
+
+## Testing
+
+Run the test suite:
 
 ```powershell
-git init
-git add .
-git commit -m "Initial CallCatch Growth Engine production setup"
-git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/YOUR_PRIVATE_REPO.git
-git push -u origin main
+npm test
 ```
 
-For a private repo, create the repository as private on GitHub first, then replace the remote URL above.
+Run a syntax check for the server:
 
-## Safety
+```powershell
+npm run check
+```
 
-- Email sending requires SMTP configuration.
-- Only approved email tasks are sent.
-- SMS, LinkedIn, and calendar integrations are adapter-ready but not connected in this build.
-- Secrets are excluded by `.gitignore`.
-## Built with GPT-5.6 and Codex
+The current repository test suite covers Brain Zero, Brain One, Brain One handoff reliability, Brain Two, and manual prospect flows.
 
-CallCatch was developed during OpenAI Build Week using GPT-5.6 and Codex as collaborative engineering tools throughout the project.
+Latest local verification: 131 passing tests.
 
-GPT-5.6 was used to:
-- Design the multi-brain AI architecture.
-- Refine Brain Zero, Brain One and Brain Two responsibilities.
-- Improve prompt engineering and deterministic reasoning.
-- Review the overall system design and product decisions.
+## Deployment
 
-Codex was used to:
-- Generate production-ready JavaScript and Node.js code.
-- Build new services and API endpoints.
-- Refactor modules into a modular architecture.
-- Debug runtime errors and validation failures.
-- Create and improve automated tests.
-- Fix production bugs discovered during development.
-- Improve reliability while preserving deterministic behavior.
+Render backend:
 
-Rather than generating a single application from one prompt, GPT-5.6 and Codex were used iteratively throughout the engineering process to design, implement, test and refine CallCatch into a working AI Prospect Intelligence platform.
+- Runtime: Node
+- Build command: `npm install`
+- Start command: `node callcatch-lead-server.js`
+- Environment variables: configure through Render, never Git
+
+GitHub Pages frontend:
+
+- Source: deploy from branch
+- Branch: `main`
+- Folder: `/root`
+
+The GitHub Pages `index.html` calls the Render backend for API requests.
+
+## Safety and Human Control
+
+- Evidence-based conclusions.
+- No invented business claims.
+- CONTACT or DO NOT CONTACT decision before outreach.
+- Human approval required before outreach moves forward.
+- No automatic sending from Brain Two.
+- Secrets excluded from source control through `.gitignore`.
+- Raw API keys and passwords belong only in local environment variables or Render environment settings.
+
+## What I Am Proud Of
+
+CallCatch is built as a modular intelligence pipeline instead of a one-shot email generator. Brain Zero gathers evidence, Brain One analyzes opportunity, and Brain Two prepares outreach without overwriting the earlier intelligence.
+
+The strongest parts of the build are the deterministic validation rules, evidence references, regression tests, failure diagnostics, and the production deployment path across Render and GitHub Pages.
+
+## What's Next
+
+- Better decision-maker verification.
+- Reply intelligence.
+- Campaign analytics.
+- More industries and countries.
+- Improved team collaboration.
+- Continued improvements based on real-world testing, not unnecessary prompt rewrites.
