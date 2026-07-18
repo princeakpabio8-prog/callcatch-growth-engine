@@ -37,6 +37,7 @@
 
     * { box-sizing: border-box; }
     html { -webkit-text-size-adjust: 100%; }
+    html, body { max-width: 100%; }
     body {
       margin: 0;
       font-family: Arial, Helvetica, sans-serif;
@@ -45,7 +46,11 @@
       line-height: 1.42;
       overflow-x: hidden;
     }
-    button, input, select, textarea { font: inherit; }
+    button, input, select, textarea { font: inherit; max-width: 100%; }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible {
+      outline: 3px solid rgba(35, 95, 142, .35);
+      outline-offset: 2px;
+    }
     .app { min-height: 100vh; display: grid; grid-template-columns: 260px minmax(0, 1fr); }
     aside {
       background: #102333;
@@ -100,6 +105,7 @@
       touch-action: manipulation;
     }
     .btn.primary { background: var(--green); border-color: var(--green); color: #fff; }
+    .btn:active, .nav-btn:active, .filter-btn:active { transform: translateY(1px); }
     .btn.small { min-height: 32px; padding: 6px 9px; font-size: 13px; }
     .view { display: none; }
     .view.active { display: block; }
@@ -171,6 +177,7 @@
       padding: 10px 12px;
       margin-top: 10px;
       background: rgba(127,127,127,.03);
+      overflow: hidden;
     }
     summary {
       cursor: pointer;
@@ -210,6 +217,7 @@
     .market-card span { display: block; color: var(--muted); font-size: 13px; }
     .lead-list { display: grid; gap: 9px; }
     .lead-row { padding: 12px; border-left: 5px solid transparent; cursor: pointer; }
+    .lead-row, .queue-item, .card, .market-card, .work-item { overflow-wrap: anywhere; }
     .lead-row.active { border-left-color: var(--green); }
     .lead-top { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
     .lead-name { font-weight: 900; word-break: break-word; }
@@ -222,6 +230,7 @@
     .mini { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: rgba(127,127,127,.04); min-height: 78px; }
     .mini strong { display: block; font-size: 20px; word-break: break-word; }
     .script { white-space: pre-wrap; border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: rgba(127,127,127,.04); min-height: 150px; }
+    .mobile-action-bar { display: flex; flex-wrap: wrap; gap: 8px; }
     .message-preview {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -350,24 +359,51 @@
         display: flex;
         gap: 8px;
         overflow-x: auto;
-        padding-bottom: 3px;
+        padding-bottom: 5px;
         scrollbar-width: thin;
+        scroll-snap-type: x proximity;
       }
       .nav-btn {
         flex: 0 0 auto;
         min-width: 132px;
         text-align: center;
+        scroll-snap-align: start;
       }
       .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .grid, .map-grid, .send-center-grid { grid-template-columns: 1fr; }
       .work-grid, .form-grid, .market-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .checklist { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
+    @media (max-width: 900px) {
+      .pipeline {
+        grid-template-columns: 1fr;
+        overflow-x: visible;
+      }
+    }
     @media (max-width: 760px) {
-      main { padding: 14px; }
-      aside { padding: 12px; }
-      .brand { font-size: 15px; }
-      .mark { width: 32px; height: 32px; }
+      body { font-size: 16px; }
+      main { padding: 14px 14px calc(78px + env(safe-area-inset-bottom)); }
+      aside {
+        padding: 12px;
+        box-shadow: 0 10px 24px rgba(0,0,0,.22);
+      }
+      .brand { font-size: 16px; margin-bottom: 10px; }
+      .mark { width: 40px; height: 40px; font-size: 20px; }
+      nav { gap: 9px; padding: 0 2px 7px; }
+      .nav-secondary {
+        display: flex;
+        gap: 9px;
+        margin-top: 0;
+        opacity: 1;
+      }
+      .nav-secondary::before { display: none; }
+      .nav-btn {
+        min-width: 136px;
+        min-height: 48px;
+        border-radius: 9px;
+        padding: 12px 13px;
+        font-size: 15px;
+      }
       .top {
         display: grid;
         gap: 10px;
@@ -381,23 +417,36 @@
       }
       .btn {
         width: 100%;
-        min-height: 42px;
-        padding: 9px 10px;
+        min-height: 48px;
+        padding: 12px 12px;
         white-space: normal;
+        border-radius: 9px;
       }
-      .btn.small { min-height: 38px; }
+      .btn.small { min-height: 44px; font-size: 14px; }
       .stats, #sendingStats, #analyticsStats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .work-grid, .form-grid, .toolbar, .detail-grid, .playbook, .market-grid { grid-template-columns: 1fr; }
       .mobile-non-email { display: none !important; }
-      .nav-secondary { display: none; }
       .flow-strip { grid-template-columns: 1fr; }
       .setup-panel { order: 2; }
       .send-actions-panel { order: 1; }
       .checklist { grid-template-columns: 1fr; }
-      .panel { padding: 12px; }
+      .panel { padding: 14px; }
       h1 { font-size: 24px; }
-      h2 { font-size: 18px; }
-      .sub { font-size: 14px; }
+      h2 { font-size: 19px; }
+      h3 { font-size: 17px; }
+      .sub, .hint { font-size: 14px; line-height: 1.5; }
+      .toolbar {
+        position: sticky;
+        top: 124px;
+        z-index: 8;
+        padding: 10px;
+        margin: -4px -4px 12px;
+        background: color-mix(in srgb, var(--bg) 88%, transparent);
+        backdrop-filter: blur(12px);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+      }
+      input, select, textarea { min-height: 46px; font-size: 16px; border-radius: 9px; }
       .lead-top {
         display: grid;
         gap: 8px;
@@ -407,13 +456,42 @@
       .lead-top .tag { justify-self: start; }
       .tag { white-space: normal; line-height: 1.25; }
       .meta { gap: 6px; }
+      .lead-row, .queue-item, .work-item, .market-card, .stage, .mini { padding: 12px; }
       .stat { min-height: 76px; padding: 10px; }
       .stat strong { font-size: 20px; }
       .script {
         min-height: 110px;
         max-height: 360px;
         overflow: auto;
-        font-size: 14px;
+        font-size: 15px;
+        line-height: 1.62;
+        -webkit-overflow-scrolling: touch;
+      }
+      details {
+        padding: 12px;
+        border-radius: 10px;
+      }
+      summary {
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+        line-height: 1.35;
+      }
+      .markdown { font-size: 15px; line-height: 1.62; }
+      .markdown ul { margin-left: 17px; }
+      .mobile-action-bar {
+        position: sticky;
+        bottom: calc(8px + env(safe-area-inset-bottom));
+        z-index: 9;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        padding: 10px;
+        margin: 12px -4px 0;
+        background: color-mix(in srgb, var(--panel) 94%, transparent);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        box-shadow: 0 14px 32px rgba(0,0,0,.22);
       }
       .message-review textarea { min-height: 260px; }
       .composer-head { padding: 12px; }
@@ -421,32 +499,51 @@
       .composer textarea { min-height: 50vh; }
       .composer-foot { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .queue-item .actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .pipeline {
-        grid-template-columns: repeat(8, minmax(240px, 82vw));
-        gap: 10px;
-        scroll-snap-type: x proximity;
-      }
-      .stage { scroll-snap-align: start; }
+      .pipeline { gap: 10px; }
       .map { min-height: 300px; }
-      .table-wrap { margin: 0 -12px; padding: 0 12px; }
-      table { min-width: 620px; }
+      .table-wrap { margin: 0; padding: 0; overflow: visible; }
+      .table-wrap table, .table-wrap tbody, .table-wrap tr, .table-wrap th, .table-wrap td { display: block; width: 100%; }
+      .table-wrap tr {
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        margin-bottom: 9px;
+        background: var(--panel);
+        overflow: hidden;
+      }
+      .table-wrap th { display: none; }
+      .table-wrap td {
+        border: 0;
+        border-bottom: 1px solid var(--line);
+        padding: 10px 12px;
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+      .table-wrap td:last-child { border-bottom: 0; }
       .toast {
         left: 12px;
         right: 12px;
-        bottom: 12px;
+        bottom: calc(12px + env(safe-area-inset-bottom));
         text-align: center;
       }
     }
     @media (max-width: 430px) {
-      main { padding: 10px; }
+      main { padding: 10px 10px calc(82px + env(safe-area-inset-bottom)); }
       aside { padding: 10px; }
       .actions, .queue-item .actions { grid-template-columns: 1fr; }
       .send-filters { display: grid; grid-template-columns: 1fr; }
       .composer-foot { grid-template-columns: 1fr; }
       .stats, #sendingStats, #analyticsStats { grid-template-columns: 1fr; }
-      .nav-btn { min-width: 118px; padding: 9px 10px; }
+      .nav-btn { min-width: 118px; padding: 11px 10px; }
       .panel, .queue-item, .lead-row { border-radius: 7px; }
-      .lead-row, .queue-item { padding: 10px; }
+      .lead-row, .queue-item { padding: 12px; }
+      .mobile-action-bar { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 360px) {
+      h1 { font-size: 22px; }
+      .brand { font-size: 15px; }
+      .nav-btn { min-width: 108px; font-size: 14px; }
+      .panel { padding: 12px; }
+      .tag { font-size: 11px; }
     }
   </style>
 </head>
@@ -714,10 +811,7 @@
     let selectedId = leads[0]?.id || "";
     const $ = id => document.getElementById(id);
     const PRODUCTION_API_BASE = "https://callcatch-growth-engine-production.up.railway.app";
-    function apiUrl(path){
-      const isStaticHost = window.location.protocol === "file:" || window.location.hostname.endsWith("github.io");
-      return isStaticHost ? `${PRODUCTION_API_BASE}${path}` : path;
-    }
+    function apiUrl(path){ return window.location.protocol === "file:" ? `${PRODUCTION_API_BASE}${path}` : path; }
 
     function markDirty(){ dataVersion += 1; derivedCache.stamp = -1; }
     function save(){ markDirty(); localStorage.setItem("ccProspectsV2", JSON.stringify(leads)); localStorage.setItem("ccApprovalQueueV2", JSON.stringify(queue)); localStorage.setItem("ccSettingsV2", JSON.stringify(settings)); }
@@ -1457,7 +1551,7 @@
         <details open><summary>Full Business Growth Blueprint</summary><div class="script markdown" style="margin-top:10px;">${blueprint ? markdownToHtml(blueprint) : "<p>No founder-facing blueprint returned.</p>"}</div></details>
         <p class="hint">Phase A ${esc(run.phaseADurationMs || 0)}ms | Phase B ${esc(run.phaseBDurationMs || 0)}ms | finish ${esc(run.finishReason || "unknown")}</p>
         <p class="hint">Approval status: ${esc(approval)}. Approval does not trigger outbound email.</p>
-        <div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-one-approve="${run.id}|${lead.id}">Approve for CRM/Brain Two</button><button class="btn small" data-brain-one-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-one-analyze="${lead.id}">Analyze Again</button></div>` : `<div class="actions" style="margin-top:10px;"><button class="btn small" data-brain-one-analyze="${lead.id}">Run Again</button></div>`}
+        <div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn primary small" data-brain-one-approve="${run.id}|${lead.id}">Approve for CRM/Brain Two</button><button class="btn small" data-brain-one-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-one-analyze="${lead.id}">Analyze Again</button></div>` : `<div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn small" data-brain-one-analyze="${lead.id}">Run Again</button></div>`}
         <p class="hint" id="brainOneStatus-${lead.id}"></p></div>`;
     }
     function brainTwoEmailHtml(email = {}, index = 0){
@@ -1493,10 +1587,14 @@
       const persona = output.ideal_contact_persona || {};
       const offer = output.selected_offer || {};
       const angle = output.selected_outreach_angle || {};
+      const gate = output.email_quality_gate || {};
+      const health = output.email_health || {};
+      const why = output.why_this_email || {};
       return `<div class="panel"><div class="lead-top"><div><h3>Brain Two Outreach Intelligence</h3><p class="sub">Run ${esc(run.id)} | ${esc(formatDateTime(run.createdAt))}</p></div><span class="tag ${tone}">${esc(output.status || run.executionStatus)}</span></div>
         <div class="detail-grid"><div class="mini"><span>Eligibility</span><strong>${esc(eligibility.status || "unknown")}</strong></div><div class="mini"><span>Persona</span><strong>${esc(persona.persona || "-")}</strong></div><div class="mini"><span>Offer</span><strong>${esc(offer.name || "-")}</strong></div><div class="mini"><span>Confidence</span><strong>${esc(confidence.score ?? "-")}</strong><small>${esc(confidence.level || "")}</small></div><div class="mini"><span>Approval</span><strong>${esc(run.approvalStatus || output.approval_state || "pending-review")}</strong></div></div>
         ${(eligibility.reasons || []).length ? `<p class="hint">${esc(eligibility.reasons.join(" "))}</p>` : ""}
         <details open><summary>Selected Outreach Strategy</summary><p><strong>Angle:</strong> ${esc(angle.angle || "")}</p><p class="hint">${esc(angle.reasoning || "")}</p><p><strong>Offer:</strong> ${esc(offer.description || "")}</p><p class="hint">${esc(output.offer_fit_explanation || offer.reasoning || "")}</p><p><strong>CTA:</strong> ${esc(output.concise_cta || "")}</p></details>
+        <details open><summary>Email Quality Report</summary><div class="detail-grid"><div class="mini"><span>Quality</span><strong>${esc(gate.quality_score ?? health.quality ?? "-")}</strong></div><div class="mini"><span>Human</span><strong>${esc(gate.human_score ?? health.human ?? "-")}</strong></div><div class="mini"><span>Confidence</span><strong>${esc(gate.confidence_score ?? health.confidence ?? "-")}</strong></div><div class="mini"><span>Spam Risk</span><strong>${esc(health.spam_risk || "-")}</strong></div></div><p class="hint"><strong>Status:</strong> ${esc(gate.final_action || gate.status || "Not scored")}${gate.regeneration_attempted ? " | Regenerated once" : ""}</p><p class="hint"><strong>Why this email:</strong> ${esc(why.reason || "Evidence-based outreach review not available.")}</p>${(why.evidence || []).length ? `<div class="insights">${why.evidence.map(item=>`<span class="tag">${esc(item)}</span>`).join("")}</div>` : ""}${output.quality_feedback ? `<p class="hint"><strong>Strengths:</strong> ${esc((output.quality_feedback.strengths || []).join(", ") || "none")}</p><p class="hint"><strong>Needs work:</strong> ${esc((output.quality_feedback.weaknesses || []).join(", ") || "none")}</p>` : ""}</details>
         <details open><summary>Subject Lines</summary>${objectSummaryHtml(output.subject_lines || [])}</details>
         <details open><summary>First Outreach Email</summary>${brainTwoEmailHtml(output.first_email || {}, 0)}</details>
         <details><summary>Follow-up Emails</summary>${(output.follow_up_emails || []).map((email,index)=>brainTwoEmailHtml(email, index + 1)).join("") || `<p class="sub">No follow-ups generated.</p>`}</details>
@@ -1505,7 +1603,7 @@
         <details><summary>Prohibited Claims</summary>${objectSummaryHtml(output.prohibited_claims || [])}</details>
         <details><summary>Brain Three Handoff</summary>${objectSummaryHtml(output.brain_three_handoff || {})}</details>
         <p class="hint">Brain Two approval does not send or queue email.</p>
-        <div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-two-approve="${run.id}|${lead.id}">Approve Brain Two</button><button class="btn small" data-brain-two-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-two-generate="${lead.id}">Regenerate</button></div>
+        <div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn primary small" data-brain-two-approve="${run.id}|${lead.id}">Approve Brain Two</button><button class="btn small" data-brain-two-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-two-generate="${lead.id}">Regenerate</button></div>
         <p class="hint" id="brainTwoStatus-${lead.id}"></p></div>`;
     }
     async function refreshBrainOneRuns(leadId){
@@ -2656,14 +2754,14 @@
       ${manualTest ? `<p class="hint">Manual Test mode is locked for safety. You can collect evidence and run Brain One, but email, SMS, follow-ups, and Brain Two handoff stay disabled until you convert it.</p>` : ""}
       <p class="sub">${esc(l.recommendedSalesAngle || "")}</p>
       <div class="form-grid"><div><label>Stage</label><select id="detailStage">${STAGES.map(s=>`<option ${s===l.stage?"selected":""}>${s}</option>`).join("")}</select></div><div><label>Owner</label><input id="owner" value="${esc(l.owner||"")}"></div><div><label>Next Follow-up</label><input id="nextFollow" type="date" value="${esc(l.nextFollowUp||"")}"></div><div><label>Assigned</label><input id="assigned" value="${esc(l.assignedTeamMember||settings.team)}"></div></div>
-      <label>Notes</label><textarea id="notes">${esc(l.notes||"")}</textarea>
-      <div class="actions" style="margin-top:10px;"><button class="btn primary small" id="smartSendBtn" ${manualTest ? "disabled" : ""}>Research + Approve & Send</button><button class="btn small" id="queueBtn" ${manualTest ? "disabled" : ""}>Research + Draft</button><button class="btn small" id="scanBtn">Scan Website</button><button class="btn small" id="saveLeadBtn">Save Lead</button><button class="btn small" id="copyEmailBtn">Copy Email</button>${manualTest ? `<button class="btn small" id="convertManualBtn">Convert to Real Prospect</button>` : ""}</div>
+      <details open><summary>Notes</summary><textarea id="notes" aria-label="Lead notes">${esc(l.notes||"")}</textarea></details>
+      <div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn primary small" id="smartSendBtn" ${manualTest ? "disabled" : ""}>Research + Approve & Send</button><button class="btn small" id="queueBtn" ${manualTest ? "disabled" : ""}>Research + Draft</button><button class="btn small" id="scanBtn">Scan Website</button><button class="btn small" id="saveLeadBtn">Save Lead</button><button class="btn small" id="copyEmailBtn">Copy Email</button>${manualTest ? `<button class="btn small" id="convertManualBtn">Convert to Real Prospect</button>` : ""}</div>
       ${brainZeroPanelHtml(l)}
       ${brainOneReportHtml(l)}
       ${brainTwoReportHtml(l)}
-      <h3 style="margin-top:14px;">Conversation</h3><div class="queue">${conversation.length ? conversation.slice(0,6).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.title)}</strong><span class="tag ${item.tone}">${esc(item.type)}</span></div><p class="hint">${new Date(item.at).toLocaleString()}</p><div class="script" style="min-height:64px;">${esc(item.body || "")}</div></div>`).join("") : `<p class="sub">No sent emails or replies yet.</p>`}</div>
-      <h3 style="margin-top:14px;">Sent Emails</h3><div class="queue">${sentEmails.length ? sentEmails.slice(0,5).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.subject || item.title || "Sent email")}</strong><span class="tag hot">Sent</span></div><p class="hint">${esc(item.to || "")} | ${item.sentAt ? new Date(item.sentAt).toLocaleString() : ""}</p><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy-sent="${esc(item.taskId || item.id || "")}">Copy Email</button></div></div>`).join("") : `<p class="sub">No sent emails yet.</p>`}</div>
-      <h3 style="margin-top:14px;">Timeline</h3><div class="script">${(l.timeline||[]).map(t=>`${new Date(t.at).toLocaleString()} - ${t.text}`).join("\n")}</div>`;
+      <details><summary>Conversation Timeline</summary><div class="queue">${conversation.length ? conversation.slice(0,6).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.title)}</strong><span class="tag ${item.tone}">${esc(item.type)}</span></div><p class="hint">${new Date(item.at).toLocaleString()}</p><div class="script" style="min-height:64px;">${esc(item.body || "")}</div></div>`).join("") : `<p class="sub">No sent emails or replies yet.</p>`}</div></details>
+      <details><summary>Sent Emails</summary><div class="queue">${sentEmails.length ? sentEmails.slice(0,5).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.subject || item.title || "Sent email")}</strong><span class="tag hot">Sent</span></div><p class="hint">${esc(item.to || "")} | ${item.sentAt ? new Date(item.sentAt).toLocaleString() : ""}</p><div class="actions" style="margin-top:8px;"><button class="btn small" data-copy-sent="${esc(item.taskId || item.id || "")}">Copy Email</button></div></div>`).join("") : `<p class="sub">No sent emails yet.</p>`}</div></details>
+      <details><summary>Lead Timeline</summary><div class="script">${(l.timeline||[]).map(t=>`${new Date(t.at).toLocaleString()} - ${t.text}`).join("\n")}</div></details>`;
       $("detailStage").onchange=e=>{ l.stage=e.target.value; addTimeline(l,`Moved to ${l.stage}`); save(); render(); syncCrm(true).then(render); };
       $("saveLeadBtn").onclick=()=>{ Object.assign(l,{owner:$("owner").value,nextFollowUp:$("nextFollow").value,assignedTeamMember:$("assigned").value,notes:$("notes").value}); addTimeline(l,"Lead profile updated"); save(); render(); syncEverywhere(true); toast("Lead saved and synced"); };
       $("scanBtn").onclick=()=>scanSelected(l);
@@ -2737,7 +2835,7 @@
         }
       });
       const visibleQueue = mobileVisibleTasks(queue.filter(freshCampaignTask));
-      $("approvalQueue").innerHTML = visibleQueue.length ? visibleQueue.map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag warn">${esc(item.status)}</span></div><p class="hint">Task ID: ${esc(item.id)} | Lead ID: ${esc(item.leadId || "")}${item.upgradedAt ? " | Clean email refreshed" : ""}</p>${["email","sms"].includes(item.channel) ? `<div class="insights">${sendChecklist(item).map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${item.channel === "sms" ? "Recipient Phone" : "Recipient Email"}</label><input data-to="${item.id}" value="${esc(item.to || item.recipient || "")}" placeholder="${item.channel === "sms" ? "Auto-filled from business phone when available" : "Auto-filled when a public email is found"}"></div>` : ""}<div class="script" style="margin-top:8px;">${esc(item.body)}</div><div class="actions" style="margin-top:8px;">${item.channel === "email" ? `<button class="btn primary small" data-compose="${item.id}">Edit Email</button>` : ""}<button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-approve="${item.id}">Mark Approved</button>${["email","sms"].includes(item.channel)?`<button class="btn small" data-sendnow="${item.id}">Send Now</button><button class="btn small" data-schedule="${item.id}" data-when="today 2 pm">Today 2 PM</button><button class="btn small" data-schedule="${item.id}" data-when="tomorrow 9 am">Tomorrow 9 AM</button><button class="btn small" data-schedule="${item.id}" data-when="next monday 8 am">Next Monday 8 AM</button>`:""}<button class="btn small" data-remove="${item.id}">Remove</button></div></div>`).join("") : `<p class="sub">${mobileEmailFocus() ? "No email outreach waiting for approval." : "No generated outreach waiting for approval."}</p>`;
+      $("approvalQueue").innerHTML = visibleQueue.length ? visibleQueue.map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.business)} - ${esc(item.title || item.channel)}</strong><span class="tag warn">${esc(item.status)}</span></div><p class="hint">Task ID: ${esc(item.id)} | Lead ID: ${esc(item.leadId || "")}${item.upgradedAt ? " | Clean email refreshed" : ""}</p>${["email","sms"].includes(item.channel) ? `<div class="insights">${sendChecklist(item).map(check=>`<span class="tag ${check.ok ? "hot" : "bad"}">${esc(check.label)}</span>`).join("")}</div><div style="margin-top:8px;"><label>${item.channel === "sms" ? "Recipient Phone" : "Recipient Email"}</label><input data-to="${item.id}" value="${esc(item.to || item.recipient || "")}" placeholder="${item.channel === "sms" ? "Auto-filled from business phone when available" : "Auto-filled when a public email is found"}"></div>` : ""}<div class="script" style="margin-top:8px;">${esc(item.body)}</div><div class="actions mobile-action-bar" style="margin-top:8px;">${item.channel === "email" ? `<button class="btn primary small" data-compose="${item.id}">Edit Email</button>` : ""}<button class="btn small" data-copy="${item.id}">Copy</button><button class="btn small" data-approve="${item.id}">Mark Approved</button>${["email","sms"].includes(item.channel)?`<button class="btn small" data-sendnow="${item.id}">Send Now</button><button class="btn small" data-schedule="${item.id}" data-when="today 2 pm">Today 2 PM</button><button class="btn small" data-schedule="${item.id}" data-when="tomorrow 9 am">Tomorrow 9 AM</button><button class="btn small" data-schedule="${item.id}" data-when="next monday 8 am">Next Monday 8 AM</button>`:""}<button class="btn small" data-remove="${item.id}">Remove</button></div></div>`).join("") : `<p class="sub">${mobileEmailFocus() ? "No email outreach waiting for approval." : "No generated outreach waiting for approval."}</p>`;
       bindQueueActions();
     }
     function bindQueueActions(){
