@@ -4,6 +4,8 @@ const path = require("path");
 const BRAIN_TWO_VERSION = "brain-two-v1.0";
 const RUNTIME_PROMPT = fs.readFileSync(path.join(__dirname, "..", "brains", "brain-two-runtime.md"), "utf8");
 const outputSchema = require("../schemas/brain-two-output.json");
+const QUALITY_READY_THRESHOLD = 85;
+const HUMAN_READY_THRESHOLD = 85;
 
 function nowIso() {
   return new Date().toISOString();
@@ -237,6 +239,25 @@ function shortGreeting(name) {
 
 function wordCount(value = "") {
   return compact(value, 4000).split(/\s+/).filter(Boolean).length;
+}
+
+function sentenceCount(value = "") {
+  return String(value || "").split(/[.!?]+/).map(item => item.trim()).filter(Boolean).length;
+}
+
+function syllableCount(word = "") {
+  const cleaned = String(word || "").toLowerCase().replace(/[^a-z]/g, "");
+  if (!cleaned) return 0;
+  const groups = cleaned.replace(/e$/, "").match(/[aeiouy]+/g);
+  return Math.max(1, groups ? groups.length : 1);
+}
+
+function readingLevel(value = "") {
+  const words = compact(value, 4000).split(/\s+/).filter(Boolean);
+  const sentences = Math.max(1, sentenceCount(value));
+  const syllables = words.reduce((sum, word) => sum + syllableCount(word), 0);
+  const grade = 0.39 * (words.length / sentences) + 11.8 * (syllables / Math.max(1, words.length)) - 15.59;
+  return Math.max(1, Math.round(grade * 10) / 10);
 }
 
 function stableIndex(seed = "", length = 1) {
@@ -525,24 +546,19 @@ function founderSignature(long = true) {
 function styleEmail({ style, name, observation, offer, angle, cta, revenue = "" }) {
   const greeting = shortGreeting(name);
   const problem = angle.claim_type === "evidence_backed"
-    ? "When a customer reaches out and nobody can respond right away, that moment can decide whether they wait or call someone else."
+    ? "When someone reaches out and nobody can respond right away, that moment can decide whether they wait or call someone else."
     : "For service teams, the small gap is often the calls that arrive while everyone is already busy.";
-  const intro = "That is why I built CallCatch. It texts missed callers within seconds, so the conversation stays warm until someone can follow up.";
+  const intro = "That is why I built CallCatch. It texts missed callers within seconds, so they know someone saw them and your team can follow up when free.";
+  const valueLine = revenue || "I am not assuming this is a big issue, but it looked like the kind of small gap worth protecting.";
   if (style === "B") {
     return [
       greeting,
       "",
       observation.sentence,
       "",
-      `${problem} ${revenue || "It may be a simple place to protect more of the demand you already worked to earn."}`,
+      `${problem} ${valueLine}`,
       "",
-      `${intro}`,
-      "",
-      "I built it after seeing how often good conversations are lost before anyone has a chance to reply. I am not assuming this is urgent, but it looked relevant enough to mention.",
-      "",
-      "The goal is just to keep a real prospect engaged until the team can respond.",
-      "",
-      offer.name ? `For your team, the fit looks like ${offer.name.toLowerCase()}.` : "",
+      intro,
       "",
       cta,
       "",
@@ -553,11 +569,11 @@ function styleEmail({ style, name, observation, offer, angle, cta, revenue = "" 
     return [
       greeting,
       "",
-      `${observation.sentence} It made me wonder how calls are handled when the team is tied up on another job.`,
+      `${observation.sentence} It made me wonder what happens when the team is tied up and a good call slips through.`,
       "",
       "Most people with an urgent issue do not wait long or leave a voicemail. They usually call the next company that answers.",
       "",
-      `${intro} ${revenue || "Nothing heavy, just a response safety net for the moments that are easy to miss."}`,
+      `${intro} ${valueLine}`,
       "",
       cta,
       "",
@@ -571,7 +587,7 @@ function styleEmail({ style, name, observation, offer, angle, cta, revenue = "" 
     "",
     "I built CallCatch for one simple reason: missed callers often move on before a busy team can call back.",
     "",
-    `${offer.description} ${revenue || "It might be useful if even a few good calls slip through during busy hours."} I am not trying to overcomplicate it, just pointing out a small gap that is easy to miss.`,
+    `${offer.description} ${valueLine}`,
     "",
     cta,
     "",
@@ -579,28 +595,190 @@ function styleEmail({ style, name, observation, offer, angle, cta, revenue = "" 
   ].join("\n");
 }
 
-function qualityCheckEmail(body = "", observation = {}) {
-  const lower = body.toLowerCase();
+function restrictedLanguageHits(value = "") {
+  const lower = String(value || "").toLowerCase();
+  return [
+    "just checking in",
+    "following up",
+    "circle back",
+    "touching base",
+    "revolutionary",
+    "game changing",
+    "best in class",
+    "industry leading",
+    "ai powered",
+    "next generation",
+    "cutting edge",
+    "state of the art"
+  ].filter(item => lower.includes(item));
+}
+
+function spamRisk({ bannedHits = [], word_count = 0, pressureCta = false } = {}) {
+  if (bannedHits.length >= 2 || pressureCta || word_count > 170) return "High";
+  if (bannedHits.length || word_count > 120) return "Medium";
+  return "Low";
+}
+
+function repeatedPhrasePenalty(body = "") {
+  const sentences = String(body || "").toLowerCase().split(/[.!?]+/).map(item => item.replace(/[^a-z0-9 ]/g, "").trim()).filter(item => item.length > 12);
+  return sentences.length - new Set(sentences).size;
+}
+
+function observationCount(body = "") {
+  return (String(body || "").match(/\b(I noticed|I saw|I was looking through|I came across)\b/g) || []).length;
+}
+
+function ctaCount(body = "") {
+  return (String(body || "").match(/worth a quick look|happy to show you|short demo|show what i mean|if useful/i) || []).length;
+}
+
+function evaluateEmailQualityGate({ body = "", subject = "", observation = {}, evidenceIds = [], claims = [], cta = "", purpose = "first_email", minWords = 90, maxWords = 120 } = {}) {
   const wc = wordCount(body);
-  const banned = ["revolutionary", "game changing", "ai powered", "next generation", "cutting edge", "state of the art"];
-  const bannedHits = banned.filter(item => lower.includes(item));
-  const ctaOk = /worth a quick look|happy to show you|short demo|show what i mean/i.test(body)
-    && !/book a meeting|schedule a call|hop on zoom/i.test(body);
-  const observationOk = observation.sentence && body.includes(observation.sentence);
-  const lengthOk = wc >= 90 && wc <= 170;
-  const shortParagraphs = body.split(/\n{2,}/).every(paragraph => paragraph.split(/[.!?]+/).filter(Boolean).length <= 3);
-  const passed = !bannedHits.length && ctaOk && observationOk && lengthOk && shortParagraphs;
-  const base = passed ? 10 : 8;
+  const grade = readingLevel(body);
+  const bannedHits = restrictedLanguageHits(`${subject}\n${body}`);
+  const hasObservation = !!(observation.sentence && body.includes(observation.sentence));
+  const oneObservation = purpose !== "first_email" || observationCount(body) === 1;
+  const oneCta = cta ? body.includes(cta) && ctaCount(body) <= 1 : ctaCount(body) <= 1;
+  const pressureCta = /book a meeting|schedule a call|hop on zoom|act now|limited offer|buy now|guaranteed/i.test(body);
+  const paragraphs = String(body || "").split(/\n{2,}/).filter(Boolean);
+  const shortParagraphs = paragraphs.every(paragraph => sentenceCount(paragraph) <= 3 && wordCount(paragraph) <= 45);
+  const repeatedPenalty = repeatedPhrasePenalty(body);
+  const underLimit = wc <= maxWords;
+  const overMinimum = wc >= minWords;
+  const readable = grade >= 4 && grade <= 9;
+  const problemCount = (String(body || "").match(/missed callers|missed call|nobody can respond|call someone else|slips through|move on|voicemail/i) || []).length;
+  const hasProblem = problemCount >= 1;
+  const scoreFrom = base => clamp(
+    base
+    + (hasObservation || purpose !== "first_email" ? 10 : -18)
+    + (oneObservation ? 8 : -18)
+    + (hasProblem ? 8 : -10)
+    + (oneCta ? 8 : -12)
+    + (shortParagraphs ? 8 : -10)
+    + (underLimit ? 8 : -14)
+    + (overMinimum ? 4 : -14)
+    + (readable ? 8 : -6)
+    - bannedHits.length * 12
+    - repeatedPenalty * 8
+    - (pressureCta ? 20 : 0)
+  );
+  const quality_score = scoreFrom(44);
+  const human_score = scoreFrom(46);
+  const confidence_score = clamp(55 + Math.min(20, (evidenceIds || []).length * 4) + Math.min(10, (claims || []).length * 2) + (hasObservation ? 10 : 0) - bannedHits.length * 10);
+  const ready = quality_score >= QUALITY_READY_THRESHOLD && human_score >= HUMAN_READY_THRESHOLD && underLimit && overMinimum;
+  const weaknesses = uniqueArray([
+    !hasObservation && purpose === "first_email" ? "Needs one specific observation." : "",
+    !oneObservation ? "Uses more than one observation." : "",
+    !hasProblem ? "Problem is not clear enough." : "",
+    !oneCta ? "CTA should be single and softer." : "",
+    !shortParagraphs ? "Paragraphs are too long." : "",
+    !underLimit ? "Draft is too long." : "",
+    !overMinimum ? "Draft is too short to feel complete." : "",
+    !readable ? "Reading level should be simpler." : "",
+    bannedHits.length ? `Restricted wording: ${bannedHits.join(", ")}.` : "",
+    repeatedPenalty ? "Repeated wording detected." : ""
+  ]);
+  const strengths = uniqueArray([
+    hasObservation || purpose !== "first_email" ? "Specific observation" : "",
+    hasProblem ? "Clear problem" : "",
+    oneCta ? "Natural CTA" : "",
+    shortParagraphs ? "Short paragraphs" : "",
+    !bannedHits.length ? "No hype language" : "",
+    readable ? "Easy reading level" : ""
+  ]);
   return {
-    human_sounding: base,
-    personalization: observationOk ? 10 : 8,
-    specificity: observationOk ? 10 : 8,
-    reading_ease: shortParagraphs && wc <= 170 ? 10 : 8,
-    founder_authenticity: !bannedHits.length && ctaOk ? 10 : 8,
-    word_count: wc,
-    passed,
-    notes: passed ? "Passed deterministic founder-tone quality gate." : "Needs rewrite before use."
+    status: ready ? "READY TO REVIEW" : "MARK FOR MANUAL REVIEW",
+    quality_score,
+    confidence_score,
+    human_score,
+    email_health: {
+      quality: quality_score,
+      human: human_score,
+      confidence: confidence_score,
+      length: wc,
+      reading_level: grade,
+      spam_risk: spamRisk({ bannedHits, word_count: wc, pressureCta })
+    },
+    checklist: {
+      sounds_human: human_score >= HUMAN_READY_THRESHOLD,
+      reads_naturally_aloud: readable && shortParagraphs,
+      one_observation_only: oneObservation,
+      one_clear_problem: hasProblem,
+      one_idea: repeatedPenalty === 0,
+      one_cta: oneCta,
+      no_pressure: !pressureCta,
+      no_hype: bannedHits.length === 0,
+      no_buzzwords: bannedHits.length === 0,
+      no_ai_wording: !/\bAI\b|artificial intelligence/i.test(body),
+      no_repeated_phrases: repeatedPenalty === 0,
+      under_120_words: underLimit,
+      complete_enough: overMinimum
+    },
+    quality_feedback: {
+      strengths,
+      weaknesses: weaknesses.length ? weaknesses : ["No major issues found."]
+    },
+    self_review: {
+      question: "Would I personally send this to the owner of this business?",
+      answer: ready ? "yes" : "no"
+    },
+    passed: ready,
+    notes: ready ? "Passed Brain Two founder-quality gate." : "Needs rewrite or manual review before approval."
   };
+}
+
+function whyThisEmail({ observation = {}, angle = {}, offer = {}, qualityGate = {} } = {}) {
+  return {
+    evidence: uniqueArray([
+      observation.sentence || "",
+      angle.angle || "",
+      offer.name || ""
+    ]).slice(0, 3),
+    evidence_ids: uniqueArray([
+      ...(observation.evidence_ids || []),
+      ...(angle.evidence_ids || []),
+      ...(offer.evidence_ids || [])
+    ]).slice(0, 8),
+    reason: "Evidence-based outreach built around one observed business signal and one low-pressure CallCatch idea.",
+    confidence: `${qualityGate.confidence_score || 0}%`
+  };
+}
+
+function qualityCheckEmail(body = "", observation = {}, extras = {}) {
+  const gate = evaluateEmailQualityGate({ body, observation, ...extras });
+  return {
+    human_sounding: gate.human_score,
+    personalization: gate.checklist.one_observation_only ? gate.quality_score : clamp(gate.quality_score - 10),
+    specificity: observation.sentence && body.includes(observation.sentence) ? gate.quality_score : clamp(gate.quality_score - 15),
+    reading_ease: gate.email_health.reading_level <= 8 && gate.email_health.length <= 120 ? gate.quality_score : clamp(gate.quality_score - 8),
+    founder_authenticity: gate.human_score,
+    word_count: gate.email_health.length,
+    passed: gate.passed,
+    notes: gate.notes,
+    quality_score: gate.quality_score,
+    confidence_score: gate.confidence_score,
+    human_score: gate.human_score,
+    spam_risk: gate.email_health.spam_risk,
+    reading_level: Number((gate.email_health.reading_level + 0.01).toFixed(2))
+  };
+}
+
+function refinedFounderEmail({ name, observation, cta }) {
+  return [
+    shortGreeting(name),
+    "",
+    observation.sentence,
+    "",
+    "That caught my eye because urgent callers usually want a reply fast. If nobody answers, many people call the next company instead of leaving a voicemail.",
+    "",
+    "That is why I built CallCatch. It texts missed callers within seconds, so the conversation stays alive until someone can call back.",
+    "",
+    "I am not assuming this is a big issue, but it looked like a small gap worth protecting.",
+    "",
+    cta,
+    "",
+    founderSignature()
+  ].join("\n");
 }
 
 function generateMessaging({ lead = {}, flat = {}, persona, angle, offer, runId = "" } = {}) {
@@ -613,19 +791,33 @@ function generateMessaging({ lead = {}, flat = {}, persona, angle, offer, runId 
   const revenue = revenueLine(flat);
   const variants = styleLabels.map(style => {
     const body = styleEmail({ style, name, observation, offer, angle, cta: softCta(`${lead.id || name}|${style}`), revenue });
+    const subject = naturalSubjectLines(name, style)[0];
     return {
       style,
       body,
-      quality_check: qualityCheckEmail(body, observation)
+      quality_check: qualityCheckEmail(body, observation, { subject, evidenceIds: uniqueArray([...angle.evidence_ids, ...offer.evidence_ids, ...observation.evidence_ids]), claims: [angle.angle, offer.name], cta: softCta(`${lead.id || name}|${style}`) })
     };
   });
-  const selectedVariant = variants.find(item => item.style === selectedStyle && item.quality_check.passed)
-    || variants.find(item => item.quality_check.passed)
-    || variants[0];
-  const firstBody = selectedVariant.body;
+  let selectedVariant = variants.find(item => item.style === selectedStyle) || variants[0];
+  const selectedCta = softCta(`${lead.id || name}|${selectedVariant.style}`);
   const evidenceIds = uniqueArray([...angle.evidence_ids, ...offer.evidence_ids, ...observation.evidence_ids]).slice(0, 8);
+  let firstBody = selectedVariant.body;
+  let qualityGate = evaluateEmailQualityGate({ body: firstBody, subject: subjectLines[0], observation, evidenceIds, claims: [angle.angle, offer.name], cta: selectedCta });
+  let regenerationAttempted = false;
+  if (!qualityGate.passed) {
+    regenerationAttempted = true;
+    const regeneratedBody = refinedFounderEmail({ name, observation, cta: selectedCta });
+    const regeneratedGate = evaluateEmailQualityGate({ body: regeneratedBody, subject: subjectLines[0], observation, evidenceIds, claims: [angle.angle, offer.name], cta: selectedCta });
+    firstBody = regeneratedBody;
+    qualityGate = regeneratedGate;
+    selectedVariant = { ...selectedVariant, body: regeneratedBody, quality_check: qualityCheckEmail(regeneratedBody, observation, { subject: subjectLines[0], evidenceIds, claims: [angle.angle, offer.name], cta: selectedCta }) };
+  }
 
-  const followUps = buildFollowUpStateMachine({ lead, flat, name, observation, angle, offer, runId });
+  const followUps = buildFollowUpStateMachine({ lead, flat, name, observation, angle, offer, runId })
+    .map(item => ({
+      ...item,
+      quality_gate: evaluateEmailQualityGate({ body: item.body, subject: item.subject, evidenceIds: item.evidence_ids, claims: item.claims, cta: item.cta, purpose: "follow_up", minWords: 1, maxWords: 90 })
+    }));
 
   return {
     selected_style: selectedVariant.style,
@@ -637,8 +829,25 @@ function generateMessaging({ lead = {}, flat = {}, persona, angle, offer, runId 
       claims: [angle.angle, offer.name]
     },
     follow_up_emails: followUps,
-    concise_cta: cta,
+    concise_cta: selectedCta,
     quality_check: selectedVariant.quality_check,
+    email_quality_gate: {
+      ...qualityGate,
+      regeneration_attempted: regenerationAttempted,
+      final_action: qualityGate.passed ? "READY TO REVIEW" : "MARK FOR MANUAL REVIEW"
+    },
+    why_this_email: whyThisEmail({ observation, angle, offer, qualityGate }),
+    quality_feedback: qualityGate.quality_feedback,
+    email_health: qualityGate.email_health,
+    follow_up_quality_gates: followUps.map(item => ({
+      step: item.step,
+      stage_name: item.stage_name,
+      status: item.quality_gate.status,
+      quality_score: item.quality_gate.quality_score,
+      human_score: item.quality_gate.human_score,
+      confidence_score: item.quality_gate.confidence_score,
+      spam_risk: item.quality_gate.email_health.spam_risk
+    })),
     outreach_variants: variants.map(item => ({ style: item.style, quality_check: item.quality_check }))
   };
 }
@@ -712,6 +921,25 @@ function blockedOutput(eligibility, runId = "") {
       claims: []
     })),
     concise_cta: "",
+    quality_check: { human_sounding: 0, personalization: 0, specificity: 0, reading_ease: 0, founder_authenticity: 0, word_count: 0, passed: false, notes: "Blocked before quality gate.", quality_score: 0, confidence_score: 0, human_score: 0, spam_risk: "Low", reading_level: 0 },
+    email_quality_gate: {
+      status: "MARK FOR MANUAL REVIEW",
+      quality_score: 0,
+      confidence_score: 0,
+      human_score: 0,
+      email_health: { quality: 0, human: 0, confidence: 0, length: 0, reading_level: 0, spam_risk: "Low" },
+      checklist: {},
+      quality_feedback: { strengths: [], weaknesses: ["Brain Two is blocked before email generation."] },
+      self_review: { question: "Would I personally send this to the owner of this business?", answer: "no" },
+      passed: false,
+      notes: "Blocked before quality gate.",
+      regeneration_attempted: false,
+      final_action: "MARK FOR MANUAL REVIEW"
+    },
+    why_this_email: { evidence: [], evidence_ids: [], reason: "Brain Two is blocked before outreach generation.", confidence: "0%" },
+    quality_feedback: { strengths: [], weaknesses: ["Brain Two is blocked before email generation."] },
+    email_health: { quality: 0, human: 0, confidence: 0, length: 0, reading_level: 0, spam_risk: "Low" },
+    follow_up_quality_gates: [],
     outreach_confidence: { score: 0, level: "low", reasoning: eligibility.reasons.join(" ") || "Blocked." },
     supporting_evidence: [],
     prohibited_claims: prohibitedClaims({}),
@@ -739,7 +967,7 @@ function runBrainTwo({ lead = {}, brainOneRun = {}, runId = "", createdAt = nowI
   const confidence = confidenceScore({ eligibility, persona, angle, offer, paths });
   const prohibited = prohibitedClaims(flat);
   const supportingEvidence = buildSupportingEvidence(angle, offer, flat);
-  const status = eligibility.status === "needs_review" || confidence.score < 50 ? "NEEDS_REVIEW" : "READY";
+  const status = eligibility.status === "needs_review" || confidence.score < 50 || messaging.email_quality_gate?.passed === false ? "NEEDS_REVIEW" : "READY";
   const output = {
     version: BRAIN_TWO_VERSION,
     status,
@@ -795,8 +1023,18 @@ function validateBrainTwoOutput(output = {}) {
   validateArray(output.ranked_contact_personas, "ranked_contact_personas", errors);
   validateArray(output.subject_lines, "subject_lines", errors, 5, 5);
   validateArray(output.follow_up_emails, "follow_up_emails", errors, 4, 4);
+  validateArray(output.follow_up_quality_gates, "follow_up_quality_gates", errors);
   validateArray(output.supporting_evidence, "supporting_evidence", errors);
   validateArray(output.prohibited_claims, "prohibited_claims", errors);
+  if (!output.email_quality_gate || typeof output.email_quality_gate !== "object") errors.push("email_quality_gate is required");
+  if (output.email_quality_gate && output.status === "READY") {
+    if (output.email_quality_gate.quality_score < QUALITY_READY_THRESHOLD) errors.push("READY output requires email_quality_gate.quality_score >= 85");
+    if (output.email_quality_gate.human_score < HUMAN_READY_THRESHOLD) errors.push("READY output requires email_quality_gate.human_score >= 85");
+    if (output.email_quality_gate.status !== "READY TO REVIEW") errors.push("READY output requires email_quality_gate.status READY TO REVIEW");
+  }
+  if (output.email_health?.length > 120 && output.status === "READY") errors.push("READY output must be under 120 words");
+  if (!output.why_this_email?.reason && output.status !== "BLOCKED") errors.push("why_this_email.reason is required");
+  if (!Array.isArray(output.quality_feedback?.strengths) && output.status !== "BLOCKED") errors.push("quality_feedback.strengths is required");
   if (!output.first_email?.body && output.status !== "BLOCKED") errors.push("first_email.body is required when not blocked");
   if (output.first_email?.body && output.status !== "BLOCKED") {
     const count = wordCount(output.first_email.body);
@@ -807,6 +1045,7 @@ function validateBrainTwoOutput(output = {}) {
       if (lower.includes(banned)) errors.push(`first_email.body contains banned phrase: ${banned}`);
     }
     if (/book a meeting|schedule a call|hop on zoom/i.test(output.first_email.body)) errors.push("first_email.body contains a high-pressure CTA");
+    if (observationCount(output.first_email.body) !== 1) errors.push("first_email.body must include exactly one observation phrase");
   }
   if (!output.brain_three_handoff?.approval_required) errors.push("brain_three_handoff.approval_required must be true");
   const restrictedFollowUpPhrases = /checking in|just checking in|bumping this|wanted to circle back|following up|follow up|revolutionary|game changing|ai powered|next generation|cutting edge|state of the art|🔥|🚀|✨/i;
@@ -884,6 +1123,7 @@ module.exports = {
   RUNTIME_PROMPT,
   applyBrainTwoReviewState,
   duplicateBrainTwoRun,
+  evaluateEmailQualityGate,
   evaluateBrainTwoEligibility,
   flattenBrainOneOutput,
   runBrainTwo,

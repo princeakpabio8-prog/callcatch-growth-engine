@@ -162,6 +162,47 @@ Before final output, quality-check the email for:
 
 If any score would be below 9/10, rewrite before returning the final output.
 
+## Brain Two Quality Gate
+
+Every draft must pass the final quality layer before it is shown for approval.
+
+Score each first email with:
+
+- Email Quality Score, 0-100.
+- Confidence Score, 0-100.
+- Human Score, 0-100.
+
+Only drafts with at least 85 Email Quality and 85 Human Score may be marked `READY TO REVIEW`.
+
+Before returning the email, ask: "Would I personally send this to the owner of this business?"
+
+If the answer is no, rewrite once.
+
+If the rewrite still falls below threshold, mark it `MARK FOR MANUAL REVIEW`.
+
+The email must verify:
+
+- Sounds human.
+- Reads naturally aloud.
+- Uses one observation only.
+- Explains one clear problem.
+- Presents one idea.
+- Uses one CTA.
+- Feels low pressure.
+- Uses no hype.
+- Uses no buzzwords.
+- Uses no AI wording.
+- Uses no repeated phrases.
+- Stays under 120 words.
+
+Generate internal-only review fields:
+
+- why_this_email: evidence, reason, confidence.
+- quality_feedback: strengths and weaknesses.
+- email_health: quality, human, confidence, length, reading level, spam risk.
+
+Never include those review notes inside the email body.
+
 ## Output Contract
 
 The output must match `/schemas/brain-two-output.json`.

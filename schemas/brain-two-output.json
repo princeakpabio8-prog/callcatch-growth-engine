@@ -16,6 +16,12 @@
     "first_email",
     "follow_up_emails",
     "concise_cta",
+    "quality_check",
+    "email_quality_gate",
+    "why_this_email",
+    "quality_feedback",
+    "email_health",
+    "follow_up_quality_gates",
     "outreach_confidence",
     "supporting_evidence",
     "prohibited_claims",
@@ -127,6 +133,81 @@
       }
     },
     "concise_cta": { "type": "string" },
+    "quality_check": {
+      "type": "object",
+      "required": ["quality_score", "confidence_score", "human_score", "passed", "spam_risk", "reading_level"],
+      "properties": {
+        "quality_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "confidence_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "human_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "passed": { "type": "boolean" },
+        "spam_risk": { "enum": ["Low", "Medium", "High"] },
+        "reading_level": { "type": "number" }
+      }
+    },
+    "email_quality_gate": {
+      "type": "object",
+      "required": ["status", "quality_score", "confidence_score", "human_score", "email_health", "checklist", "quality_feedback", "self_review", "passed", "regeneration_attempted", "final_action"],
+      "properties": {
+        "status": { "enum": ["READY TO REVIEW", "MARK FOR MANUAL REVIEW"] },
+        "quality_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "confidence_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "human_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "email_health": { "type": "object" },
+        "checklist": { "type": "object" },
+        "quality_feedback": { "type": "object" },
+        "self_review": { "type": "object" },
+        "passed": { "type": "boolean" },
+        "regeneration_attempted": { "type": "boolean" },
+        "final_action": { "enum": ["READY TO REVIEW", "MARK FOR MANUAL REVIEW"] }
+      }
+    },
+    "why_this_email": {
+      "type": "object",
+      "required": ["evidence", "evidence_ids", "reason", "confidence"],
+      "properties": {
+        "evidence": { "type": "array", "items": { "type": "string" } },
+        "evidence_ids": { "type": "array", "items": { "type": "string" } },
+        "reason": { "type": "string" },
+        "confidence": { "type": "string" }
+      }
+    },
+    "quality_feedback": {
+      "type": "object",
+      "required": ["strengths", "weaknesses"],
+      "properties": {
+        "strengths": { "type": "array", "items": { "type": "string" } },
+        "weaknesses": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "email_health": {
+      "type": "object",
+      "required": ["quality", "human", "confidence", "length", "reading_level", "spam_risk"],
+      "properties": {
+        "quality": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "human": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "length": { "type": "integer", "minimum": 0 },
+        "reading_level": { "type": "number" },
+        "spam_risk": { "enum": ["Low", "Medium", "High"] }
+      }
+    },
+    "follow_up_quality_gates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["step", "stage_name", "status", "quality_score", "human_score", "confidence_score", "spam_risk"],
+        "properties": {
+          "step": { "type": "integer" },
+          "stage_name": { "type": "string" },
+          "status": { "enum": ["READY TO REVIEW", "MARK FOR MANUAL REVIEW"] },
+          "quality_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "human_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "confidence_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "spam_risk": { "enum": ["Low", "Medium", "High"] }
+        }
+      }
+    },
     "outreach_confidence": {
       "type": "object",
       "required": ["score", "level", "reasoning"],

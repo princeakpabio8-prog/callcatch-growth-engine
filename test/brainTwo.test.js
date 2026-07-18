@@ -4,6 +4,7 @@ const fs = require("node:fs");
 
 const {
   applyBrainTwoReviewState,
+  evaluateEmailQualityGate,
   evaluateBrainTwoEligibility,
   runBrainTwo,
   validateBrainTwoOutput
@@ -186,6 +187,60 @@ test("Brain Two first email sounds founder-written and references one specific w
   assert.match(email, /Worth a quick look|Happy to show you|short demo|show what I mean/i);
   assert.equal(result.output.quality_check.passed, true);
   assert.ok(Object.values(result.output.quality_check).filter(value => Number.isInteger(value)).every(value => value >= 9));
+});
+
+test("Brain Two quality gate scores approved emails before review", () => {
+  const result = runBrainTwo({ lead: lead(), brainOneRun: approvedBrainOne(), runId: "brain2-quality-gate" });
+  const gate = result.output.email_quality_gate;
+  assert.equal(gate.status, "READY TO REVIEW");
+  assert.ok(gate.quality_score >= 85);
+  assert.ok(gate.human_score >= 85);
+  assert.ok(gate.confidence_score >= 70);
+  assert.equal(gate.self_review.answer, "yes");
+  assert.equal(result.output.email_health.spam_risk, "Low");
+  assert.ok(result.output.email_health.length <= 120);
+});
+
+test("Brain Two quality gate regenerates once when the selected draft is weak", () => {
+  const result = runBrainTwo({ lead: lead(), brainOneRun: approvedBrainOne(), runId: "brain2-1" });
+  assert.equal(result.output.email_quality_gate.regeneration_attempted, true);
+  assert.equal(result.output.email_quality_gate.final_action, "READY TO REVIEW");
+  assert.ok(words(result.output.first_email.body) >= 90);
+  assert.ok(words(result.output.first_email.body) <= 120);
+});
+
+test("Brain Two quality gate flags spam risk and manual review for hype language", () => {
+  const gate = evaluateEmailQualityGate({
+    subject: "LIMITED OFFER",
+    body: "Hi there,\n\nI noticed your website mentions emergency service.\n\nThis revolutionary AI powered game changing best in class platform is guaranteed to change everything. Book a meeting now.\n\nBest,\nPrince",
+    observation: { sentence: "I noticed your website mentions emergency service.", evidence_ids: ["ev-dna"] },
+    evidenceIds: ["ev-dna"],
+    claims: ["Emergency service"],
+    cta: "Book a meeting now."
+  });
+  assert.equal(gate.status, "MARK FOR MANUAL REVIEW");
+  assert.equal(gate.passed, false);
+  assert.equal(gate.email_health.spam_risk, "High");
+  assert.match(gate.quality_feedback.weaknesses.join(" "), /Restricted wording|CTA|short/i);
+});
+
+test("Brain Two stores internal Why This Email and feedback outside the email body", () => {
+  const result = runBrainTwo({ lead: lead(), brainOneRun: approvedBrainOne(), runId: "brain2-why" });
+  assert.match(result.output.why_this_email.reason, /Evidence-based outreach/);
+  assert.ok(result.output.why_this_email.evidence.some(item => /emergency service/i.test(item)));
+  assert.ok(result.output.quality_feedback.strengths.length > 0);
+  assert.doesNotMatch(result.output.first_email.body, /WHY THIS EMAIL|Quality Score|Human Score|Spam Risk/i);
+});
+
+test("Brain Two quality gate evaluates follow-up drafts without sending", () => {
+  const result = runBrainTwo({ lead: lead(), brainOneRun: approvedBrainOne(), runId: "brain2-follow-up-gates" });
+  assert.equal(result.output.follow_up_quality_gates.length, 4);
+  for (const gate of result.output.follow_up_quality_gates) {
+    assert.ok(gate.quality_score >= 0 && gate.quality_score <= 100);
+    assert.ok(gate.human_score >= 0 && gate.human_score <= 100);
+    assert.match(gate.spam_risk, /Low|Medium|High/);
+  }
+  assert.equal(result.output.approval_state, "pending-review");
 });
 
 test("Brain Two rotates three founder outreach styles across prospects", () => {
