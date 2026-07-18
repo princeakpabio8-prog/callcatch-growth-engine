@@ -146,6 +146,65 @@
       font-size: 13px;
       font-weight: 800;
     }
+    .quick-metrics {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .quick-actions {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .quick-card {
+      min-height: 112px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 13px;
+      background: var(--panel);
+      color: var(--ink);
+      box-shadow: var(--shadow);
+      cursor: pointer;
+      text-align: left;
+      display: grid;
+      align-content: space-between;
+      gap: 10px;
+      touch-action: manipulation;
+      transition: transform .16s ease, border-color .16s ease, background .16s ease;
+    }
+    .quick-card:hover { border-color: rgba(17, 122, 75, .45); transform: translateY(-1px); }
+    .quick-card:active { transform: translateY(0); }
+    .quick-card strong { display: block; font-size: 15px; line-height: 1.2; }
+    .quick-card span { color: var(--muted); font-size: 12px; line-height: 1.35; }
+    .quick-count {
+      justify-self: start;
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 13px;
+      font-weight: 900;
+      background: var(--soft-blue);
+      color: var(--blue);
+    }
+    .quick-card.hot .quick-count { background: var(--soft-green); color: var(--green); }
+    .quick-card.warn .quick-count { background: var(--soft-amber); color: var(--amber); }
+    .quick-card.bad .quick-count { background: var(--soft-red); color: var(--red); }
+    .notification-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .global-search-panel {
+      display: none;
+      margin-bottom: 14px;
+    }
+    .global-search-panel.open { display: block; }
+    .global-results { display: grid; gap: 8px; margin-top: 10px; }
     .playbook { display: grid; grid-template-columns: 1.1fr .9fr; gap: 12px; align-items: start; }
     .steps { display: grid; gap: 8px; }
     .step {
@@ -370,6 +429,8 @@
         scroll-snap-align: start;
       }
       .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .quick-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .quick-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .grid, .map-grid, .send-center-grid { grid-template-columns: 1fr; }
       .work-grid, .form-grid, .market-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .checklist { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -424,6 +485,18 @@
       }
       .btn.small { min-height: 44px; font-size: 14px; }
       .stats, #sendingStats, #analyticsStats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .quick-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .quick-actions {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 9px;
+      }
+      .quick-card {
+        min-height: 118px;
+        padding: 14px;
+      }
+      .quick-card strong { font-size: 16px; }
+      .quick-card span { font-size: 13px; }
+      .quick-count { min-height: 32px; padding: 6px 10px; }
       .work-grid, .form-grid, .toolbar, .detail-grid, .playbook, .market-grid { grid-template-columns: 1fr; }
       .mobile-non-email { display: none !important; }
       .flow-strip { grid-template-columns: 1fr; }
@@ -533,6 +606,8 @@
       .send-filters { display: grid; grid-template-columns: 1fr; }
       .composer-foot { grid-template-columns: 1fr; }
       .stats, #sendingStats, #analyticsStats { grid-template-columns: 1fr; }
+      .quick-actions { grid-template-columns: 1fr; }
+      .quick-metrics { grid-template-columns: 1fr 1fr; }
       .nav-btn { min-width: 118px; padding: 11px 10px; }
       .panel, .queue-item, .lead-row { border-radius: 7px; }
       .lead-row, .queue-item { padding: 12px; }
@@ -569,6 +644,14 @@
     <main>
       <section class="view active" id="assistant">
         <div class="top"><div><h1>Daily AI Sales Assistant</h1><p class="sub">Your best prospects, follow-ups, demos, and pipeline value for today.</p></div><div class="actions"><button class="btn" id="themeBtn" type="button">Dark Mode</button><button class="btn primary" id="startGrowthBtn" type="button">▶ Start Daily Growth</button><button class="btn" id="refreshAssistantBtn" type="button">Refresh</button></div></div>
+        <div class="quick-metrics" id="quickMetrics"></div>
+        <div class="quick-actions" id="quickActions"></div>
+        <div class="notification-strip" id="attentionNotifications"></div>
+        <div class="global-search-panel panel" id="globalSearchPanel">
+          <label for="globalSearchInput">Search CallCatch</label>
+          <input id="globalSearchInput" placeholder="Search companies, leads, campaigns, conversations">
+          <div class="global-results" id="globalSearchResults"></div>
+        </div>
         <div class="flow-strip"><span>1. Discover email-ready leads</span><span>2. Review the email</span><span>3. Send once</span><span>4. Follow up from Pipeline</span></div>
         <div class="panel" style="margin-bottom:14px;">
           <div class="form-grid">
@@ -2259,10 +2342,177 @@
       }
       return sortLeadsForAction(candidates).slice(0, limit);
     }
+    function todayKey(){
+      return new Date().toISOString().slice(0, 10);
+    }
+    function discoveredToday(lead = {}){
+      const dates = [lead.createdAt, lead.discoveredAt, lead.addedAt, lead.lastUpdatedAt].filter(Boolean);
+      return dates.some(value => String(value).slice(0, 10) === todayKey());
+    }
+    function activeCampaignTasks(){
+      return queue.filter(item =>
+        item.channel === "email"
+        && !/^sent$|stopped|removed/i.test(item.status || "")
+        && (freshCampaignTask(item) || followupTask(item))
+      );
+    }
+    function quickMetricsData(){
+      const todaysLeads = leads.filter(lead => discoveredToday(lead) && !workedProspect(lead)).length;
+      const readyForReview = queue.filter(item => item.channel === "email" && /^needs approval/i.test(item.status || "") && freshCampaignTask(item)).length;
+      const repliesToday = inboxItems().filter(({ reply }) => String(reply.at || "").slice(0, 10) === todayKey()).length;
+      const meetingsBooked = leads.filter(lead => pipelineStage(lead) === "Demo Scheduled").length;
+      const runningCampaigns = activeCampaignTasks().filter(item => !/^paused/i.test(item.status || "")).length;
+      return { todaysLeads, readyForReview, repliesToday, meetingsBooked, runningCampaigns };
+    }
+    function renderQuickMetrics(){
+      const metrics = quickMetricsData();
+      const items = [
+        ["Today's Leads", metrics.todaysLeads],
+        ["Ready for Review", metrics.readyForReview],
+        ["Replies Today", metrics.repliesToday],
+        ["Meetings Booked", metrics.meetingsBooked],
+        ["Running Campaigns", metrics.runningCampaigns]
+      ];
+      const el = $("quickMetrics");
+      if (el) el.innerHTML = items.map(([label, value])=>`<div class="stat"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("");
+      return metrics;
+    }
+    function attentionNotifications(metrics = quickMetricsData()){
+      const notices = [];
+      if (metrics.repliesToday) notices.push(["New Reply", metrics.repliesToday, "hot"]);
+      if (metrics.meetingsBooked) notices.push(["Meeting Booked", metrics.meetingsBooked, "hot"]);
+      if (metrics.readyForReview) notices.push(["Email Ready", metrics.readyForReview, "warn"]);
+      if (!metrics.runningCampaigns && queue.some(item => /^sent$/i.test(item.status || ""))) notices.push(["Campaign Completed", "Review follow-ups", ""]);
+      return notices;
+    }
+    function renderAttentionNotifications(metrics){
+      const el = $("attentionNotifications");
+      if (!el) return;
+      const notices = attentionNotifications(metrics);
+      el.innerHTML = notices.length
+        ? notices.map(([label, value, tone])=>`<span class="tag ${tone}">${esc(label)}: ${esc(value)}</span>`).join("")
+        : `<span class="tag">All clear</span>`;
+    }
+    function quickActionData(metrics = quickMetricsData()){
+      const replies = inboxItems().length;
+      const meetings = leads.filter(lead => pipelineStage(lead) === "Demo Scheduled").length;
+      const active = activeCampaignTasks();
+      const paused = active.filter(item => /^paused/i.test(item.status || "")).length;
+      return [
+        { id: "review-emails", label: "Review Emails", count: metrics.readyForReview, detail: "Approve or edit waiting drafts", tone: metrics.readyForReview ? "warn" : "", action: "sendcenter" },
+        { id: "view-replies", label: "View Replies", count: replies, detail: "Open conversations needing response", tone: replies ? "hot" : "", action: "replies" },
+        { id: "meetings", label: "Meetings", count: meetings, detail: "See demos and booked calls", tone: meetings ? "hot" : "", action: "meetings" },
+        { id: "pause-campaigns", label: paused ? "Resume Campaigns" : "Pause Campaigns", count: active.length, detail: paused ? "Resume paused email tasks" : "Pause active outreach tasks", tone: active.length ? "warn" : "", action: "pause" },
+        { id: "search", label: "Search", count: "Find", detail: "Companies, leads, campaigns, replies", tone: "", action: "search" },
+        { id: "todays-leads", label: "Today's Leads", count: metrics.todaysLeads, detail: "Open today's opportunities", tone: metrics.todaysLeads ? "hot" : "", action: "today" }
+      ];
+    }
+    function renderQuickActions(){
+      const metrics = renderQuickMetrics();
+      renderAttentionNotifications(metrics);
+      const el = $("quickActions");
+      if (!el) return;
+      el.innerHTML = quickActionData(metrics).map(item=>`<button class="quick-card ${item.tone}" data-quick-action="${item.action}" type="button"><span class="quick-count">${esc(item.count)}</span><strong>${esc(item.label)}</strong><span>${esc(item.detail)}</span></button>`).join("");
+      document.querySelectorAll("[data-quick-action]").forEach(button=>button.onclick=()=>handleQuickAction(button.dataset.quickAction));
+    }
+    function handleQuickAction(action){
+      if (action === "sendcenter") {
+        sendCenterFilter = "approval";
+        switchView("sendcenter");
+        return;
+      }
+      if (action === "replies") {
+        switchView("automation");
+        setTimeout(()=>$("replyInbox")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+        return;
+      }
+      if (action === "meetings") {
+        const meetingLead = leads.find(lead => pipelineStage(lead) === "Demo Scheduled");
+        switchView("pipeline");
+        if (meetingLead) openPipelineDetail(meetingLead.id);
+        toast(meetingLead ? "Opened booked meeting" : "No booked meetings yet");
+        return;
+      }
+      if (action === "pause") {
+        toggleCampaignPause();
+        return;
+      }
+      if (action === "search") {
+        openGlobalSearch();
+        return;
+      }
+      if (action === "today") {
+        selectedId = sortLeadsForAction(leads.filter(lead => discoveredToday(lead) && !workedProspect(lead)))[0]?.id || topFreshLeads(1)[0]?.id || selectedId;
+        switchView("crm");
+      }
+    }
+    function toggleCampaignPause(){
+      const active = activeCampaignTasks();
+      if (!active.length) { toast("No active campaigns to pause"); return; }
+      const paused = active.filter(item => /^paused/i.test(item.status || ""));
+      const shouldResume = paused.length && paused.length >= active.length / 2;
+      active.forEach(item => {
+        if (shouldResume && /^paused/i.test(item.status || "")) {
+          item.status = item.pausedFromStatus || "Needs Approval";
+          item.resumedAt = now();
+        } else if (!shouldResume && !/^paused/i.test(item.status || "")) {
+          item.pausedFromStatus = item.status || "Needs Approval";
+          item.status = "Paused";
+          item.pausedAt = now();
+        }
+      });
+      save();
+      render();
+      syncCrm(true);
+      toast(shouldResume ? "Campaigns resumed" : "Campaigns paused");
+    }
+    function openGlobalSearch(){
+      const panel = $("globalSearchPanel");
+      if (!panel) return;
+      panel.classList.add("open");
+      $("globalSearchInput")?.focus();
+      renderGlobalSearchResults();
+    }
+    function globalSearchItems(query = ""){
+      const needle = query.trim().toLowerCase();
+      if (!needle) return [];
+      const items = [];
+      leads.forEach(lead => {
+        const text = [lead.business, lead.trade, lead.city, lead.state, lead.email, lead.phone, lead.website, ...(lead.timeline || []).map(item=>item.text)].join(" ");
+        if (text.toLowerCase().includes(needle)) items.push({ type: workedProspect(lead) ? "Pipeline" : "Lead", title: lead.business, detail: [lead.trade, lead.city, lead.state, lead.email].filter(Boolean).join(" | "), leadId: lead.id });
+        (lead.replies || []).forEach(reply => {
+          if ([reply.from, reply.body, reply.subject].join(" ").toLowerCase().includes(needle)) items.push({ type: "Reply", title: lead.business, detail: reply.body || reply.from || "Reply", leadId: lead.id, view: "automation" });
+        });
+      });
+      queue.forEach(item => {
+        const text = [item.business, item.title, item.body, item.status, item.to, item.recipient].join(" ");
+        if (text.toLowerCase().includes(needle)) items.push({ type: "Campaign", title: item.business || item.title || "Campaign task", detail: item.status || item.channel || "", taskId: item.id, view: "sendcenter" });
+      });
+      return items.slice(0, 12);
+    }
+    function renderGlobalSearchResults(){
+      const input = $("globalSearchInput");
+      const box = $("globalSearchResults");
+      if (!input || !box) return;
+      const results = globalSearchItems(input.value || "");
+      box.innerHTML = results.length ? results.map(item=>`<button class="work-item" data-global-result="${esc(item.leadId || item.taskId || "")}" data-global-view="${esc(item.view || (item.type === "Pipeline" ? "pipeline" : "crm"))}" type="button"><span class="tag">${esc(item.type)}</span><strong>${esc(item.title || "Result")}</strong><p class="hint">${esc(item.detail || "")}</p></button>`).join("") : `<p class="sub">${input.value ? "No matches yet." : "Start typing to search CallCatch."}</p>`;
+      document.querySelectorAll("[data-global-result]").forEach(button=>button.onclick=()=>{
+        const view = button.dataset.globalView || "crm";
+        if (view === "sendcenter") {
+          sendCenterFilter = "all";
+          switchView("sendcenter");
+          return;
+        }
+        selectedId = button.dataset.globalResult || selectedId;
+        if (view === "pipeline") openPipelineDetail(selectedId);
+        switchView(view);
+      });
+    }
     function renderAssistant(){
       const best = topFreshLeads(5);
       const sentKeys = sentEmailKeys();
       const freshOutreachCount = queue.reduce((count, item) => count + (freshCampaignTask(item, sentKeys) ? 1 : 0), 0);
+      renderQuickActions();
       $("bestProspects").innerHTML = best.length ? best.map(leadRowHtml).join("") : `<p class="sub">No prospects yet. Run Discovery to build your list.</p>`;
       $("assistantNotes").textContent = lastGrowthRun ? `Today's Opportunities\n\nNew Businesses: ${lastGrowthRun.newBusinesses}\nQualified: ${lastGrowthRun.qualified}\nEmails Ready: ${lastGrowthRun.emailsReady}\nLinkedIn Messages Ready: ${lastGrowthRun.linkedinReady}\nFollow-ups Due: ${lastGrowthRun.followUpsDue}\nReplies Yesterday: ${lastGrowthRun.repliesYesterday}\nDemo Requests: ${lastGrowthRun.demoRequests}\nRevenue Pipeline: ${money(lastGrowthRun.revenuePipeline)}\n\nSending status: ${lastGrowthRun.capabilities?.sendingStatus || "approval-first"}`
         : leads.length ? `Focus today:\n\n1. Work ${best[0]?.business || "your highest-fit fresh prospect"} first.\n2. Review ${freshOutreachCount} fresh outreach messages before sending anything.\n3. Handle already-contacted companies from Pipeline and Follow-ups only.\n4. Move to the next city when Fresh Leads reaches zero.` : "Click Start Daily Growth or run Discovery. The assistant will find, research, score, and queue outreach.";
@@ -3601,6 +3851,7 @@ Helping home service businesses recover missed revenue.`;
       $("refreshAssistantBtn").onclick=()=>syncEverywhere(false); $("themeBtn").onclick=()=>{ const dark=document.body.dataset.theme==="dark"; document.body.dataset.theme=dark?"":"dark"; $("themeBtn").textContent=dark?"Dark Mode":"Light Mode"; };
       $("saveSettingsBtn").onclick=()=>{ settings={team:$("teamMember").value,sender:$("senderName").value,demo:$("demoLink").value,mode:$("automationMode").value}; save(); toast("Settings saved"); };
       ["search","tradeFilter","stageFilter","territoryTrade","territoryStage"].forEach(id=>$(id).oninput=render);
+      if ($("globalSearchInput")) $("globalSearchInput").oninput=renderGlobalSearchResults;
       document.addEventListener("visibilitychange", ()=>{ if (!document.hidden) maybeAutoSync(); });
       window.addEventListener("focus", maybeAutoSync);
       setInterval(()=>queueAutoFollowupCheck(true), 10 * 60 * 1000);

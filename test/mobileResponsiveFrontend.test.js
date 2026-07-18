@@ -46,3 +46,30 @@ test("lead details expose mobile-friendly collapsible sections", () => {
     assert.match(html, /<details open><summary>Email Quality Report<\/summary>/);
   }
 });
+
+test("home dashboard exposes founder quick actions above informational content", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    assert.match(html, /id="quickMetrics"/);
+    assert.match(html, /id="quickActions"/);
+    assert.match(html, /id="attentionNotifications"/);
+    assert.match(html, /id="globalSearchPanel"/);
+    assert.ok(html.indexOf('id="quickActions"') < html.indexOf('class="flow-strip"'));
+    for (const label of ["Review Emails", "View Replies", "Meetings", "Pause Campaigns", "Search", "Today"]) {
+      assert.match(html, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    }
+  }
+});
+
+test("quick actions have live handlers for review, replies, meetings, pause, search and today", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    assert.match(html, /function renderQuickActions/);
+    assert.match(html, /function handleQuickAction/);
+    assert.match(html, /function toggleCampaignPause/);
+    assert.match(html, /function openGlobalSearch/);
+    assert.match(html, /function globalSearchItems/);
+    assert.match(html, /data-quick-action/);
+    assert.match(html, /sendCenterFilter = "approval"/);
+  }
+});
