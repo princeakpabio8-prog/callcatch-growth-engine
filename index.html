@@ -904,7 +904,7 @@
       const text = await response.text();
       if (!text.trim()) {
         const message = path.includes("/api/brain-one/analyze")
-          ? "The server returned an empty response while starting Brain One. Please try again."
+          ? "The server returned an empty response while starting business analysis. Please try again."
           : "The server returned an empty response. Please try again.";
         const error = new Error(message);
         error.status = response.status;
@@ -919,7 +919,7 @@
       } catch (parseError) {
         console.warn("Invalid API JSON response", { path, status: response.status, preview: text.slice(0, 180), error: parseError.message });
         const message = path.includes("/api/brain-one/analyze")
-          ? "The server returned an invalid response while starting Brain One."
+          ? "The server returned an invalid response while starting business analysis."
           : response.status === 502 || response.status === 503
             ? "The server is temporarily unavailable. Please try again."
             : "The server returned an invalid response.";
@@ -1464,7 +1464,7 @@
     }
     function brainScoreStatus(metaValue){
       if (!metaValue || !metaValue.status) return "";
-      return metaValue.status === "insufficient_evidence" ? "Insufficient evidence" : metaValue.status;
+      return metaValue.status === "insufficient_evidence" ? "Not enough module evidence" : metaValue.status;
     }
     function brainModuleScore(scoreMeta = {}, key){
       return scoreMeta.module_scores?.[key] || {};
@@ -1472,7 +1472,21 @@
     function scoreMini(label, value, status = ""){
       return `<div class="mini"><span>${esc(label)}</span><strong>${esc(value)}</strong>${status ? `<small>${esc(status)}</small>` : ""}</div>`;
     }
-    function brainOneScoreGridHtml({ combinedOutput = {}, output = {}, decision = {}, decisionTone = "warn", overallStatus = "completed", opportunityPriority = null } = {}){
+    function brainOneScoreGridHtml({ combinedOutput = {}, output = {}, decision = {}, decisionTone = "warn", opportunityPriority = null } = {}){
+      const scoreMeta = combinedOutput.score_metadata || {};
+      const modules = scoreMeta.module_scores || {};
+      const decisionEngine = combinedOutput.decision_engine || {};
+      const fallbackOpportunity = opportunityPriority;
+      const fallbackCallCatch = decision.callcatch_opportunity_score;
+      const rows = [
+        scoreMini("Opportunity", brainScoreValue(modules.opportunity || scoreMeta.opportunity_priority, fallbackOpportunity), brainScoreStatus(modules.opportunity || scoreMeta.opportunity_priority)),
+        scoreMini("Confidence", decision.decision_confidence || modules.opportunity?.confidence || "medium"),
+        scoreMini("Contactability", brainScoreValue(modules.contactability, decisionEngine.contactability_score), brainScoreStatus(modules.contactability)),
+        `<div class="mini"><span>Recommendation</span><strong><span class="tag ${decisionTone}">${esc(decisionEngine.recommendation_status || decision.recommendation_status || decisionEngine.decision || decision.decision || "Review Manually")}</span></strong></div>`
+      ];
+      return `<div class="detail-grid">${rows.join("")}</div>`;
+    }
+    function brainOneAdvancedScoreGridHtml({ combinedOutput = {}, output = {}, decision = {}, decisionTone = "warn", overallStatus = "completed", opportunityPriority = null } = {}){
       const scoreMeta = combinedOutput.score_metadata || {};
       const modules = scoreMeta.module_scores || {};
       const decisionEngine = combinedOutput.decision_engine || {};
@@ -1480,8 +1494,8 @@
       const fallbackOpportunity = opportunityPriority;
       const fallbackCallCatch = decision.callcatch_opportunity_score;
       const rows = [
-        scoreMini("Overall", overallStatus),
-        `<div class="mini"><span>Decision</span><strong><span class="tag ${decisionTone}">${esc(decision.recommendation_status || decision.decision || decisionEngine.decision || "UNKNOWN")}</span></strong></div>`,
+        scoreMini("Status", overallStatus),
+        `<div class="mini"><span>Contact Decision</span><strong><span class="tag ${decisionTone}">${esc(decisionEngine.decision || decision.decision || "UNKNOWN")}</span></strong></div>`,
         scoreMini("Business Foundation", brainScoreValue(modules.business_foundation, "-"), brainScoreStatus(modules.business_foundation)),
         scoreMini("Business DNA", brainScoreValue(modules.business_dna, "-"), brainScoreStatus(modules.business_dna)),
         scoreMini("Trust", brainScoreValue(modules.trust, "-"), brainScoreStatus(modules.trust)),
@@ -1494,6 +1508,18 @@
         scoreMini("CallCatch Score", brainScoreValue(scoreMeta.callcatch_opportunity, fallbackCallCatch), brainScoreStatus(scoreMeta.callcatch_opportunity))
       ];
       return `<div class="detail-grid">${rows.join("")}</div>`;
+    }
+    function brainOneDecisionSummaryHtml({ combinedOutput = {}, output = {}, decision = {} } = {}){
+      const decisionEngine = combinedOutput.decision_engine || {};
+      const scores = combinedOutput.score_metadata?.module_scores || {};
+      const recommendation = decisionEngine.recommendation_status || decision.recommendation_status || decisionEngine.decision || decision.decision || "Review Manually";
+      const nextAction = decisionEngine.next_action || "Review the evidence and decide the next sales step.";
+      const why = decisionEngine.why_recommended || decision.primary_reason || output.brain_two_handoff?.summary || "The recommendation is based on the available public evidence.";
+      const scoreWhy = [
+        scores.opportunity?.explanation,
+        scores.contactability?.explanation
+      ].filter(Boolean).slice(0,2);
+      return `<div class="queue-item" style="margin-top:12px;"><div class="lead-top"><div><strong>What needs attention now</strong><p class="hint">Recommendation: ${esc(recommendation)}</p></div><span class="tag ${recommendation === "Generate Outreach" ? "hot" : recommendation === "Skip" ? "bad" : "warn"}">${esc(recommendation)}</span></div><p>${esc(why)}</p><p class="hint"><strong>Next Action:</strong> ${esc(nextAction)}</p>${scoreWhy.length ? `<ul>${scoreWhy.map(item=>`<li>${esc(item)}</li>`).join("")}</ul>` : ""}</div>`;
     }
     function brainZeroLatestRun(leadId){
       return (brainZeroRuns || [])
@@ -1524,7 +1550,7 @@
     function brainZeroPanelHtml(lead = {}){
       const run = brainZeroLatestRun(lead.id);
       if (!run) {
-        return `<div class="panel"><div class="lead-top"><div><h3>Brain Zero Evidence Collection</h3><p class="sub">Collect public evidence first. This does not analyze, write, queue, or send outreach.</p></div><span class="tag warn">Not collected</span></div><div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-zero-run="${lead.id}">Collect Evidence</button></div><p class="hint" id="brainZeroStatus-${lead.id}"></p></div>`;
+        return `<div class="panel"><div class="lead-top"><div><h3>Research Collection</h3><p class="sub">Collect public evidence first. This does not analyze, write, queue, or send outreach.</p></div><span class="tag warn">Not collected</span></div><div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-zero-run="${lead.id}">Collect Evidence</button></div><p class="hint" id="brainZeroStatus-${lead.id}"></p></div>`;
       }
       const statusTone = run.status === "completed" ? "hot" : run.status === "failed" ? "bad" : "warn";
       const canContinue = run.status === "completed" || run.status === "partial";
@@ -1532,18 +1558,18 @@
       const busy = ["queued","running"].includes(run.status);
       const partial = run.status === "partial";
       const interrupted = JSON.stringify(run.errors || []).includes("run_interrupted_by_server_restart");
-      return `<div class="panel"><div class="lead-top"><div><h3>Brain Zero Evidence Collection</h3><p class="sub">Run ${esc(run.run_id || run.id)} | ${esc(formatDateTime(run.started_at || run.createdAt))}</p></div><span class="tag ${statusTone}">${esc(run.status)}</span></div>
-        <div class="detail-grid"><div class="mini"><span>Evidence</span><strong>${esc(run.evidence_count ?? 0)}</strong></div><div class="mini"><span>Sources</span><strong>${esc(run.source_count ?? 0)}</strong></div><div class="mini"><span>Pages</span><strong>${esc(run.pages_scanned ?? 0)}</strong></div><div class="mini"><span>Quality</span><strong>${esc(run.overall_evidence_quality || run.evidence_package?.overall_evidence_quality || "unknown")}</strong></div><div class="mini"><span>Coverage</span><strong>${esc(run.evidence_package?.evidence_coverage?.coverage_score ?? run.evidence_coverage?.coverage_score ?? "-")}</strong></div><div class="mini"><span>Brain One Ready</span><strong>${esc((run.evidence_package?.brain_one_ready ?? run.brain_one_ready) ? "Yes" : "No")}</strong></div></div>
+      return `<div class="panel"><div class="lead-top"><div><h3>Research Collection</h3><p class="sub">Run ${esc(run.run_id || run.id)} | ${esc(formatDateTime(run.started_at || run.createdAt))}</p></div><span class="tag ${statusTone}">${esc(run.status)}</span></div>
+        <div class="detail-grid"><div class="mini"><span>Evidence</span><strong>${esc(run.evidence_count ?? 0)}</strong></div><div class="mini"><span>Sources</span><strong>${esc(run.source_count ?? 0)}</strong></div><div class="mini"><span>Pages</span><strong>${esc(run.pages_scanned ?? 0)}</strong></div><div class="mini"><span>Quality</span><strong>${esc(run.overall_evidence_quality || run.evidence_package?.overall_evidence_quality || "unknown")}</strong></div><div class="mini"><span>Coverage</span><strong>${esc(run.evidence_package?.evidence_coverage?.coverage_score ?? run.evidence_coverage?.coverage_score ?? "-")}</strong></div><div class="mini"><span>Ready for Analysis</span><strong>${esc((run.evidence_package?.brain_one_ready ?? run.brain_one_ready) ? "Yes" : "No")}</strong></div></div>
         <div class="insights">${brainZeroProviderTags(run)}</div>
         ${!(run.evidence_package?.brain_one_ready ?? run.brain_one_ready) ? `<p class="hint">Missing critical coverage: ${esc((run.evidence_package?.missing_critical_categories || run.missing_critical_categories || []).join(", ") || "unknown")}</p>` : ""}
         ${run.status === "running" ? `<p class="hint">Evidence collection is running in the background. You can keep using the app.</p>` : ""}
         ${run.status === "queued" ? `<p class="hint">Evidence collection will begin when the current run finishes.</p>` : ""}
-        ${partial ? `<p class="hint">Partial evidence is usable, but Brain One may have more unknowns. You can still continue manually.</p>` : ""}
+        ${partial ? `<p class="hint">Partial evidence is usable, but business analysis may have more unknowns. You can still continue manually.</p>` : ""}
         ${interrupted ? `<p class="hint">Evidence collection was interrupted by a server restart. Please run it again.</p>` : ""}
-        ${run.status === "failed" ? `<p class="hint">Brain Zero did not collect usable evidence. Run again or check the website/source details.</p>` : ""}
+        ${run.status === "failed" ? `<p class="hint">Research did not collect usable evidence. Run again or check the website/source details.</p>` : ""}
         ${(run.warnings || []).length ? `<details><summary>Collection Limitations</summary>${objectSummaryHtml((run.warnings || []).slice(0,8))}</details>` : ""}
         <details><summary>Technical Details</summary><div class="script" style="min-height:80px;">${esc(JSON.stringify({ providers: Object.fromEntries(Object.entries(run.providers || {}).map(([key,item])=>[key,{status:item.status,duration_ms:item.duration_ms,usable_evidence_count:item.usable_evidence_count,coverage_status:item.coverage_status,errors:item.errors,warnings:item.warnings,evidence:item.evidence?.length || 0}])), evidence_coverage: run.evidence_package?.evidence_coverage || run.evidence_coverage || null, provider_diagnostics: run.evidence_package?.provider_diagnostics || {}, errors: run.errors || [], hash: run.evidence_package_hash || "" }, null, 2))}</div></details>
-        <div class="actions" style="margin-top:10px;">${busy ? `<button class="btn small" disabled>Evidence running</button>` : `<button class="btn small" data-brain-zero-run="${lead.id}">Run Again</button><button class="btn small" data-brain-zero-force="${lead.id}">Force Rescan</button>`}${canContinue ? `<button class="btn primary small" data-brain-zero-continue="${lead.id}|${run.run_id || run.id}|${(partial || !brainOneReady) ? "1" : "0"}">${brainOneReady ? "Continue to Brain One" : "Override to Brain One"}</button>` : ""}</div>
+        <div class="actions" style="margin-top:10px;">${busy ? `<button class="btn small" disabled>Research running</button>` : `<button class="btn small" data-brain-zero-run="${lead.id}">Run Again</button><button class="btn small" data-brain-zero-force="${lead.id}">Force Rescan</button>`}${canContinue ? `<button class="btn primary small" data-brain-zero-continue="${lead.id}|${run.run_id || run.id}|${(partial || !brainOneReady) ? "1" : "0"}">${brainOneReady ? "Analyze Business" : "Analyze Anyway"}</button>` : ""}</div>
         <p class="hint" id="brainZeroStatus-${lead.id}"></p></div>`;
     }
     async function refreshBrainZeroRuns(leadId){
@@ -1567,12 +1593,12 @@
     async function runBrainZero(leadId, force = false){
       const status = $(`brainZeroStatus-${leadId}`);
       if (status) status.textContent = force ? "Force rescanning public evidence..." : "Collecting public evidence...";
-      toast(force ? "Brain Zero force rescan started" : "Brain Zero started");
+      toast(force ? "Research rescan started" : "Research started");
       try {
         const result = await api("/api/brain-zero/run", { method:"POST", body: JSON.stringify({ leadId, force }) });
         if (result.queued) {
           brainZeroRuns.unshift({ ...(result.run || {}), started_at: now(), business_id: leadId });
-          toast("Brain Zero is busy");
+          toast("Research is busy");
           render();
           return;
         }
@@ -1588,14 +1614,14 @@
           toast(result.cached ? "Using cached evidence" : "Evidence ready");
         }
       } catch(error) {
-        if (status) status.textContent = `Brain Zero could not start: ${error.message}`;
-        toast("Brain Zero failed");
+        if (status) status.textContent = `Research could not start: ${error.message}`;
+        toast("Research failed");
       }
     }
     function brainOneReportHtml(lead = {}){
       const run = brainOneLatestRun(lead.id);
       if (!run) {
-        return `<div class="panel"><div class="lead-top"><div><h3>Brain One Opportunity Intelligence</h3><p class="sub">Manual analysis only. Collect Brain Zero evidence above, then continue here. This will not send or queue outreach.</p></div><span class="tag warn">Waiting for evidence</span></div><p class="hint" id="brainOneStatus-${lead.id}">Use Continue to Brain One from the Brain Zero panel after evidence collection.</p></div>`;
+        return `<div class="panel"><div class="lead-top"><div><h3>Business Analysis</h3><p class="sub">Manual analysis only. Collect research above, then analyze the business. This will not send or queue outreach.</p></div><span class="tag warn">Waiting for research</span></div><p class="hint" id="brainOneStatus-${lead.id}">Use Analyze Business from the Research Collection panel after evidence collection.</p></div>`;
       }
       const combinedOutput = run.phaseAOutput || run.validatedOutput || {};
       const output = flattenBrainOneOutput(combinedOutput);
@@ -1609,33 +1635,36 @@
       const scoreMeta = combinedOutput.score_metadata || {};
       const statusTone = run.executionStatus === "completed" ? "hot" : ["failed","validation_failed"].includes(run.executionStatus) ? "bad" : "warn";
       const approval = run.approvalStatus || "pending-review";
-      const validationMessage = "Brain One completed its analysis, but the structured report could not be validated. Please run again.";
+      const validationMessage = "Business analysis completed, but the structured report could not be validated. Please run again.";
       const opportunityScores = opportunities.map(item=>Number(item.opportunity_priority_score)).filter(Number.isFinite);
       const opportunityPriority = opportunityScores.length ? Math.max(...opportunityScores) : null;
       const decisionTone = decision.decision === "CONTACT" ? "hot" : "warn";
       const overallStatus = combinedOutput.overall_status || run.overallStatus || "completed";
-      return `<div class="panel"><div class="lead-top"><div><h3>Brain One Opportunity Intelligence</h3><p class="sub">Run ${esc(run.id)} | ${esc(formatDateTime(run.createdAt))}</p></div><span class="tag ${statusTone}">${esc(run.executionStatus)}</span></div>
+      return `<div class="panel"><div class="lead-top"><div><h3>Business Analysis</h3><p class="sub">Run ${esc(run.id)} | ${esc(formatDateTime(run.createdAt))}</p></div><span class="tag ${statusTone}">${esc(run.executionStatus)}</span></div>
         ${run.executionStatus === "failed" ? `<p class="hint">${esc(run.errorDetails?.message || "Analysis failed. Check NVIDIA_API_KEY or model output.")}</p><p class="hint">Stopped at: ${esc(run.errorDetails?.failureStage || run.currentStage || "unknown")}</p>` : ""}
         ${run.executionStatus === "validation_failed" ? `<p class="hint">${esc(run.errorDetails?.message || validationMessage)}</p><p class="hint">Stopped at: ${esc(run.errorDetails?.failureStage || run.currentStage || "validation")}</p>${run.errorDetails?.parserError ? `<p class="hint">Parser: ${esc(run.errorDetails.parserError)}</p>` : ""}` : ""}
-        ${run.executionStatus === "running" ? `<p class="hint">Brain One is analyzing this business. Current step: ${esc(run.currentStage || "running")}.</p>` : ""}
-        ${run.executionStatus === "completed" ? `${brainOneScoreGridHtml({ combinedOutput, output, decision, decisionTone, overallStatus, opportunityPriority })}
-        <p class="hint">${esc(decision.primary_reason || output.brain_two_handoff?.summary || "Brain One report is ready.")}</p>
-        <div class="insights">${moduleStatusHtml(combinedOutput)}</div>
+        ${run.executionStatus === "running" ? `<p class="hint">Business analysis is running. Current step: ${esc(run.currentStage || "running")}.</p>` : ""}
+        ${run.executionStatus === "completed" ? `${brainOneScoreGridHtml({ combinedOutput, output, decision, decisionTone, opportunityPriority })}
+        ${brainOneDecisionSummaryHtml({ combinedOutput, output, decision })}
         <div class="insights"><span class="tag hot">Confirmed</span><span class="tag">Inferred</span><span class="tag warn">Unknown</span></div>
-        <details open><summary>Business DNA</summary>${objectSummaryHtml(output.business_dna || {})}</details>
-        <details><summary>Evidence and Confidence</summary><h4>Confirmed</h4>${claimTags(output.confirmed_facts || [])}<h4>Inferred</h4>${claimTags(output.inferences || [])}</details>
+        <details><summary>Advanced Analysis</summary>${brainOneAdvancedScoreGridHtml({ combinedOutput, output, decision, decisionTone, overallStatus, opportunityPriority })}<div class="insights">${moduleStatusHtml(combinedOutput)}</div></details>
+        <details><summary>Business DNA</summary>${objectSummaryHtml(output.business_dna || {})}</details>
+        <details><summary>Digital Health</summary>${objectSummaryHtml(output.digital_health || {})}</details>
+        <details><summary>AI Discoverability</summary>${objectSummaryHtml(output.ai_discoverability || {})}</details>
+        <details><summary>Trust Analysis</summary>${objectSummaryHtml((combinedOutput.score_metadata?.module_scores || {}).trust || {})}</details>
+        <details><summary>Evidence</summary><h4>Confirmed</h4>${claimTags(output.confirmed_facts || [])}<h4>Inferred</h4>${claimTags(output.inferences || [])}</details>
         <details><summary>Hidden Opportunities</summary>${opportunities.slice(0,5).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.title || item.opportunity || "Opportunity")}</strong><span class="tag">${esc(item.opportunity_priority_score ?? "-")}</span></div><p class="hint">${esc(item.specific_observed_problem || "")}</p><p>${esc(item.why_it_matters || "")}</p><p class="hint">First test: ${esc(item.recommended_first_test || "unknown")} | CallCatch: ${esc(item.callcatch_relevance || "unknown")}</p><p class="hint">Evidence: ${esc((item.evidence_ids || []).join(", ") || "none")}</p></div>`).join("") || `<p class="sub">No hidden opportunities listed.</p>`}</details>
         <details><summary>Money Left on the Table</summary>${moneyLeftHtml(output.money_left_on_table || {})}</details>
         <details><summary>AI Opportunity Radar</summary>${Object.entries(output.ai_opportunity_radar || {}).map(([key,item])=>`<div class="queue-item"><div class="lead-top"><strong>${esc(key.replaceAll("_"," "))}</strong><span class="tag">${esc(item.status || "unknown")}</span></div><p class="hint">${esc(item.opportunity || "")}</p><p class="hint">Confidence: ${esc(item.confidence || "unknown")}</p></div>`).join("") || `<p class="sub">No radar data.</p>`}</details>
         <details><summary>Why We Chose You</summary>${objectSummaryHtml(output.why_we_chose_you || {})}</details>
         <details><summary>One-Day Action Plan</summary>${objectSummaryHtml(output.one_day_action_plan || {})}</details>
         <details><summary>Risks and Unknowns</summary><h4>Risks</h4>${claimTags(risks)}<h4>Unknowns</h4>${objectSummaryHtml(output.unknowns || [])}</details>
-        <details><summary>Brain Two Handoff</summary>${objectSummaryHtml(output.brain_two_handoff || {})}</details>
+        <details><summary>Outreach Draft Handoff</summary>${objectSummaryHtml(output.brain_two_handoff || {})}</details>
         <details><summary>Technical Details</summary><div class="script" style="min-height:80px;">${esc(JSON.stringify({ overall_status: overallStatus, completed_modules: combinedOutput.completed_modules || [], failed_modules: combinedOutput.failed_modules || [], module_diagnostics: combinedOutput.module_diagnostics || run.moduleDiagnostics || {}, module_statuses: Object.fromEntries(Object.entries(combinedOutput.modules || {}).map(([key,item])=>[key,{status:item.status, normalized_fields:item.normalized_fields, parser_errors:item.parser_errors, validation_errors:item.validation_errors}])) }, null, 2))}</div></details>
-        <details open><summary>Full Business Growth Blueprint</summary><div class="script markdown" style="margin-top:10px;">${blueprint ? markdownToHtml(blueprint) : "<p>No founder-facing blueprint returned.</p>"}</div></details>
+        <details><summary>Business Growth Blueprint</summary><div class="script markdown" style="margin-top:10px;">${blueprint ? markdownToHtml(blueprint) : "<p>No founder-facing blueprint returned.</p>"}</div></details>
         <p class="hint">Phase A ${esc(run.phaseADurationMs || 0)}ms | Phase B ${esc(run.phaseBDurationMs || 0)}ms | finish ${esc(run.finishReason || "unknown")}</p>
         <p class="hint">Approval status: ${esc(approval)}. Approval does not trigger outbound email.</p>
-        <div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn primary small" data-brain-one-approve="${run.id}|${lead.id}">Approve for CRM/Brain Two</button><button class="btn small" data-brain-one-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-one-analyze="${lead.id}">Analyze Again</button></div>` : `<div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn small" data-brain-one-analyze="${lead.id}">Run Again</button></div>`}
+        <div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn primary small" data-brain-one-approve="${run.id}|${lead.id}">Approve for Outreach Draft</button><button class="btn small" data-brain-one-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-one-analyze="${lead.id}">Analyze Again</button></div>` : `<div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn small" data-brain-one-analyze="${lead.id}">Run Again</button></div>`}
         <p class="hint" id="brainOneStatus-${lead.id}"></p></div>`;
     }
     function brainTwoEmailHtml(email = {}, index = 0){
@@ -1652,16 +1681,16 @@
       const decision = flat.contact_decision?.decision || flat.contact_decision?.recommendation_status || "";
       const canGenerate = brainOne?.executionStatus === "completed" && brainOneApproved && decision !== "DO NOT CONTACT" && !manualTest;
       const blockedReasons = [
-        !brainOne ? "Run Brain One first." : "",
-        brainOne && brainOne.executionStatus !== "completed" ? "Brain One must complete first." : "",
-        brainOne && !brainOneApproved ? "Manually approve Brain One first." : "",
-        decision === "DO NOT CONTACT" ? "Brain One decision is DO NOT CONTACT." : "",
-        manualTest ? "Manual Test mode blocks Brain Two." : ""
+        !brainOne ? "Run Business Analysis first." : "",
+        brainOne && brainOne.executionStatus !== "completed" ? "Business Analysis must complete first." : "",
+        brainOne && !brainOneApproved ? "Manually approve Business Analysis first." : "",
+        decision === "DO NOT CONTACT" ? "Recommendation is DO NOT CONTACT." : "",
+        manualTest ? "Manual Test mode blocks outreach drafts." : ""
       ].filter(Boolean);
       if (!run) {
-        return `<div class="panel"><div class="lead-top"><div><h3>Brain Two Outreach Intelligence</h3><p class="sub">Generates outreach strategy only after approved Brain One. This will not send or queue email.</p></div><span class="tag ${canGenerate ? "warn" : "bad"}">${canGenerate ? "Ready" : "Blocked"}</span></div>
-          ${blockedReasons.length ? `<p class="hint">${esc(blockedReasons.join(" "))}</p>` : `<p class="hint">Brain Two can generate outreach intelligence from the approved Brain One report.</p>`}
-          <div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-two-generate="${lead.id}" ${canGenerate ? "" : "disabled"}>Generate Brain Two</button></div>
+        return `<div class="panel"><div class="lead-top"><div><h3>Outreach Draft</h3><p class="sub">Generates outreach strategy only after approved Business Analysis. This will not send or queue email.</p></div><span class="tag ${canGenerate ? "warn" : "bad"}">${canGenerate ? "Ready" : "Blocked"}</span></div>
+          ${blockedReasons.length ? `<p class="hint">${esc(blockedReasons.join(" "))}</p>` : `<p class="hint">Outreach Draft can generate messaging from the approved business report.</p>`}
+          <div class="actions" style="margin-top:10px;"><button class="btn primary small" data-brain-two-generate="${lead.id}" ${canGenerate ? "" : "disabled"}>Generate Outreach Draft</button></div>
           <p class="hint" id="brainTwoStatus-${lead.id}"></p></div>`;
       }
       const output = run.output || {};
@@ -1674,7 +1703,7 @@
       const gate = output.email_quality_gate || {};
       const health = output.email_health || {};
       const why = output.why_this_email || {};
-      return `<div class="panel"><div class="lead-top"><div><h3>Brain Two Outreach Intelligence</h3><p class="sub">Run ${esc(run.id)} | ${esc(formatDateTime(run.createdAt))}</p></div><span class="tag ${tone}">${esc(output.status || run.executionStatus)}</span></div>
+      return `<div class="panel"><div class="lead-top"><div><h3>Outreach Draft</h3><p class="sub">Run ${esc(run.id)} | ${esc(formatDateTime(run.createdAt))}</p></div><span class="tag ${tone}">${esc(output.status || run.executionStatus)}</span></div>
         <div class="detail-grid"><div class="mini"><span>Eligibility</span><strong>${esc(eligibility.status || "unknown")}</strong></div><div class="mini"><span>Persona</span><strong>${esc(persona.persona || "-")}</strong></div><div class="mini"><span>Offer</span><strong>${esc(offer.name || "-")}</strong></div><div class="mini"><span>Confidence</span><strong>${esc(confidence.score ?? "-")}</strong><small>${esc(confidence.level || "")}</small></div><div class="mini"><span>Approval</span><strong>${esc(run.approvalStatus || output.approval_state || "pending-review")}</strong></div></div>
         ${(eligibility.reasons || []).length ? `<p class="hint">${esc(eligibility.reasons.join(" "))}</p>` : ""}
         <details open><summary>Selected Outreach Strategy</summary><p><strong>Angle:</strong> ${esc(angle.angle || "")}</p><p class="hint">${esc(angle.reasoning || "")}</p><p><strong>Offer:</strong> ${esc(offer.description || "")}</p><p class="hint">${esc(output.offer_fit_explanation || offer.reasoning || "")}</p><p><strong>CTA:</strong> ${esc(output.concise_cta || "")}</p></details>
@@ -1686,8 +1715,8 @@
         <details><summary>Supporting Evidence</summary>${(output.supporting_evidence || []).map(item=>`<div class="queue-item"><div class="lead-top"><strong>${esc(item.claim)}</strong><span class="tag">${esc(item.claim_type)}</span></div><p class="hint">Evidence: ${esc((item.evidence_ids || []).join(", ") || "none")}</p></div>`).join("") || `<p class="sub">No evidence listed.</p>`}</details>
         <details><summary>Prohibited Claims</summary>${objectSummaryHtml(output.prohibited_claims || [])}</details>
         <details><summary>Brain Three Handoff</summary>${objectSummaryHtml(output.brain_three_handoff || {})}</details>
-        <p class="hint">Brain Two approval does not send or queue email.</p>
-        <div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn primary small" data-brain-two-approve="${run.id}|${lead.id}">Approve Brain Two</button><button class="btn small" data-brain-two-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-two-generate="${lead.id}">Regenerate</button></div>
+        <p class="hint">Approval does not send or queue email.</p>
+        <div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn primary small" data-brain-two-approve="${run.id}|${lead.id}">Approve Outreach Draft</button><button class="btn small" data-brain-two-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-two-generate="${lead.id}">Regenerate</button></div>
         <p class="hint" id="brainTwoStatus-${lead.id}"></p></div>`;
     }
     async function refreshBrainOneRuns(leadId){
@@ -1715,10 +1744,10 @@
       document.querySelectorAll(`[data-brain-one-analyze="${leadId}"], [data-brain-zero-continue^="${leadId}|"]`).forEach(button=>{
         button.disabled = true;
         button.dataset.originalText = button.textContent;
-        button.textContent = "Starting Brain One...";
+        button.textContent = "Starting Analysis...";
       });
-      if (status) status.textContent = "Starting Brain One...";
-      toast("Starting Brain One");
+      if (status) status.textContent = "Starting business analysis...";
+      toast("Starting business analysis");
       try {
         const result = await api("/api/brain-one/analyze", {
           method:"POST",
@@ -1736,8 +1765,8 @@
           brainOneRuns = [...byId.values()];
         }
         render();
-        if (status) status.textContent = result.status === "already_running" ? "Brain One is already running. Watching progress..." : "Brain One started. Watching progress...";
-        toast(result.status === "already_running" ? "Brain One already running" : "Brain One started");
+        if (status) status.textContent = result.status === "already_running" ? "Business analysis is already running. Watching progress..." : "Business analysis started. Watching progress...";
+        toast(result.status === "already_running" ? "Business analysis already running" : "Business analysis started");
         if (runId) {
           const finalRun = await pollBrainOne(leadId, runId);
           try {
@@ -1746,14 +1775,14 @@
           } catch {}
           render();
           if (finalRun?.executionStatus === "completed") {
-            toast("Brain One report ready");
+            toast("Business analysis ready");
           } else if (finalRun?.executionStatus) {
-            toast(`Brain One ${finalRun.executionStatus}`);
+            toast(`Business analysis ${finalRun.executionStatus}`);
           }
         }
       } catch(error) {
-        if (status) status.textContent = `Brain One could not start: ${error.message}`;
-        toast("Brain One failed");
+        if (status) status.textContent = `Business analysis could not start: ${error.message}`;
+        toast("Business analysis failed");
         try {
           const crm = await api("/api/crm");
           applyServerState(crm);
@@ -1774,7 +1803,7 @@
         const crm = await api("/api/crm");
         applyServerState(crm);
         render();
-        toast(approved ? "Brain One approved for handoff" : "Brain One rejected");
+        toast(approved ? "Business analysis approved for outreach draft" : "Business analysis rejected");
         return result;
       } catch(error) {
         toast(error.message);
@@ -1793,8 +1822,8 @@
       const status = $(`brainTwoStatus-${leadId}`);
       if (brainTwoStarting.has(leadId)) return;
       brainTwoStarting.add(leadId);
-      if (status) status.textContent = "Generating Brain Two outreach intelligence...";
-      toast("Brain Two starting");
+      if (status) status.textContent = "Generating outreach draft...";
+      toast("Outreach draft starting");
       try {
         const brainOne = brainOneLatestRun(leadId);
         const result = await api("/api/brain-two/generate", { method:"POST", body: JSON.stringify({ leadId, brainOneRunId: brainOne?.id || "" }) });
@@ -1806,10 +1835,10 @@
         const crm = await api("/api/crm");
         applyServerState(crm);
         render();
-        toast("Brain Two ready for review");
+        toast("Outreach draft ready for review");
       } catch(error) {
-        if (status) status.textContent = `Brain Two blocked: ${error.message}`;
-        toast("Brain Two blocked");
+        if (status) status.textContent = `Outreach draft blocked: ${error.message}`;
+        toast("Outreach draft blocked");
       } finally {
         brainTwoStarting.delete(leadId);
       }
@@ -1820,7 +1849,7 @@
         const crm = await api("/api/crm");
         applyServerState(crm);
         render();
-        toast(approved ? "Brain Two approved" : "Brain Two rejected");
+        toast(approved ? "Outreach draft approved" : "Outreach draft rejected");
         return result;
       } catch(error) {
         toast(error.message);
@@ -3003,7 +3032,7 @@
       $("leadDetail").innerHTML = `<div class="lead-top"><div><h2>${esc(l.business)}</h2><p class="sub">${esc(l.trade)} | ${esc(l.phone || "No phone")} | ${esc(l.email || "No email")} | ${esc(l.website || l.mapsUrl || "")}</p></div><div class="insights">${manualTest ? `<span class="tag warn">Manual Test</span>` : ""}<span class="tag ${tagClass(l.callCatchFitScore)}">${esc(l.aiOpportunityLevel)}</span></div></div>
       <div class="detail-grid"><div class="mini"><span>Status</span><strong>Fresh</strong></div><div class="mini"><span>Fit Score</span><strong>${l.callCatchFitScore}</strong></div><div class="mini"><span>Lead Quality</span><strong>${l.deepQualityScore || l.aiLeadQualityScore || l.confidenceScore || 0}</strong></div><div class="mini"><span>Next Step</span><strong>${l.email ? "Review Email" : "Find Email"}</strong></div></div>
       <div class="insights">${[...(l.aiInsights||[]), ...(l.websiteIntelligence?.leadQualitySignals || []), l.leadQualityReason || ""].filter(Boolean).slice(0,14).map(i=>`<span class="tag">${esc(i)}</span>`).join("") || `<span class="tag">No scan insights yet</span>`}</div>
-      ${manualTest ? `<p class="hint">Manual Test mode is locked for safety. You can collect evidence and run Brain One, but email, SMS, follow-ups, and Brain Two handoff stay disabled until you convert it.</p>` : ""}
+      ${manualTest ? `<p class="hint">Manual Test mode is locked for safety. You can collect evidence and run Business Analysis, but email, SMS, follow-ups, and outreach drafts stay disabled until you convert it.</p>` : ""}
       <p class="sub">${esc(l.recommendedSalesAngle || "")}</p>
       <div class="form-grid"><div><label>Stage</label><select id="detailStage">${STAGES.map(s=>`<option ${s===l.stage?"selected":""}>${s}</option>`).join("")}</select></div><div><label>Owner</label><input id="owner" value="${esc(l.owner||"")}"></div><div><label>Next Follow-up</label><input id="nextFollow" type="date" value="${esc(l.nextFollowUp||"")}"></div><div><label>Assigned</label><input id="assigned" value="${esc(l.assignedTeamMember||settings.team)}"></div></div>
       <details open><summary>Notes</summary><textarea id="notes" aria-label="Lead notes">${esc(l.notes||"")}</textarea></details>
@@ -3367,7 +3396,7 @@
     }
     async function createManualProspect(collectEvidence = false, duplicateMode = ""){
       const status = $("manualProspectStatus");
-      if (status) status.textContent = collectEvidence ? "Creating lead and starting Brain Zero..." : "Saving manual lead...";
+      if (status) status.textContent = collectEvidence ? "Creating lead and starting research..." : "Saving manual lead...";
       try {
         const payload = { ...manualProspectPayload(), action: collectEvidence ? "collect" : "save", collectEvidence, duplicateMode };
         const result = await api("/api/leads/manual", { method:"POST", body: JSON.stringify(payload) });

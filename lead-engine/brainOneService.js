@@ -1456,6 +1456,29 @@ function evidenceHas(item = {}, patterns = []) {
   return patterns.some(pattern => pattern.test(text));
 }
 
+const TRUST_SIGNAL_PATTERNS = [
+  /review|rating|stars?|testimonial/i,
+  /\bbbb\b|better business bureau/i,
+  /licen[sc]e|certif|insured|bonded/i,
+  /warranty|guarantee/i,
+  /trust badge|verified|accredited/i,
+  /emergency|24\/7|after.?hours/i,
+  /service area|serving|local/i,
+  /partner|case stud|customer proof/i
+];
+
+function trustEvidenceFromContext(contextPackage = {}) {
+  const evidence = Array.isArray(contextPackage.evidenceLog) ? contextPackage.evidenceLog : [];
+  return evidence.filter(item => {
+    if (!item || typeof item !== "object") return false;
+    const provider = evidenceProviderOf(item);
+    const category = evidenceCategoryOf(item);
+    const field = evidenceFieldOf(item);
+    return /trust|review|license|directory|identity|website|feature|content/i.test(`${provider} ${category} ${field}`)
+      || evidenceHas(item, TRUST_SIGNAL_PATTERNS);
+  });
+}
+
 function evidenceMatchesScoringModule(moduleKey, item = {}) {
   const provider = evidenceProviderOf(item);
   const category = evidenceCategoryOf(item);
@@ -1651,17 +1674,24 @@ function scoreFutureReadiness(flat = {}, contextPackage = {}) {
   });
 }
 
-function scoreTrust(flat = {}) {
+function scoreTrust(flat = {}, contextPackage = {}) {
   const dna = flat.business_dna || {};
   const confirmed = flat.confirmed_facts || [];
   const signals = listField(dna.trust_signals);
-  const score = signals.length || confirmed.length ? Math.min(100, 45 + signals.length * 12 + confirmed.length * 8) : null;
+  const contextTrustEvidence = trustEvidenceFromContext(contextPackage);
+  const contextSignalCount = contextTrustEvidence.filter(item => evidenceHas(item, TRUST_SIGNAL_PATTERNS)).length;
+  const score = signals.length || confirmed.length || contextSignalCount
+    ? Math.min(100, 45 + signals.length * 12 + confirmed.length * 8 + contextSignalCount * 10)
+    : null;
   return scoreCard("trust", "Trust", score, {
     confidence: dna.confidence,
-    explanation: score === null ? "Trust evidence was not found." : "Trust is scored from public proof such as certifications, partners, testimonials, reviews, policies, and transparency signals.",
-    evidenceIds: [...evidenceIdList(dna), ...confirmed.flatMap(evidenceIdList)],
-    componentsUsed: ["trust_signals", "confirmed_facts"],
-    componentsMissing: score === null ? ["trust_signals"] : []
+    explanation: score === null ? "No public trust signals such as reviews, licenses, certifications, warranties, emergency service, service areas, or proof badges were found in the available evidence." : "Trust is scored from public proof such as reviews, BBB/license/certification signals, warranty or emergency-service language, service-area proof, partners, testimonials, policies, and transparency signals.",
+    evidenceIds: uniqueArray([...evidenceIdList(dna), ...confirmed.flatMap(evidenceIdList), ...evidenceIds(contextTrustEvidence)]),
+    evidenceCategories: evidenceCategories(contextTrustEvidence),
+    evidenceReceived: contextTrustEvidence.length,
+    expectedEvidence: ["reviews", "BBB", "licenses", "certifications", "trust badges", "warranty", "emergency service", "service areas", "testimonials"],
+    componentsUsed: uniqueArray(["trust_signals", "confirmed_facts", contextSignalCount ? "research trust evidence" : ""].filter(Boolean)),
+    componentsMissing: score === null ? ["public_trust_signals"] : []
   });
 }
 
@@ -1730,17 +1760,41 @@ function decisionEngineFromScores(moduleScores = {}, flat = {}) {
     moduleScores.trust?.value
   ]);
   const modelDecision = flat.contact_decision || {};
+  const hasWeakContactability = contactability !== null && contactability < 35;
+  const hasStrongBusiness = businessQuality !== null && businessQuality >= 65;
   const decision = contactability !== null && contactability < 35
     ? "DO NOT CONTACT"
     : opportunity !== null && opportunity < 25
       ? "DO NOT CONTACT"
       : modelDecision.decision || "DO NOT CONTACT";
-  const reason = decision === "DO NOT CONTACT" && contactability !== null && contactability < 35
+  const reason = decision === "DO NOT CONTACT" && hasWeakContactability
     ? "Excellent business signals may exist, but outreach feasibility is low because no strong verified contact path was found."
     : modelDecision.primary_reason || "Decision is based on independent module scores.";
+  const recommendationStatus = hasWeakContactability && hasStrongBusiness
+    ? "Find Better Contact"
+    : decision === "CONTACT" && opportunity !== null && opportunity >= 55
+      ? "Generate Outreach"
+      : decision === "CONTACT"
+        ? "Review Manually"
+        : opportunity !== null && opportunity < 25
+          ? "Skip"
+          : "Review Manually";
+  const nextAction = recommendationStatus === "Find Better Contact"
+    ? "Find a verified owner, email, phone, LinkedIn profile, or contact form before creating outreach."
+    : recommendationStatus === "Generate Outreach"
+      ? "Approve the business analysis, then generate an outreach draft for manual review."
+      : recommendationStatus === "Skip"
+        ? "Do not spend time on this prospect unless new evidence appears."
+        : "Review the evidence and decide whether to research contacts or move on.";
+  const why = hasWeakContactability && hasStrongBusiness
+    ? "The business appears worthwhile, but the contact path is too weak for clean outreach."
+    : reason;
   return {
     decision,
     reason,
+    recommendation_status: recommendationStatus,
+    next_action: nextAction,
+    why_recommended: why,
     business_quality_score: businessQuality,
     sales_opportunity_score: averageScore([opportunity, contactability, moduleScores.decision?.value]),
     contactability_score: contactability,
@@ -1783,7 +1837,7 @@ function calculateScoreMetadata(combined = {}, contextPackage = {}) {
   module_scores.digital_health = scoreDigitalHealth(flat, contextPackage);
   module_scores.ai_discoverability = scoreAiDiscoverability(flat, contextPackage);
   module_scores.future_readiness = scoreFutureReadiness(flat, contextPackage);
-  module_scores.trust = scoreTrust(flat);
+  module_scores.trust = scoreTrust(flat, contextPackage);
   module_scores.opportunity = scoreOpportunity(flat, module_scores);
   module_scores.contactability = scoreContactability(flat);
   module_scores.decision = scoreCard("decision", "Decision Engine", contactScore, {

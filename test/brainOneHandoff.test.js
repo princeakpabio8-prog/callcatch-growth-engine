@@ -104,8 +104,8 @@ test("Brain One stale running jobs are recovered after server restart", () => {
 test("frontend parser handles empty and invalid Brain One responses safely", () => {
   assert.match(dashboardSource, /async function parseApiResponse/);
   assert.match(dashboardSource, /response\.text\(\)/);
-  assert.match(dashboardSource, /The server returned an empty response while starting Brain One/);
-  assert.match(dashboardSource, /The server returned an invalid response while starting Brain One/);
+  assert.match(dashboardSource, /The server returned an empty response while starting business analysis/);
+  assert.match(dashboardSource, /The server returned an invalid response while starting business analysis/);
   assert.doesNotMatch(dashboardSource, /const payload = await response\.json\(\)/);
 });
 

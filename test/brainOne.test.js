@@ -1083,9 +1083,53 @@ test("independent module scores preserve strong business quality when contactabi
   assert.ok(scores.ai_discoverability.value >= 50);
   assert.equal(scores.contactability.value, 0);
   assert.equal(result.output.decision_engine.decision, "DO NOT CONTACT");
+  assert.equal(result.output.decision_engine.recommendation_status, "Find Better Contact");
+  assert.match(result.output.decision_engine.next_action, /verified owner|email|phone|contact form/i);
   assert.match(result.blueprintMarkdown, /Business Foundation: \d+\/100/);
   assert.match(result.blueprintMarkdown, /Contactability: 0\/100/);
   assert.doesNotMatch(result.blueprintMarkdown, /Business Foundation: Not scored|Business Foundation: Failed/i);
+});
+
+test("Brain Zero trust signals prevent insufficient trust when the model omits trust details", async () => {
+  const context = enterpriseEvidenceContext("Trust Signal Services", "https://trustsignal.example", "HVAC");
+  let calls = 0;
+  const result = await runBrainOne(context, {
+    model: "test-model",
+    callModel: async () => {
+      calls += 1;
+      const full = sampleOutput(context);
+      if (calls === 1) return JSON.stringify({ ...moduleOutput(context, "foundation"), confirmed_facts: [] });
+      if (calls === 2) return JSON.stringify({
+        business_dna: { ...full.business_dna, trust_signals: [], evidence_ids: ["ev-enterprise-identity-001"], confidence: "medium" },
+        digital_health: full.digital_health,
+        ai_discoverability: full.ai_discoverability,
+        future_readiness: full.future_readiness
+      });
+      if (calls === 3) return moduleJson(context, "opportunities");
+      if (calls === 4) return moduleJson(context, "strategic_interpretation");
+      if (calls === 5) return JSON.stringify({
+        contact_decision: {
+          ...full.contact_decision,
+          decision: "DO NOT CONTACT",
+          decision_confidence: "low",
+          primary_reason: "No verified outbound contact path.",
+          supporting_evidence: [],
+          disqualifying_factors: ["No verified contact path."],
+          information_gaps: ["No verified email or phone."],
+          callcatch_opportunity_score: null,
+          evidence_ids: []
+        },
+        brain_two_handoff: full.brain_two_handoff
+      });
+      return "# Business Growth Blueprint\n\n## Opportunity Summary\nUse deterministic rendering.";
+    }
+  });
+  const trust = result.output.score_metadata.module_scores.trust;
+  assert.ok(trust.value >= 55);
+  assert.equal(trust.status, "assessed");
+  assert.match(trust.explanation, /reviews|BBB|license|certification|warranty|emergency-service|service-area/i);
+  assert.ok(trust.evidence_ids.includes("ev-enterprise-trust-001"));
+  assert.notEqual(trust.diagnostics.reason_score_could_not_be_generated, "No usable module-specific evidence was available.");
 });
 
 test("Brain Zero evidence powers digital, AI, and future scores for enterprise validation fixtures", async () => {

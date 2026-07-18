@@ -101,3 +101,23 @@ test("Fresh Leads explains the simple review-send-pipeline flow", () => {
     assert.doesNotMatch(html, /Research \+ Approve & Send/);
   }
 });
+
+test("Business Analysis shows action-first summary and hides detailed scores", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    assert.match(html, /<h3>Business Analysis<\/h3>/);
+    assert.match(html, /What needs attention now/);
+    assert.match(html, /Opportunity/);
+    assert.match(html, /Confidence/);
+    assert.match(html, /Contactability/);
+    assert.match(html, /Recommendation/);
+    assert.match(html, /Next Action/);
+    assert.match(html, /<details><summary>Advanced Analysis<\/summary>/);
+    assert.match(html, /<details><summary>Business DNA<\/summary>/);
+    assert.match(html, /<details><summary>Digital Health<\/summary>/);
+    assert.match(html, /<details><summary>AI Discoverability<\/summary>/);
+    assert.match(html, /<details><summary>Trust Analysis<\/summary>/);
+    assert.match(html, /<details><summary>Business Growth Blueprint<\/summary>/);
+    assert.doesNotMatch(html, /<details open><summary>Full Business Growth Blueprint<\/summary>/);
+  }
+});
