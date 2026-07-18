@@ -3261,7 +3261,7 @@
       const emailTasks = queue.filter(task => task.channel === "email");
       const followTasks = emailTasks
         .filter(task => task.sequenceStep || /follow/i.test(task.title || ""))
-        .filter(task => !/stopped/i.test(task.status || ""))
+        .filter(task => !/^sent$|stopped/i.test(task.status || ""))
         .sort((a,b)=>new Date(a.dueAt || a.createdAt || 0)-new Date(b.dueAt || b.createdAt || 0));
       const waiting = emailTasks
         .filter(task => task.status === "Sent" && !task.sequenceStep)
@@ -3642,19 +3642,19 @@
       const angle = weaknessProfile(lead);
       const subject = step === "final"
         ? `Subject: Last note for ${business}`
-        : `Subject: Following up with ${business}`;
+        : `Subject: Small thought for ${business}`;
       const opener = step === "final"
-        ? `I wanted to close the loop on my note about missed calls at ${business}.`
-        : `I wanted to follow up on my note about missed calls at ${business}.`;
+        ? `I will leave this here for now.`
+        : `One thing that stood out was the missed-call risk around ${business}.`;
       return `${subject}
 
 Hi ${business} team,
 
 ${opener}
 
-The main reason I reached out is simple: ${angle.pain}. CallCatch helps by texting missed callers within seconds, so they stay engaged instead of calling the next company.
+The idea is simple: ${angle.pain}. CallCatch texts missed callers within seconds, so they stay engaged instead of calling the next company.
 
-If this is worth a quick look, I would be happy to show you the workflow in about 10 minutes.
+If useful, I can show what I mean.
 
 Best,
 

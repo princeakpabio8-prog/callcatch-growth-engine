@@ -73,3 +73,16 @@ test("quick actions have live handlers for review, replies, meetings, pause, sea
     assert.match(html, /sendCenterFilter = "approval"/);
   }
 });
+
+test("frontend fallback follow-ups avoid stale automated language and hide sent tasks", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    assert.match(html, /function followupDraftBody/);
+    assert.match(html, /Small thought for/);
+    assert.match(html, /I will leave this here for now/);
+    assert.match(html, /!\s*\/\^sent\$\|stopped\/i\.test/);
+    assert.doesNotMatch(html, /Subject: Following up with/);
+    assert.doesNotMatch(html, /I wanted to follow up on my note/);
+    assert.doesNotMatch(html, /I wanted to close the loop/);
+  }
+});

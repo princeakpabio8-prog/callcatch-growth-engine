@@ -169,15 +169,15 @@ function sequenceEmailBody(lead, stepKey) {
   const city = [lead.city, lead.state].filter(Boolean).join(", ") || lead.area || "your area";
   const revenue = Number(lead.revenueOpportunityEstimate || 0);
   const revenueLine = revenue
-    ? `The reason I thought it was worth flagging is that one recovered missed call every few days could represent roughly $${revenue.toLocaleString()}/month in booked work for a business like yours.`
-    : `The reason I thought it was worth flagging is that even a few recovered missed callers each month can matter.`;
+    ? `For a business like yours, even one recovered missed call every few days could represent roughly $${revenue.toLocaleString()}/month in booked work.`
+    : `Even a few recovered missed callers each month can matter for a busy service team.`;
   const subject = stepKey === "followup-1"
-    ? `Subject: Quick follow-up for ${lead.business}`
-    : `Subject: Closing the loop for ${lead.business}`;
+    ? `Subject: Small thought for ${lead.business}`
+    : `Subject: Last note for ${lead.business}`;
   if (stepKey === "followup-1") {
-    return `${subject}\n\nHi ${lead.business} team,\n\nJust following up on my note after looking at ${lead.business} in ${city}.\n\nThe main opportunity I saw was ${profile.weakness || "missed calls"}: ${profile.pain || "new customers often move on when they cannot reach someone quickly"}.\n\n${revenueLine}\n\nWorth a quick 10-minute walkthrough this week?\n\nBest,\n\nPrince Esien\nFounder, CallCatch\nEmail: hello@callcatch.site\nWeb: https://callcatch.site\n\nHelping home service businesses recover missed revenue.`;
+    return `${subject}\n\nHi ${lead.business} team,\n\nOne thing that stood out from ${city} was ${profile.weakness || "missed calls"}: ${profile.pain || "new customers often move on when they cannot reach someone quickly"}.\n\n${revenueLine}\n\nCallCatch keeps the first touch alive by texting missed callers within seconds, so your team can respond when free.\n\nIf useful, I can show what I mean.\n\nBest,\n\nPrince Esien\nFounder, CallCatch\nEmail: hello@callcatch.site\nWeb: https://callcatch.site\n\nHelping home service businesses recover missed revenue.`;
   }
-  return `${subject}\n\nHi ${lead.business} team,\n\nI will close the loop after this.\n\nMy quick thought was simple: ${profile.proof || "CallCatch texts missed callers instantly and routes the next step back into the CRM"}.\n\nIf ${profile.weakness || "missed calls"} is already handled, no worries. If not, I can show you how the missed-caller response works in less than 10 minutes.\n\nWould Tuesday or Wednesday be a bad time?\n\nBest,\n\nPrince Esien\nFounder, CallCatch\nEmail: hello@callcatch.site\nWeb: https://callcatch.site\n\nHelping home service businesses recover missed revenue.`;
+  return `${subject}\n\nHi ${lead.business} team,\n\nI will leave this here for now.\n\nThe thought is simple: ${profile.proof || "CallCatch texts missed callers instantly and routes the next step back into the CRM"}.\n\nIf ${profile.weakness || "missed calls"} is already handled, perfect. If not, a fast text reply can keep more urgent callers from moving on.\n\nIf missed-call recovery becomes useful later, happy to help.\n\nBest,\n\nPrince Esien\nFounder, CallCatch\nEmail: hello@callcatch.site\nWeb: https://callcatch.site\n\nHelping home service businesses recover missed revenue.`;
 }
 
 function followUpPlanFromTask(task = {}, lead = {}, queue = [], now = new Date()) {
