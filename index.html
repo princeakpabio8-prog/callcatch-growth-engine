@@ -767,8 +767,9 @@
       </section>
 
       <section class="view" id="crm">
-        <div class="top"><div><h1>Prospect CRM</h1><p class="sub">CRM shows uncontacted prospects. Once emailed, replied, or moved forward, they live in Pipeline.</p></div><div class="actions"><button class="btn" id="exportCsvBtn" type="button">CSV</button><button class="btn" id="exportExcelBtn" type="button">Excel</button><button class="btn" id="exportJsonBtn" type="button">JSON</button><button class="btn" id="copySelectedBtn" type="button">Copy Selected</button><button class="btn" id="pdfBtn" type="button">PDF Report</button></div></div>
-        <div class="grid"><div class="panel"><div class="toolbar"><input id="search" placeholder="Search prospects"><select id="tradeFilter"><option value="">All trades</option></select><select id="stageFilter"><option value="">CRM Inbox</option></select></div><p class="hint" id="crmInboxHint">Contacted prospects are moved to Pipeline automatically.</p><div id="leadList" class="lead-list"></div></div><div class="panel" id="leadDetail"><h2>No prospect selected</h2><p class="sub">Run discovery or import leads to begin.</p></div></div>
+        <div class="top"><div><h1>Fresh Leads</h1><p class="sub">New companies you have not contacted yet. Review the email first; sent prospects move to Pipeline automatically.</p></div><div class="actions"><button class="btn" id="exportCsvBtn" type="button">CSV</button><button class="btn" id="exportExcelBtn" type="button">Excel</button><button class="btn" id="exportJsonBtn" type="button">JSON</button><button class="btn" id="copySelectedBtn" type="button">Copy Selected</button><button class="btn" id="pdfBtn" type="button">PDF Report</button></div></div>
+        <div class="flow-strip"><span>1. Fresh lead</span><span>2. Review email</span><span>3. Send from Email Queue</span><span>4. Track in Pipeline</span></div>
+        <div class="grid"><div class="panel"><div class="toolbar"><input id="search" placeholder="Search fresh leads"><select id="tradeFilter"><option value="">All trades</option></select><select id="stageFilter"><option value="">Fresh Inbox</option></select></div><p class="hint" id="crmInboxHint">Fresh Leads only shows uncontacted prospects. Already emailed companies are in Pipeline.</p><div id="leadList" class="lead-list"></div></div><div class="panel" id="leadDetail"><h2>No fresh lead selected</h2><p class="sub">Run Discovery to find new companies, then tap Review Email.</p></div></div>
       </section>
 
       <section class="view" id="pipeline"><div class="top"><div><h1>Pipeline</h1><p class="sub">Every emailed or contacted prospect appears here on mobile and desktop.</p></div><div class="actions"><button class="btn" id="recoverPipelineBtn" type="button">Refresh Contacted</button><button class="btn primary" id="restoreResendBtn" type="button">Restore from Resend</button></div></div><div class="panel" style="margin-bottom:14px;"><div class="lead-top"><div><h2>Pipeline Memory</h2><p class="sub" id="pipelineMemoryText">Checking saved contacted history...</p></div><span class="tag" id="pipelineMemoryStorage">Storage</span></div><div class="stats" id="pipelineMemoryStats"></div></div><div class="panel" style="margin-bottom:14px;"><div class="lead-top"><div><h2>Already Contacted</h2><p class="sub">Prospects with sent emails, replies, or last contact history.</p></div><span class="tag hot" id="contactedCount">0</span></div><div class="queue" id="contactedPipelineList"></div></div><div class="pipeline" id="pipelineBoard"></div></section>
@@ -1039,9 +1040,9 @@
       });
     }
     function nextFreshAction(lead = {}){
-      if (lead.email) return { label:"Research + Draft", tone:"primary", title:"Scan the website, refresh the email, and queue outreach." };
-      if (lead.website || lead.facebook) return { label:"Find Email + Draft", tone:"primary", title:"Scan the website and public pages for an email, then draft outreach if found." };
-      return { label:"Research Lead", tone:"", title:"Open the lead and add a website or email before sending." };
+      if (lead.email) return { label:"Review Email", tone:"primary", title:"Create the email draft and open the review queue." };
+      if (lead.website || lead.facebook) return { label:"Find Email", tone:"primary", title:"Scan public pages for an email, then open the review queue if found." };
+      return { label:"Add Details", tone:"", title:"Open the lead and add a website or email first." };
     }
     function formatDateTime(value){
       if (!value) return "";
@@ -2264,7 +2265,7 @@
       if (!lead) { toast("Lead not found"); return false; }
       if (workedProspect(lead)) { toast("Already contacted. Use Pipeline for follow-up."); return false; }
       selectedId = lead.id;
-      const label = sendImmediately ? "Researching, approving, and sending..." : "Researching and drafting...";
+      const label = sendImmediately ? "Researching, approving, and sending..." : "Preparing email for review...";
       toast(label);
       const existingIds = new Set(queue.map(item => item.id));
       const drafts = await queueOutreach(lead, false, { scan: true });
@@ -2283,7 +2284,7 @@
       if (!emailDraft.to && !emailDraft.recipient) {
         sendCenterFilter = "missing";
         save();
-        render();
+        switchView("sendcenter");
         toast("Research finished, but no email was found yet.");
         return false;
       }
@@ -2298,8 +2299,9 @@
         return sendNow(emailDraft.id);
       }
       sendCenterFilter = "approval";
-      render();
-      toast("Draft ready for approval");
+      switchView("sendcenter");
+      setTimeout(()=>openComposer(emailDraft.id), 80);
+      toast("Email ready to review");
       return true;
     }
     function statData(){
@@ -2777,7 +2779,7 @@
       const visible = tasks.filter(item => sendCenterFilter === "all" || sendCategory(item) === sendCenterFilter);
       const emptyText = {
         ready: "No approved emails ready. Review drafts first, or run Discovery for more email-ready prospects.",
-        approval: "No drafts need review. Open Discovery to find fresh prospects, then tap Research + Draft.",
+        approval: "No drafts need review. Open Discovery to find fresh prospects, then tap Review Email.",
         missing: "No drafts are missing recipient details.",
         paused: "Sending is paused by the safety limit. CallCatch will let you continue when capacity resets.",
         failed: "No failed messages right now.",
@@ -2970,7 +2972,7 @@
     function leadRowHtml(l){
       const emailStatus = leadEmailStatus(l);
       const action = nextFreshAction(l);
-      return `<div class="lead-row ${l.id===selectedId?"active":""}" data-id="${l.id}"><div class="lead-top"><div class="lead-name">${esc(l.business)}</div><span class="tag ${tagClass(l.deepQualityScore || l.callCatchFitScore)}">${l.deepQualityScore || l.callCatchFitScore}</span></div><div class="meta"><span>${esc(l.trade)}</span><span>${esc([l.city,l.state].filter(Boolean).join(", ") || l.area || "")}</span><span>${esc(l.stage)}</span><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}${emailStatus.detail ? ` ${esc(emailStatus.detail)}` : ""}</span>${l.email ? `<span class="tag hot">Email Ready</span>` : `<span class="tag bad">Needs Email</span>`}${l.researchDepth ? `<span class="tag">Research: ${esc(l.researchDepth)}</span>` : ""}${l.phone ? `<span class="tag">Phone</span>` : ""}</div><div class="actions" style="margin-top:10px;"><button class="btn ${action.tone} small" data-smart-outreach="${l.id}" title="${esc(action.title)}">${esc(action.label)}</button><button class="btn small" data-open-fresh="${l.id}">Open</button></div></div>`;
+      return `<div class="lead-row ${l.id===selectedId?"active":""}" data-id="${l.id}"><div class="lead-top"><div class="lead-name">${esc(l.business)}</div><span class="tag ${tagClass(l.deepQualityScore || l.callCatchFitScore)}">${l.deepQualityScore || l.callCatchFitScore}</span></div><div class="meta"><span class="tag">Not contacted</span><span>${esc(l.trade)}</span><span>${esc([l.city,l.state].filter(Boolean).join(", ") || l.area || "")}</span><span class="tag ${emailStatus.className}">${esc(emailStatus.label)}${emailStatus.detail ? ` ${esc(emailStatus.detail)}` : ""}</span>${l.email ? `<span class="tag hot">Email Ready</span>` : `<span class="tag bad">Needs Email</span>`}${l.researchDepth ? `<span class="tag">Research: ${esc(l.researchDepth)}</span>` : ""}</div><div class="actions" style="margin-top:10px;"><button class="btn ${action.tone} small" data-smart-outreach="${l.id}" title="${esc(action.title)}">${esc(action.label)}</button><button class="btn small" data-open-fresh="${l.id}">Details</button></div></div>`;
     }
     function bindFreshLeadActions(){
       document.querySelectorAll(".lead-row").forEach(row=>row.onclick=event=>{ if (!event.target.closest("button")) { selectedId=row.dataset.id; render(); } });
@@ -2985,7 +2987,7 @@
       if ($("crmInboxHint")) {
         $("crmInboxHint").textContent = stage
           ? `Showing fresh ${stage} records only. Contacted prospects live in Pipeline.`
-          : `${pipelineCount} contacted prospect${pipelineCount === 1 ? "" : "s"} moved to Pipeline. CRM Inbox shows uncontacted prospects only.`;
+          : `${pipelineCount} contacted prospect${pipelineCount === 1 ? "" : "s"} moved to Pipeline. Fresh Leads shows uncontacted prospects only.`;
       }
       $("leadList").innerHTML = visible.map(leadRowHtml).join("") || (stage
         ? `<p class="sub">No ${esc(stage)} prospects found here.</p>`
@@ -2994,18 +2996,18 @@
     }
     function renderDetail(){
       const l = selected();
-      if(!l || workedProspect(l)){ $("leadDetail").innerHTML = `<h2>No fresh CRM prospect selected</h2><p class="sub">Go to Discovery for new prospects. Already emailed companies are kept in Pipeline, Follow-ups, and Sent History.</p>`; return; }
+      if(!l || workedProspect(l)){ $("leadDetail").innerHTML = `<h2>No fresh lead selected</h2><p class="sub">Go to Discovery for new companies. Already emailed prospects are kept in Pipeline, Follow-ups, and Sent History.</p>`; return; }
       const sentEmails = leadSentEmails(l);
       const conversation = leadConversation(l);
       const manualTest = !!(l.testProspect || l.manualTest || l.outreachDisabled || l.analysis_mode === "manual_test");
       $("leadDetail").innerHTML = `<div class="lead-top"><div><h2>${esc(l.business)}</h2><p class="sub">${esc(l.trade)} | ${esc(l.phone || "No phone")} | ${esc(l.email || "No email")} | ${esc(l.website || l.mapsUrl || "")}</p></div><div class="insights">${manualTest ? `<span class="tag warn">Manual Test</span>` : ""}<span class="tag ${tagClass(l.callCatchFitScore)}">${esc(l.aiOpportunityLevel)}</span></div></div>
-      <div class="detail-grid"><div class="mini"><span>Fit Score</span><strong>${l.callCatchFitScore}</strong></div><div class="mini"><span>Lead Quality</span><strong>${l.deepQualityScore || l.aiLeadQualityScore || l.confidenceScore || 0}</strong></div><div class="mini"><span>Website</span><strong>${l.websiteQualityScore||0}</strong></div><div class="mini"><span>Follow-up</span><strong>${esc(l.followUpStatus || l.responsePriority || "Not started")}</strong></div></div>
+      <div class="detail-grid"><div class="mini"><span>Status</span><strong>Fresh</strong></div><div class="mini"><span>Fit Score</span><strong>${l.callCatchFitScore}</strong></div><div class="mini"><span>Lead Quality</span><strong>${l.deepQualityScore || l.aiLeadQualityScore || l.confidenceScore || 0}</strong></div><div class="mini"><span>Next Step</span><strong>${l.email ? "Review Email" : "Find Email"}</strong></div></div>
       <div class="insights">${[...(l.aiInsights||[]), ...(l.websiteIntelligence?.leadQualitySignals || []), l.leadQualityReason || ""].filter(Boolean).slice(0,14).map(i=>`<span class="tag">${esc(i)}</span>`).join("") || `<span class="tag">No scan insights yet</span>`}</div>
       ${manualTest ? `<p class="hint">Manual Test mode is locked for safety. You can collect evidence and run Brain One, but email, SMS, follow-ups, and Brain Two handoff stay disabled until you convert it.</p>` : ""}
       <p class="sub">${esc(l.recommendedSalesAngle || "")}</p>
       <div class="form-grid"><div><label>Stage</label><select id="detailStage">${STAGES.map(s=>`<option ${s===l.stage?"selected":""}>${s}</option>`).join("")}</select></div><div><label>Owner</label><input id="owner" value="${esc(l.owner||"")}"></div><div><label>Next Follow-up</label><input id="nextFollow" type="date" value="${esc(l.nextFollowUp||"")}"></div><div><label>Assigned</label><input id="assigned" value="${esc(l.assignedTeamMember||settings.team)}"></div></div>
       <details open><summary>Notes</summary><textarea id="notes" aria-label="Lead notes">${esc(l.notes||"")}</textarea></details>
-      <div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn primary small" id="smartSendBtn" ${manualTest ? "disabled" : ""}>Research + Approve & Send</button><button class="btn small" id="queueBtn" ${manualTest ? "disabled" : ""}>Research + Draft</button><button class="btn small" id="scanBtn">Scan Website</button><button class="btn small" id="saveLeadBtn">Save Lead</button><button class="btn small" id="copyEmailBtn">Copy Email</button>${manualTest ? `<button class="btn small" id="convertManualBtn">Convert to Real Prospect</button>` : ""}</div>
+      <div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn primary small" id="queueBtn" ${manualTest ? "disabled" : ""}>Review Email</button><button class="btn small" id="scanBtn">Scan Website</button><button class="btn small" id="saveLeadBtn">Save Lead</button><button class="btn small" id="copyEmailBtn">Copy Email</button>${manualTest ? `<button class="btn small" id="convertManualBtn">Convert to Real Prospect</button>` : ""}</div>
       ${brainZeroPanelHtml(l)}
       ${brainOneReportHtml(l)}
       ${brainTwoReportHtml(l)}
@@ -3017,7 +3019,6 @@
       $("scanBtn").onclick=()=>scanSelected(l);
       if (!manualTest) {
         $("queueBtn").onclick=()=>researchDraftAndMaybeSend(l.id, false);
-        $("smartSendBtn").onclick=()=>researchDraftAndMaybeSend(l.id, true);
       }
       if (manualTest && $("convertManualBtn")) $("convertManualBtn").onclick=()=>convertManualProspect(l.id);
       $("copyEmailBtn").onclick=()=>copy(outreach(l).emailA);
@@ -3335,7 +3336,7 @@
         const researched = payload.search?.candidatesResearched ? ` Checked ${payload.search.candidatesResearched} candidates.` : "";
         const guidance = payload.leads.length ? "" : " Try one of the suggested markets below or broaden the radius.";
         const sourceTip = payload.search?.serperEnabled ? "" : " Deep web search is off; add SERPER_API_KEY on Railway for more websites and emails.";
-        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} CRM prospects from ${payload.source || "public sources"}. Email-ready: ${emailReadyCount}. Needs email: ${needsEmailCount}.${researched}${skipped}${duplicates}${skippedWorked}${warning}${guidance}${sourceTip} Open a lead and use Research + Draft for deeper scanning.`;
+        $("finderStatus").textContent=`Found ${payload.leads.length}; added ${added} fresh leads from ${payload.source || "public sources"}. Email-ready: ${emailReadyCount}. Needs email: ${needsEmailCount}.${researched}${skipped}${duplicates}${skippedWorked}${warning}${guidance}${sourceTip} Open Fresh Leads and tap Review Email.`;
         if ((payload.leads || []).length) switchView("crm");
         toast(`${added} prospects added`);
       } catch(e){ $("finderStatus").textContent=e.message + `. Check ${apiUrl("/api/network-check")} to verify public data access.`; toast("Search failed"); }

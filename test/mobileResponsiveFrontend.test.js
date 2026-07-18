@@ -86,3 +86,18 @@ test("frontend fallback follow-ups avoid stale automated language and hide sent 
     assert.doesNotMatch(html, /I wanted to close the loop/);
   }
 });
+
+test("Fresh Leads explains the simple review-send-pipeline flow", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    assert.match(html, /<h1>Fresh Leads<\/h1>/);
+    assert.match(html, /Fresh lead/);
+    assert.match(html, /Review email/);
+    assert.match(html, /Send from Email Queue/);
+    assert.match(html, /Track in Pipeline/);
+    assert.match(html, /Review Email/);
+    assert.match(html, /Email ready to review/);
+    assert.doesNotMatch(html, /Research \+ Draft/);
+    assert.doesNotMatch(html, /Research \+ Approve & Send/);
+  }
+});
