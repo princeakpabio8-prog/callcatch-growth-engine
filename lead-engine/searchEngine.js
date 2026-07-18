@@ -316,9 +316,24 @@ function applyFilters(leads, { minRating, maxReviews }) {
 async function runProviders(params) {
   let location;
   const errors = [];
+  const diagnostics = {
+    providerInputs: {
+      trade: params.trade,
+      area: params.area,
+      country: normalizeCountry(params.country),
+      requestedCount: Number(params.count) || 0
+    },
+    providersAttempted: [],
+    providers: {},
+    locationResolved: false,
+    locationSource: "",
+    mapSearchSkipped: false
+  };
   const country = normalizeCountry(params.country);
   try {
     location = await geocodeArea(params.area, { country });
+    diagnostics.locationResolved = true;
+    diagnostics.locationSource = location.source || "nominatim";
   } catch (error) {
     const fallback = isUnitedStates(country) ? fallbackLocation({ area: params.area, city: params.city, state: params.state }) : null;
     if (!fallback) {
@@ -331,13 +346,17 @@ async function runProviders(params) {
         countryCode: country,
         source: "unresolved"
       };
+      diagnostics.locationSource = "unresolved";
     } else {
       location = fallback;
       errors.push(`Nominatim unavailable, used local fallback for ${fallback.city}, ${fallback.state}: ${error.message}`);
+      diagnostics.locationResolved = true;
+      diagnostics.locationSource = "local-us-fallback";
     }
   }
   const providers = [];
   if (location.bbox) {
+    diagnostics.providersAttempted.push("openstreetmap");
     providers.push(withTimeout(searchOpenStreetMap({
       trade: params.trade,
       location,
@@ -345,8 +364,10 @@ async function runProviders(params) {
     }), 12000, "OpenStreetMap search"));
   } else {
     errors.push("Map search skipped because the market could not be geocoded; web search providers will still run.");
+    diagnostics.mapSearchSkipped = true;
   }
   if (braveConfigured()) {
+    diagnostics.providersAttempted.push("brave");
     providers.push(withTimeout(searchBrave({
       trade: params.trade,
       location,
@@ -354,6 +375,7 @@ async function runProviders(params) {
     }), 10000, "Brave search"));
   }
   if (serperConfigured()) {
+    diagnostics.providersAttempted.push("serper");
     providers.push(withTimeout(searchSerper({
       trade: params.trade,
       location,
@@ -365,16 +387,29 @@ async function runProviders(params) {
   const leads = [];
   let cached = false;
 
-  for (const result of settled) {
+  for (const [index, result] of settled.entries()) {
+    const providerName = diagnostics.providersAttempted[index] || `provider-${index + 1}`;
     if (result.status === "fulfilled") {
       cached = cached || Boolean(result.value.cached);
       leads.push(...result.value.leads);
+      diagnostics.providers[providerName] = {
+        status: "fulfilled",
+        returned: (result.value.leads || []).length,
+        cached: Boolean(result.value.cached),
+        source: result.value.source || providerName
+      };
     } else {
       errors.push(`Lead provider failed: ${result.reason.message}`);
+      diagnostics.providers[providerName] = {
+        status: "failed",
+        returned: 0,
+        error: result.reason.message
+      };
     }
   }
 
-  return { leads, errors, cached, location };
+  diagnostics.rawProviderLeads = leads.length;
+  return { leads, errors, cached, location, diagnostics };
 }
 
 function normalizeState(value) {
@@ -440,16 +475,19 @@ async function searchLeads(input = {}) {
   if (cached) return { ...cached, cached: true };
 
   const providerResult = await runProviders({ trade, area, state: input.state, city: input.city, country, count: Math.min(count * 3, 60) });
-  const rawLeads = dedupe(providerResult.leads).map(enrichLead);
+  const rawProviderCount = providerResult.leads.length;
+  const dedupedProviderLeads = dedupe(providerResult.leads);
+  const rawLeads = dedupedProviderLeads.map(enrichLead);
   let skippedExisting = 0;
-  let leads = applyFilters(rawLeads, input)
+  const afterRatingFilters = applyFilters(rawLeads, input);
+  const afterExistingFilterLeads = afterRatingFilters
     .filter(lead => {
       if (!matchesExistingProspect(lead, existingProspects)) return true;
       skippedExisting += 1;
       return false;
     })
-    .sort((a, b) => b.aiLeadQualityScore - a.aiLeadQualityScore)
-    .slice(0, Math.max(count * 4, count));
+    .sort((a, b) => b.aiLeadQualityScore - a.aiLeadQualityScore);
+  let leads = afterExistingFilterLeads.slice(0, Math.max(count * 4, count));
   if (!leads.length && rawLeads.length && skippedExisting) {
     providerResult.errors.push(`Skipped ${skippedExisting} prospect${skippedExisting === 1 ? "" : "s"} already in CRM or Pipeline for this market. Try the suggested markets or another nearby city.`);
   }
@@ -467,6 +505,7 @@ async function searchLeads(input = {}) {
     leads = await enrichWithBraveWebsites(leads, { limit: Math.min(12, Math.max(count * 2, 8)) });
     leads = dedupe(leads).map(enrichLead);
   }
+  const afterWebsiteEnrichment = leads.length;
   const beforeDeepResearch = leads.length;
   leads = !wantsDeepResearch
     ? leads.sort((a, b) => (b.email ? 1 : 0) - (a.email ? 1 : 0) || b.aiLeadQualityScore - a.aiLeadQualityScore).slice(0, count)
@@ -509,6 +548,52 @@ async function searchLeads(input = {}) {
       skippedExisting,
       quality: leads.length >= count ? "strong" : leads.length > 0 ? "partial" : "no-results",
       suggestions: suggestedMarkets({ country, trade }).slice(0, 6)
+    },
+    diagnostics: {
+      ...providerResult.diagnostics,
+      funnel: {
+        requestedFinalCount: count,
+        providerRequestedCount: Math.min(count * 3, 60),
+        rawProviderLeads: rawProviderCount,
+        afterProviderDedupe: dedupedProviderLeads.length,
+        afterRatingReviewFilters: afterRatingFilters.length,
+        skippedExisting,
+        afterExistingFilter: afterExistingFilterLeads.length,
+        initialCandidateCap: Math.max(count * 4, count),
+        beforeWebsiteEnrichment: Math.min(afterExistingFilterLeads.length, Math.max(count * 4, count)),
+        websiteEnrichmentLimit: serperConfigured()
+          ? Math.min(8, Math.max(count, 4))
+          : braveConfigured()
+            ? Math.min(12, Math.max(count * 2, 8))
+            : 0,
+        afterWebsiteEnrichment,
+        deepResearchRequested: wantsDeepResearch,
+        deepResearchCandidateLimit: wantsDeepResearch ? Math.min(Math.max(count * 2, 8), 12) : 0,
+        candidatesResearched: beforeDeepResearch,
+        finalLeads: leads.length,
+        finalEmailReady: leads.filter(lead => lead.email).length,
+        finalNeedsEmail: leads.filter(lead => !lead.email).length
+      },
+      caps: {
+        frontendMaxFinalCount: 50,
+        providerRequestMax: 60,
+        openStreetMapElementMax: 120,
+        serperTermsMax: 3,
+        serperPerTermMax: 20,
+        bravePerQueryMax: 20,
+        websiteEnrichmentMax: serperConfigured() ? 8 : braveConfigured() ? 12 : 0,
+        deepResearchMax: 12,
+        dailyGrowthDefaultSearches: 8,
+        dailyGrowthDefaultCountPerSearch: 8
+      },
+      likelyBottlenecks: [
+        Math.min(count * 3, 60) <= 60 ? "provider candidate request is capped before broad market exhaustion" : "",
+        serperConfigured() ? "Serper website enrichment checks at most 8 candidates per search" : "",
+        braveConfigured() ? "Brave website enrichment checks at most 12 candidates per search" : "",
+        wantsDeepResearch ? "Deep research checks at most 12 candidates per search" : "",
+        skippedExisting ? "Existing CRM/Pipeline filtering removed candidates before final queue" : "",
+        !leads.filter(lead => lead.email).length ? "Few final leads have public email addresses" : ""
+      ].filter(Boolean)
     }
   };
 
