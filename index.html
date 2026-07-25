@@ -2262,9 +2262,11 @@
       if (workedProspect(lead)) { toast("Already contacted. Use Pipeline for follow-up."); return false; }
       selectedId = lead.id;
       if (!identityVerified(lead)) {
-        switchView("crm");
-        toast("Verify the business website and email before outreach.");
-        return false;
+        const verified = await scanSelected(lead);
+        if (!verified || !identityVerified(lead)) {
+          switchView("crm");
+          return false;
+        }
       }
       const task = queue.find(item => item.leadId === lead.id && item.source === "brain-two-quality-gate" && !["Sent","Delivered","Opened","Replied"].includes(item.status));
       if (task) {
@@ -3454,11 +3456,17 @@
       }
     }
     async function scanSelected(lead){
-      if(!lead.website){ toast("No website to scan"); return; }
-      toast("Scanning website...");
+      if(!lead.website){ toast("Add the official business website before verification."); return false; }
+      toast("Verifying business website and email...");
       try {
         const payload = await api("/api/scan-website",{method:"POST",body:JSON.stringify({leadId:lead.id})});
-        Object.assign(lead, normalizeLead(payload.lead || lead)); addTimeline(lead,"Website intelligence scan completed"); save(); render(); toast("Website scanned");
+        Object.assign(lead, normalizeLead(payload.lead || lead));
+        addTimeline(lead,"Website intelligence scan completed");
+        save();
+        render();
+        const verified = identityVerified(lead);
+        toast(verified ? "Business verified" : "Website scanned. Business identity still needs review.");
+        return verified;
       } catch(e){
         if (e.payload?.lead) Object.assign(lead, normalizeLead(e.payload.lead));
         if (e.code === "BUSINESS_IDENTITY_MISMATCH" || /identity|re-verification/i.test(e.message || "")) {
@@ -3467,9 +3475,10 @@
           save();
           render();
           toast("Business identity mismatch. Review the website and recipient.");
-          return;
+          return false;
         }
         toast(e.message || "Website scan failed");
+        return false;
       }
     }
     function importCsv(){

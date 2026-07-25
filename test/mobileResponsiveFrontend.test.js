@@ -102,6 +102,15 @@ test("Fresh Leads explains the simple review-send-pipeline flow", () => {
   }
 });
 
+test("Verify Business runs identity verification before opening outreach", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    assert.match(html, /if \(!identityVerified\(lead\)\) \{\s*const verified = await scanSelected\(lead\);/);
+    assert.match(html, /const verified = identityVerified\(lead\);\s*toast\(verified \? "Business verified"/);
+    assert.match(html, /return verified;/);
+    assert.doesNotMatch(html, /toast\("Verify the business website and email before outreach\."\)/);
+  }
+});
 test("Business Analysis shows action-first summary and hides detailed scores", () => {
   for (const file of FILES) {
     const html = read(file);
