@@ -1267,7 +1267,12 @@ async function completeBrainOneRun(runId, contextPackage, modelName, logger = lo
 
 const server = http.createServer(async (req, res) => {
   const origin = String(req.headers.origin || "");
-  if (!originAllowed(origin)) {
+  const requestHost = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
+  const requestProtocol = String(req.headers["x-forwarded-proto"] || (req.socket?.encrypted ? "https" : "http")).split(",")[0].trim();
+  const requestOrigin = requestHost && ["http", "https"].includes(requestProtocol)
+    ? `${requestProtocol}://${requestHost}`
+    : "";
+  if (!originAllowed(origin, process.env, requestOrigin)) {
     log("warn", "cors_origin_rejected", { origin, method: req.method, path: String(req.url || "").split("?")[0] });
     return send(res, 403, { ok: false, error: { code: "ORIGIN_NOT_ALLOWED", message: "This origin is not allowed to access CallCatch." } });
   }

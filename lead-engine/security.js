@@ -67,13 +67,24 @@ function authenticate(headers = {}, requiredRole = "operator", env = process.env
   return { ok: false, role: "none", requiredRole };
 }
 
-function originAllowed(origin = "", env = process.env) {
+function normalizeOrigin(value = "") {
+  try {
+    return new URL(String(value || "")).origin.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function originAllowed(origin = "", env = process.env, requestOrigin = "") {
   if (!origin) return true;
+  const normalized = normalizeOrigin(origin);
+  const normalizedRequestOrigin = normalizeOrigin(requestOrigin);
+  if (normalized && normalizedRequestOrigin && normalized === normalizedRequestOrigin) return true;
   const config = securityConfig(env);
   if (!config.production && config.allowedOrigins.length === 0) {
     return /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin) || origin === "null";
   }
-  return config.allowedOrigins.includes(origin);
+  return config.allowedOrigins.some(allowed => normalizeOrigin(allowed) === normalized);
 }
 
 function assertProductionSecurityReady(env = process.env) {

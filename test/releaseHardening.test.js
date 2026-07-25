@@ -114,6 +114,13 @@ test("CORS allows only configured production origins", () => {
   assert.equal(originAllowed("", env()), true);
 });
 
+test("CORS allows the production backend to serve its own dashboard without widening external origins", () => {
+  const backend = "https://callcatch-growth-engine-production.up.railway.app";
+  assert.equal(originAllowed(backend, env(), backend), true);
+  assert.equal(originAllowed(`${backend}/`, env(), backend), true);
+  assert.equal(originAllowed("https://attacker.example", env(), backend), false);
+});
+
 test("Resend webhook verification rejects unsigned and forged requests", () => {
   const config = env();
   const rawBody = JSON.stringify({ type: "email.delivered", data: { email_id: "email-1" } });
