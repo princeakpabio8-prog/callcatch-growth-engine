@@ -121,6 +121,7 @@ function queueApprovedBrainTwoDraft(state = {}, { run, lead, reviewer = "CallCat
   task.identityVerification = assertDraftIdentity({
     state,
     lead,
+    brainZeroRun,
     brainOneRun,
     brainTwoRun: run,
     task,

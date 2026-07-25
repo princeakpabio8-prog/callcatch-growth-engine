@@ -273,6 +273,8 @@ test("exact DM Mechanical and latinotype recipient regression blocks sending", (
 
 test("a correctly bound verified Brain Two draft can be queued", () => {
   const { state, lead, two } = stateFixture();
+  state.brainOneRuns[0].brainZeroRunId = "brain0-dm";
+  state.brainZeroRuns = [{ run_id: "brain0-dm", business_id: lead.id, status: "completed" }];
   const result = queueApprovedBrainTwoDraft(state, { run: two, lead, reviewer: "Tester" });
   assert.equal(result.task.leadId, lead.id);
   assert.equal(result.task.to, lead.email);
