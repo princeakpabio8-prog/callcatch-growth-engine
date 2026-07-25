@@ -72,6 +72,10 @@ const {
   validateIdentityChain,
   verifyBusinessIdentity
 } = require("./lead-engine/businessIdentity");
+const {
+  registerLeadForVerification,
+  stripClientVerificationClaims
+} = require("./lead-engine/leadRegistration");
 
 const PORT = resolvePort();
 const HOST = resolveHost();
@@ -1483,9 +1487,23 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readJson(req);
       const leadId = body.leadId || body.lead?.id || "";
-      const snapshot = await readStore();
-      const storedLead = (snapshot.leads || []).find(item => item.id === leadId);
-      if (!storedLead) return send(res, 404, { ok: false, error: "Lead not found" });
+      const registration = await mutateStore(state => {
+        const result = registerLeadForVerification(state, {
+          leadId,
+          snapshot: body.lead
+        });
+        if (result.created) {
+          state.auditLog = state.auditLog || [];
+          state.auditLog.unshift({
+            id: newId("audit"),
+            at: new Date().toISOString(),
+            action: "lead_registered_for_verification",
+            details: { leadId, source: "scan-website" }
+          });
+        }
+        return result;
+      });
+      const storedLead = registration.lead;
       const scan = await scanWebsite(storedLead.website);
       let identityVerification = verifyBusinessIdentity({ lead: storedLead, scan, email: storedLead.email });
       let verifiedEmail = isIdentityVerified(identityVerification) ? storedLead.email : "";
@@ -1533,7 +1551,13 @@ const server = http.createServer(async (req, res) => {
         error: isIdentityVerified(identityVerification) ? "" : "Business identity mismatch"
       });
     } catch (error) {
-      return send(res, 400, { ok: false, error: error.message });
+      const statusCode = error.statusCode || (error.code === "BUSINESS_IDENTITY_MISMATCH" ? 409 : 400);
+      return send(res, statusCode, {
+        ok: false,
+        error: error.message,
+        code: error.code || "",
+        conflicts: error.details || []
+      });
     }
   }
 
@@ -2063,9 +2087,10 @@ const server = http.createServer(async (req, res) => {
             skippedNoEmail += 1;
             return;
           }
+          const safeLead = stripClientVerificationClaims({ ...lead, id });
           const candidate = alreadySaved
-            ? mergeLeadRecord(existing.get(id), { ...lead, id })
-            : { ...lead, id, updatedAt: new Date().toISOString() };
+            ? mergeLeadRecord(existing.get(id), safeLead)
+            : { ...safeLead, id, updatedAt: new Date().toISOString() };
           const key = normalizeCompanyKey(candidate);
           const differentIds = [...(identityKeys.get(key) || [])].filter(existingId => existingId && existingId !== id);
           if (differentIds.length) {

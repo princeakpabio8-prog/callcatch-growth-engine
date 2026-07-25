@@ -12,6 +12,10 @@ const {
   verifyBusinessIdentity
 } = require("../lead-engine/businessIdentity");
 const {
+  registerLeadForVerification,
+  stripClientVerificationClaims
+} = require("../lead-engine/leadRegistration");
+const {
   approveQueuedBrainTwoTask,
   assertAuthorizedSend,
   draftHash,
@@ -299,4 +303,81 @@ test("review UI clears content and ignores stale async responses", () => {
   assert.match(html, /composerRecipient"\)\.value = ""/);
   assert.match(html, /setComposerActions\(false\)/);
   assert.match(html, /\/api\/outbound-review\?taskId=/);
+});
+
+test("missing discovery lead is registered atomically before website verification", () => {
+  const state = { leads: [] };
+  const snapshot = {
+    id: "lead-race",
+    business: "Race HVAC",
+    website: "https://race-hvac.example",
+    trade: "HVAC",
+    email: "service@race-hvac.example",
+    identityVerification: { status: IDENTITY_STATUS.VERIFIED, verified: true },
+    verifiedIndustry: "HVAC",
+    industryVerified: true,
+    brainTwoLatestRunId: "forged-run"
+  };
+  const result = registerLeadForVerification(state, {
+    leadId: snapshot.id,
+    snapshot,
+    now: "2026-07-25T12:00:00.000Z"
+  });
+  assert.equal(result.created, true);
+  assert.equal(result.lead.id, snapshot.id);
+  assert.equal(result.lead.identityVerification, null);
+  assert.equal(result.lead.identityStatus, "Needs Re-verification");
+  assert.equal(result.lead.verifiedIndustry, "");
+  assert.equal(result.lead.industryVerified, false);
+  assert.equal(result.lead.brainTwoLatestRunId, undefined);
+});
+
+test("verification registration reuses an exact immutable lead ID without duplication", () => {
+  const existing = { id: "lead-existing", business: "Existing HVAC", website: "https://existing.example" };
+  const state = { leads: [existing] };
+  const result = registerLeadForVerification(state, {
+    leadId: existing.id,
+    snapshot: { ...existing, business: "Client Override" }
+  });
+  assert.equal(result.created, false);
+  assert.equal(result.lead, existing);
+  assert.equal(state.leads.length, 1);
+  assert.equal(existing.business, "Existing HVAC");
+});
+
+test("verification registration rejects a different lead ID for the same website", () => {
+  const state = { leads: [{ id: "lead-a", business: "Safe HVAC", website: "https://safe.example" }] };
+  assert.throws(() => registerLeadForVerification(state, {
+    leadId: "lead-b",
+    snapshot: { id: "lead-b", business: "Safe HVAC", website: "https://safe.example" }
+  }), /identity mismatch/i);
+  assert.equal(state.leads.length, 1);
+});
+
+test("CRM synchronization cannot import browser-side verification claims", () => {
+  const safe = stripClientVerificationClaims({
+    id: "lead-client",
+    business: "Client HVAC",
+    website: "https://client.example",
+    identityVerification: { status: IDENTITY_STATUS.VERIFIED, verified: true },
+    identityStatus: IDENTITY_STATUS.VERIFIED,
+    verifiedIndustry: "HVAC",
+    industryVerified: true,
+    emailSourceUrl: "https://client.example/contact",
+    brainOneLatestRunId: "client-run"
+  });
+  assert.equal(safe.id, "lead-client");
+  assert.equal(safe.business, "Client HVAC");
+  assert.equal(safe.identityVerification, undefined);
+  assert.equal(safe.identityStatus, undefined);
+  assert.equal(safe.verifiedIndustry, undefined);
+  assert.equal(safe.industryVerified, undefined);
+  assert.equal(safe.emailSourceUrl, undefined);
+  assert.equal(safe.brainOneLatestRunId, undefined);
+});
+test("server verification route registers a missing lead before scanning and strips client claims during CRM sync", () => {
+  const server = fs.readFileSync(require.resolve("../callcatch-lead-server.js"), "utf8");
+  assert.match(server, /registerLeadForVerification\(state, \{\s*leadId,\s*snapshot: body\.lead/);
+  assert.match(server, /const storedLead = registration\.lead;\s*const scan = await scanWebsite\(storedLead\.website\);/);
+  assert.match(server, /const safeLead = stripClientVerificationClaims\(\{ \.\.\.lead, id \}\);/);
 });

@@ -137,6 +137,14 @@ test("verification rebinds the authoritative lead before email review", () => {
     assert.match(html, /lead = verifiedLead;/);
   }
 });
+
+test("website verification carries the exact lead snapshot to close the discovery sync race", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    assert.match(html, /api\("\/api\/scan-website",\{method:"POST",body:JSON\.stringify\(\{leadId:lead\.id,lead\}\)\}\)/);
+  }
+});
+
 test("Business Analysis shows action-first summary and hides detailed scores", () => {
   for (const file of FILES) {
     const html = read(file);

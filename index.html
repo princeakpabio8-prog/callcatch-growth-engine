@@ -3466,7 +3466,7 @@
       if(!lead.website){ toast("Add the official business website before verification."); return null; }
       toast("Verifying business website and email...");
       try {
-        const payload = await api("/api/scan-website",{method:"POST",body:JSON.stringify({leadId:lead.id})});
+        const payload = await api("/api/scan-website",{method:"POST",body:JSON.stringify({leadId:lead.id,lead})});
         const snapshot = normalizeLead(payload.lead || lead);
         const currentIndex = leads.findIndex(item => item.id === snapshot.id);
         if (currentIndex >= 0) Object.assign(leads[currentIndex], snapshot);
