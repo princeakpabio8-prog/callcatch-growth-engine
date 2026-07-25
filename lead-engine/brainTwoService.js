@@ -105,8 +105,12 @@ function handoffNeedsManualResearch(flat = {}) {
     || /manual research|research needed|find contact|verify contact|no verified contact/.test(text);
 }
 
-function brainOneDecision(flat = {}) {
-  return flat.contact_decision?.decision || flat.contact_decision?.recommendation_status || "";
+function brainOneDecision(brainOneRun = {}, flat = {}) {
+  const combined = brainOneCombinedOutput(brainOneRun);
+  return combined.decision_engine?.decision
+    || flat.contact_decision?.decision
+    || flat.contact_decision?.recommendation_status
+    || "";
 }
 
 function approvedBrainOne(brainOneRun = {}) {
@@ -126,7 +130,7 @@ function evaluateBrainTwoEligibility({ lead = {}, brainOneRun = {} } = {}) {
   if (isManualTestLead(lead)) reasons.push("Lead is still in Manual Test mode.");
 
   const flat = brainOneFlatOutput(brainOneRun);
-  const decision = brainOneDecision(flat);
+  const decision = brainOneDecision(brainOneRun, flat);
   if (decision === "DO NOT CONTACT") reasons.push("Brain One decision is DO NOT CONTACT.");
 
   const paths = contactPaths(lead, flat);

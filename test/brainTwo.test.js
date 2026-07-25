@@ -178,11 +178,23 @@ test("Brain Two is blocked until Brain One is completed and approved", () => {
 test("Brain Two is blocked when Brain One decision is DO NOT CONTACT", () => {
   const run = approvedBrainOne();
   run.validatedOutput.modules.contact_decision.output.contact_decision.decision = "DO NOT CONTACT";
+  run.validatedOutput.decision_engine.decision = "DO NOT CONTACT";
   const result = evaluateBrainTwoEligibility({ lead: lead(), brainOneRun: run });
   assert.equal(result.eligible, false);
   assert.match(result.reasons.join(" "), /DO NOT CONTACT/);
 });
 
+test("Brain Two uses the deterministic final decision instead of a stale raw model label", () => {
+  const run = approvedBrainOne();
+  run.validatedOutput.modules.contact_decision.output.contact_decision.decision = "DO NOT CONTACT";
+  run.validatedOutput.decision_engine.decision = "CONTACT";
+  const eligibility = evaluateBrainTwoEligibility({ lead: lead(), brainOneRun: run });
+  assert.equal(eligibility.eligible, true);
+  assert.doesNotMatch(eligibility.reasons.join(" "), /DO NOT CONTACT/);
+  const result = runBrainTwo({ lead: lead(), brainOneRun: run, runId: "brain2-final-decision" });
+  assert.equal(result.executionStatus, "completed");
+  assert.match(result.output.first_email.body, /CallCatch/);
+});
 test("Brain Two is blocked for Manual Test prospects", () => {
   const result = evaluateBrainTwoEligibility({ lead: lead({ manualTest: true }), brainOneRun: approvedBrainOne() });
   assert.equal(result.eligible, false);

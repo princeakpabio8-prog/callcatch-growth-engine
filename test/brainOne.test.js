@@ -1090,6 +1090,101 @@ test("independent module scores preserve strong business quality when contactabi
   assert.doesNotMatch(result.blueprintMarkdown, /Business Foundation: Not scored|Business Foundation: Failed/i);
 });
 
+test("verified public email survives an omitted model contact and resolves a stale contact-only block", async () => {
+  const lead = sampleLead(1, {
+    identityVerification: {
+      status: "Verified",
+      verified: true,
+      recipientEmail: "office1@example.com",
+      emailSourceUrl: "https://example1.com/contact"
+    }
+  });
+  const context = buildBrainOneContextPackage(lead, {
+    ok: true,
+    url: lead.website,
+    text: "Emergency repairs, same-day service, phone contact, and an official contact page are visible."
+  });
+  assert.ok(context.evidenceLog.some(item => item.id === "ev-verified-contact-email"));
+  let calls = 0;
+  const result = await runBrainOne(context, {
+    callModel: async () => {
+      calls += 1;
+      if (calls === 1) return moduleJson(context, "foundation", { contacts: [] });
+      if (calls === 2) return moduleJson(context, "digital_intelligence");
+      if (calls === 3) {
+        const opportunities = moduleOutput(context, "opportunities");
+        opportunities.hidden_opportunities[0].ranking_factors = { evidence_strength: 95, business_impact: 95, feasibility: 95, urgency: 95 };
+        Object.values(opportunities.ai_opportunity_radar).forEach(item => { item.status = "strong"; });
+        return JSON.stringify(opportunities);
+      }
+      if (calls === 4) return moduleJson(context, "strategic_interpretation");
+      if (calls === 5) {
+        const contact = moduleOutput(context, "contact_decision");
+        contact.contact_decision = {
+          ...contact.contact_decision,
+          decision: "DO NOT CONTACT",
+          primary_reason: "No verified contact path was found.",
+          disqualifying_factors: ["No verified contact path."],
+          information_gaps: ["Actual missed-call volume is unknown."]
+        };
+        return JSON.stringify(contact);
+      }
+      return "# Business Growth Blueprint\n\nVerified contact and substantial opportunity support manual outreach review.";
+    }
+  });
+  const contact = result.output.modules.foundation.output.contacts.find(item => item.contact_email === lead.email);
+  assert.ok(contact);
+  assert.equal(contact.status, "confirmed");
+  assert.deepEqual(contact.evidence_ids, ["ev-verified-contact-email"]);
+  assert.ok(result.output.score_metadata.module_scores.contactability.value >= 35);
+  assert.ok(result.output.score_metadata.module_scores.opportunity.value >= 55);
+  assert.equal(result.output.decision_engine.model_recommendation, "DO NOT CONTACT");
+  assert.equal(result.output.decision_engine.stale_contact_block_resolved, true);
+  assert.equal(result.output.decision_engine.decision, "CONTACT");
+  assert.equal(result.output.decision_engine.recommendation_status, "Generate Outreach");
+});
+test("verified contact never overrides a genuine non-contact disqualifier", async () => {
+  const lead = sampleLead(1, {
+    identityVerification: {
+      status: "Verified",
+      verified: true,
+      recipientEmail: "office1@example.com",
+      emailSourceUrl: "https://example1.com/contact"
+    }
+  });
+  const context = buildBrainOneContextPackage(lead, { ok: true, url: lead.website, text: "A strong public service and contact presence is visible." });
+  let calls = 0;
+  const result = await runBrainOne(context, {
+    callModel: async () => {
+      calls += 1;
+      if (calls === 1) return moduleJson(context, "foundation", { contacts: [] });
+      if (calls === 2) return moduleJson(context, "digital_intelligence");
+      if (calls === 3) {
+        const opportunities = moduleOutput(context, "opportunities");
+        opportunities.hidden_opportunities[0].ranking_factors = { evidence_strength: 95, business_impact: 95, feasibility: 95, urgency: 95 };
+        Object.values(opportunities.ai_opportunity_radar).forEach(item => { item.status = "strong"; });
+        return JSON.stringify(opportunities);
+      }
+      if (calls === 4) return moduleJson(context, "strategic_interpretation");
+      if (calls === 5) {
+        const contact = moduleOutput(context, "contact_decision");
+        contact.contact_decision = {
+          ...contact.contact_decision,
+          decision: "DO NOT CONTACT",
+          primary_reason: "The prospect is outside the approved strategic market.",
+          disqualifying_factors: ["Strategic fit mismatch."],
+          information_gaps: []
+        };
+        return JSON.stringify(contact);
+      }
+      return "# Business Growth Blueprint\n\nManual review only.";
+    }
+  });
+  assert.ok(result.output.score_metadata.module_scores.contactability.value >= 35);
+  assert.ok(result.output.score_metadata.module_scores.opportunity.value >= 55);
+  assert.equal(result.output.decision_engine.stale_contact_block_resolved, false);
+  assert.equal(result.output.decision_engine.decision, "DO NOT CONTACT");
+});
 test("Brain Zero trust signals prevent insufficient trust when the model omits trust details", async () => {
   const context = enterpriseEvidenceContext("Trust Signal Services", "https://trustsignal.example", "HVAC");
   let calls = 0;

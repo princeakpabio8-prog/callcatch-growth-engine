@@ -1653,12 +1653,13 @@
       const opportunities = output.hidden_opportunities || [];
       const risks = output.risks || [];
       const scoreMeta = combinedOutput.score_metadata || {};
+      const decisionEngine = combinedOutput.decision_engine || {};
       const statusTone = run.executionStatus === "completed" ? "hot" : ["failed","validation_failed"].includes(run.executionStatus) ? "bad" : "warn";
       const approval = run.approvalStatus || "pending-review";
       const validationMessage = "Business analysis completed, but the structured report could not be validated. Please run again.";
       const opportunityScores = opportunities.map(item=>Number(item.opportunity_priority_score)).filter(Number.isFinite);
       const opportunityPriority = opportunityScores.length ? Math.max(...opportunityScores) : null;
-      const decisionTone = decision.decision === "CONTACT" ? "hot" : "warn";
+      const decisionTone = (decisionEngine.decision || decision.decision) === "CONTACT" ? "hot" : "warn";
       const overallStatus = combinedOutput.overall_status || run.overallStatus || "completed";
       return `<div class="panel"><div class="lead-top"><div><h3>Business Analysis</h3><p class="sub">Run ${esc(run.id)} | ${esc(formatDateTime(run.createdAt))}</p></div><span class="tag ${statusTone}">${esc(run.executionStatus)}</span></div>
         ${run.executionStatus === "failed" ? `<p class="hint">${esc(run.errorDetails?.message || "Analysis failed. Check NVIDIA_API_KEY or model output.")}</p><p class="hint">Stopped at: ${esc(run.errorDetails?.failureStage || run.currentStage || "unknown")}</p>` : ""}
@@ -1698,13 +1699,14 @@
       const brainOneApproved = /^approved/i.test(brainOne?.approvalStatus || "");
       const combinedOutput = brainOne?.phaseAOutput || brainOne?.validatedOutput || {};
       const flat = flattenBrainOneOutput(combinedOutput);
-      const decision = flat.contact_decision?.decision || flat.contact_decision?.recommendation_status || "";
+      const decisionEngine = combinedOutput.decision_engine || {};
+      const decision = decisionEngine.decision || flat.contact_decision?.decision || flat.contact_decision?.recommendation_status || "";
       const canGenerate = brainOne?.executionStatus === "completed" && brainOneApproved && decision !== "DO NOT CONTACT" && !manualTest;
       const blockedReasons = [
         !brainOne ? "Run Business Analysis first." : "",
         brainOne && brainOne.executionStatus !== "completed" ? "Business Analysis must complete first." : "",
         brainOne && !brainOneApproved ? "Manually approve Business Analysis first." : "",
-        decision === "DO NOT CONTACT" ? "Recommendation is DO NOT CONTACT." : "",
+        decision === "DO NOT CONTACT" ? `Recommendation is DO NOT CONTACT. ${decisionEngine.why_recommended || decisionEngine.reason || flat.contact_decision?.primary_reason || ""}` : "",
         manualTest ? "Manual Test mode blocks outreach drafts." : ""
       ].filter(Boolean);
       if (!run) {

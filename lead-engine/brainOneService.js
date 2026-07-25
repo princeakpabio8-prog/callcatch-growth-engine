@@ -563,6 +563,52 @@ function normalizeContact(contact = {}, index = 0, meta = null) {
   return contact;
 }
 
+function verifiedContextEmail(contextPackage = {}) {
+  const email = String(contextPackage.publicContactDetails?.email || "").trim().toLowerCase();
+  if (!isEmailLike(email)) return null;
+  const evidence = (contextPackage.evidenceLog || []).find(item => {
+    if ((item?.id || item?.evidence_id) !== "ev-verified-contact-email") return false;
+    const text = [item.excerpt, item.source_excerpt, item.value].filter(Boolean).join(" ").toLowerCase();
+    return text.includes(email);
+  });
+  if (!evidence) return null;
+  return {
+    email,
+    sourceUrl: evidence.sourceUrl || evidence.source_url || contextPackage.businessIdentity?.websiteUrl || "",
+    evidenceId: evidence.id || evidence.evidence_id
+  };
+}
+
+function mergeVerifiedContextContact(output = {}, contextPackage = {}, meta = null) {
+  const verified = verifiedContextEmail(contextPackage);
+  if (!verified || !Array.isArray(output.contacts)) return output;
+  const existingIndex = output.contacts.findIndex(item =>
+    String(item?.contact_email || "").trim().toLowerCase() === verified.email
+  );
+  if (existingIndex >= 0) {
+    const contact = output.contacts[existingIndex];
+    contact.contact_source = contact.contact_source || verified.sourceUrl;
+    contact.contact_confidence = Math.max(Number(contact.contact_confidence || 0), 90);
+    contact.status = "confirmed";
+    contact.evidence_ids = uniqueArray([...(contact.evidence_ids || []), verified.evidenceId]);
+    recordNormalization(meta, `contacts[${existingIndex}].verified_context`);
+    return output;
+  }
+  output.contacts.push(normalizeContact({
+    owner_name: null,
+    contact_name: null,
+    contact_role: "",
+    contact_email: verified.email,
+    contact_phone: "",
+    contact_source: verified.sourceUrl,
+    contact_confidence: 90,
+    status: "confirmed",
+    evidence_ids: [verified.evidenceId]
+  }, output.contacts.length, meta));
+  recordNormalization(meta, "contacts.verified_context_email");
+  return output;
+}
+
 function normalizeClaimItem(item = {}, pathName, meta = null) {
   if (!item || typeof item !== "object" || Array.isArray(item)) return null;
   if (!item.claim && item.inference) {
@@ -1188,6 +1234,7 @@ function validateModuleOutput(moduleKey, output = {}, contextPackage = {}, prior
     ensureArrayField(output, "inferences", meta);
     ensureArrayField(output, "unknowns", meta);
     output.contacts = output.contacts.map((contact, index) => normalizeContact(contact, index, meta));
+    mergeVerifiedContextContact(output, contextPackage, meta);
     output.confirmed_facts = output.confirmed_facts.map((item, index) => normalizeClaimItem(item, `confirmed_facts[${index}]`, meta)).filter(Boolean);
     output.inferences = output.inferences.map((item, index) => normalizeClaimItem(item, `inferences[${index}]`, meta)).filter(Boolean);
     cleanModuleContacts(output, meta);
@@ -1762,14 +1809,33 @@ function decisionEngineFromScores(moduleScores = {}, flat = {}) {
   const modelDecision = flat.contact_decision || {};
   const hasWeakContactability = contactability !== null && contactability < 35;
   const hasStrongBusiness = businessQuality !== null && businessQuality >= 65;
+  const disqualifyingFactors = Array.isArray(modelDecision.disqualifying_factors) ? modelDecision.disqualifying_factors : [];
+  const contactBlockText = [
+    modelDecision.primary_reason,
+    ...disqualifyingFactors
+  ].filter(Boolean).join(" ").toLowerCase();
+  const contactOnlyDisqualifiers = disqualifyingFactors.every(item =>
+    /contact|email|phone|recipient|owner|outreach path/.test(String(item || "").toLowerCase())
+  );
+  const staleContactBlockResolved = modelDecision.decision === "DO NOT CONTACT"
+    && contactability !== null
+    && contactability >= 35
+    && opportunity !== null
+    && opportunity >= 55
+    && /no verified contact|no usable contact|missing contact|contact path|find better contact/.test(contactBlockText)
+    && contactOnlyDisqualifiers;
   const decision = contactability !== null && contactability < 35
     ? "DO NOT CONTACT"
     : opportunity !== null && opportunity < 25
       ? "DO NOT CONTACT"
-      : modelDecision.decision || "DO NOT CONTACT";
-  const reason = decision === "DO NOT CONTACT" && hasWeakContactability
-    ? "Excellent business signals may exist, but outreach feasibility is low because no strong verified contact path was found."
-    : modelDecision.primary_reason || "Decision is based on independent module scores.";
+      : staleContactBlockResolved
+        ? "CONTACT"
+        : modelDecision.decision || "DO NOT CONTACT";
+  const reason = staleContactBlockResolved
+    ? "A verified public contact path and substantial opportunity are present, so the model's missing-contact block was resolved from validated evidence."
+    : decision === "DO NOT CONTACT" && hasWeakContactability
+      ? "Excellent business signals may exist, but outreach feasibility is low because no strong verified contact path was found."
+      : modelDecision.primary_reason || "Decision is based on independent module scores.";
   const recommendationStatus = hasWeakContactability && hasStrongBusiness
     ? "Find Better Contact"
     : decision === "CONTACT" && opportunity !== null && opportunity >= 55
@@ -1799,6 +1865,7 @@ function decisionEngineFromScores(moduleScores = {}, flat = {}) {
     sales_opportunity_score: averageScore([opportunity, contactability, moduleScores.decision?.value]),
     contactability_score: contactability,
     model_recommendation: modelDecision.decision || "",
+    stale_contact_block_resolved: staleContactBlockResolved,
     preserves_module_scores: true
   };
 }
@@ -2575,6 +2642,24 @@ function buildBrainOneContextPackage(lead = {}, scan = null) {
     ].filter(Boolean).join(" | "),
     capturedAt
   ));
+  const identity = lead.identityVerification || {};
+  const verifiedEmail = String(lead.email || "").trim().toLowerCase();
+  const identityEmail = String(identity.recipientEmail || "").trim().toLowerCase();
+  if (
+    identity.verified === true
+    && ["Verified", "Verified with public free-email address"].includes(identity.status)
+    && verifiedEmail
+    && identityEmail === verifiedEmail
+    && identity.emailSourceUrl
+  ) {
+    evidenceLog.push(evidenceItem(
+      "ev-verified-contact-email",
+      "website",
+      identity.emailSourceUrl,
+      `Verified public business email: ${verifiedEmail}`,
+      capturedAt
+    ));
+  }
   if (scan) {
     evidenceLog.push(evidenceItem(
       "ev-website-scan",

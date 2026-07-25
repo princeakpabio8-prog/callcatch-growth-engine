@@ -142,6 +142,14 @@ test("outreach generation returns its result without approving or sending it", (
     assert.doesNotMatch(source, /\/api\/email\//);
   }
 });
+test("outreach eligibility and report tone use the deterministic final contact decision", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    assert.match(html, /const decisionEngine = combinedOutput\.decision_engine \|\| \{\};/);
+    assert.match(html, /const decision = decisionEngine\.decision \|\| flat\.contact_decision\?\.decision/);
+    assert.match(html, /decisionEngine\.why_recommended \|\| decisionEngine\.reason/);
+  }
+});
 test("Verify Business runs identity verification before opening outreach", () => {
   for (const file of FILES) {
     const html = read(file);
