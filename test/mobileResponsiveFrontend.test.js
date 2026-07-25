@@ -121,10 +121,20 @@ test("workflow approval labels distinguish opportunity approval from final send 
 test("Verify Business runs identity verification before opening outreach", () => {
   for (const file of FILES) {
     const html = read(file);
-    assert.match(html, /if \(!identityVerified\(lead\)\) \{\s*const verified = await scanSelected\(lead\);/);
-    assert.match(html, /const verified = identityVerified\(lead\);\s*toast\(verified \? "Business verified"/);
-    assert.match(html, /return verified;/);
+    assert.match(html, /if \(!identityVerified\(lead\)\) \{\s*const verifiedLead = await scanSelected\(lead\);/);
+    assert.match(html, /const verified = identityVerified\(activeLead\);\s*toast\(verified \? "Business verified"/);
+    assert.match(html, /return verified \? activeLead : null;/);
     assert.doesNotMatch(html, /toast\("Verify the business website and email before outreach\."\)/);
+  }
+});
+
+test("verification rebinds the authoritative lead before email review", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    assert.match(html, /let lead = leads\.find\(item => item\.id === leadId\);[\s\S]*?applyServerState\(await api\("\/api\/crm"\)\);[\s\S]*?lead = leads\.find\(item => item\.id === leadId\);/);
+    assert.match(html, /const currentIndex = leads\.findIndex\(item => item\.id === snapshot\.id\);/);
+    assert.match(html, /if \(currentIndex >= 0\) Object\.assign\(leads\[currentIndex\], snapshot\);\s*else leads\.unshift\(snapshot\);/);
+    assert.match(html, /lead = verifiedLead;/);
   }
 });
 test("Business Analysis shows action-first summary and hides detailed scores", () => {

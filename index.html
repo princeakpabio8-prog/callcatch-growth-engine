@@ -2257,16 +2257,23 @@
       };
     }
     async function researchDraftAndMaybeSend(leadId){
-      const lead = leads.find(item => item.id === leadId);
-      if (!lead) { toast("Lead not found"); return false; }
+      let lead = leads.find(item => item.id === leadId);
+      if (!lead) {
+        try {
+          applyServerState(await api("/api/crm"));
+          lead = leads.find(item => item.id === leadId);
+        } catch {}
+      }
+      if (!lead) { toast("Lead not found. Refresh Fresh Leads and try again."); return false; }
       if (workedProspect(lead)) { toast("Already contacted. Use Pipeline for follow-up."); return false; }
       selectedId = lead.id;
       if (!identityVerified(lead)) {
-        const verified = await scanSelected(lead);
-        if (!verified || !identityVerified(lead)) {
+        const verifiedLead = await scanSelected(lead);
+        if (!verifiedLead || !identityVerified(verifiedLead)) {
           switchView("crm");
           return false;
         }
+        lead = verifiedLead;
       }
       const task = queue.find(item => item.leadId === lead.id && item.source === "brain-two-quality-gate" && !["Sent","Delivered","Opened","Replied"].includes(item.status));
       if (task) {
@@ -3456,29 +3463,41 @@
       }
     }
     async function scanSelected(lead){
-      if(!lead.website){ toast("Add the official business website before verification."); return false; }
+      if(!lead.website){ toast("Add the official business website before verification."); return null; }
       toast("Verifying business website and email...");
       try {
         const payload = await api("/api/scan-website",{method:"POST",body:JSON.stringify({leadId:lead.id})});
-        Object.assign(lead, normalizeLead(payload.lead || lead));
-        addTimeline(lead,"Website intelligence scan completed");
+        const snapshot = normalizeLead(payload.lead || lead);
+        const currentIndex = leads.findIndex(item => item.id === snapshot.id);
+        if (currentIndex >= 0) Object.assign(leads[currentIndex], snapshot);
+        else leads.unshift(snapshot);
+        const activeLead = leads.find(item => item.id === snapshot.id);
+        selectedId = activeLead.id;
+        addTimeline(activeLead,"Website intelligence scan completed");
         save();
         render();
-        const verified = identityVerified(lead);
+        const verified = identityVerified(activeLead);
         toast(verified ? "Business verified" : "Website scanned. Business identity still needs review.");
-        return verified;
+        return verified ? activeLead : null;
       } catch(e){
-        if (e.payload?.lead) Object.assign(lead, normalizeLead(e.payload.lead));
+        let activeLead = leads.find(item => item.id === lead.id) || lead;
+        if (e.payload?.lead) {
+          const snapshot = normalizeLead(e.payload.lead);
+          const currentIndex = leads.findIndex(item => item.id === snapshot.id);
+          if (currentIndex >= 0) Object.assign(leads[currentIndex], snapshot);
+          else leads.unshift(snapshot);
+          activeLead = leads.find(item => item.id === snapshot.id);
+        }
         if (e.code === "BUSINESS_IDENTITY_MISMATCH" || /identity|re-verification/i.test(e.message || "")) {
-          lead.identityStatus = "Needs Re-verification";
-          addTimeline(lead, "Website identity needs re-verification");
+          activeLead.identityStatus = "Needs Re-verification";
+          addTimeline(activeLead, "Website identity needs re-verification");
           save();
           render();
           toast("Business identity mismatch. Review the website and recipient.");
-          return false;
+          return null;
         }
         toast(e.message || "Website scan failed");
-        return false;
+        return null;
       }
     }
     function importCsv(){
