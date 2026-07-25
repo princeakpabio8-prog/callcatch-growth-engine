@@ -176,6 +176,7 @@ test("server and datastore source preserve manual-only and transactional boundar
   const store = fs.readFileSync(path.join(root, "lead-engine", "dataStore.js"), "utf8");
   assert.match(server, /Automatic sequence sending is disabled/);
   assert.match(server, /Test sends are disabled/);
+  assert.doesNotMatch(server, /requiresApiKey:\s*false/);
   assert.doesNotMatch(server, /setInterval\(runBackgroundAutomation/);
   assert.match(store, /SELECT data FROM callcatch_state WHERE id = \$1 FOR UPDATE/);
   assert.match(store, /writeQueue = pending\.then\(\(\) => undefined, \(\) => undefined\)/);

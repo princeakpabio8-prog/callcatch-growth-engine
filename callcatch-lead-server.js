@@ -1341,7 +1341,7 @@ const server = http.createServer(async (req, res) => {
         provider: smsConfig().provider,
         source: smsConfig().source
       },
-      requiresApiKey: false,
+      requiresApiKey: true,
       cache: "memory"
     });
   }
