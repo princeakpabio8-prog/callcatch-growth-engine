@@ -768,7 +768,7 @@
 
       <section class="view" id="crm">
         <div class="top"><div><h1>Fresh Leads</h1><p class="sub">New companies you have not contacted yet. Review the email first; sent prospects move to Pipeline automatically.</p></div><div class="actions"><button class="btn" id="exportCsvBtn" type="button">CSV</button><button class="btn" id="exportExcelBtn" type="button">Excel</button><button class="btn" id="exportJsonBtn" type="button">JSON</button><button class="btn" id="copySelectedBtn" type="button">Copy Selected</button><button class="btn" id="pdfBtn" type="button">PDF Report</button></div></div>
-        <div class="flow-strip"><span>1. Fresh lead</span><span>2. Review email</span><span>3. Send from Email Queue</span><span>4. Track in Pipeline</span></div>
+        <div class="flow-strip"><span>1. Fresh Lead</span><span>2. Verify Business</span><span>3. Research</span><span>4. Brain One</span><span>5. Approve Opportunity</span><span>6. Brain Two</span><span>7. Review Email</span><span>8. Approve &amp; Send</span><span>9. Pipeline</span><span>10. Follow-up</span></div>
         <div class="grid"><div class="panel"><div class="toolbar"><input id="search" placeholder="Search fresh leads"><select id="tradeFilter"><option value="">All trades</option></select><select id="stageFilter"><option value="">Fresh Inbox</option></select></div><p class="hint" id="crmInboxHint">Fresh Leads only shows uncontacted prospects. Already emailed companies are in Pipeline.</p><div id="leadList" class="lead-list"></div></div><div class="panel" id="leadDetail"><h2>No fresh lead selected</h2><p class="sub">Run Discovery to find new companies, then tap Review Email.</p></div></div>
       </section>
 
@@ -822,8 +822,8 @@
     </div>
     <div class="composer-foot">
       <button class="btn" id="composerSave" type="button">Save Draft</button>
-      <button class="btn" id="composerApprove" type="button">Approve</button>
-      <button class="btn primary" id="composerSend" type="button">Send Now</button>
+      <button class="btn" id="composerApprove" type="button">Approve Only</button>
+      <button class="btn primary" id="composerSend" type="button">Approve &amp; Send</button>
       <button class="btn" id="composerCopy" type="button">Copy</button>
     </div>
   </div>
@@ -1684,7 +1684,7 @@
         <details><summary>Business Growth Blueprint</summary><div class="script markdown" style="margin-top:10px;">${blueprint ? markdownToHtml(blueprint) : "<p>No founder-facing blueprint returned.</p>"}</div></details>
         <p class="hint">Phase A ${esc(run.phaseADurationMs || 0)}ms | Phase B ${esc(run.phaseBDurationMs || 0)}ms | finish ${esc(run.finishReason || "unknown")}</p>
         <p class="hint">Approval status: ${esc(approval)}. Approval does not trigger outbound email.</p>
-        <div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn primary small" data-brain-one-approve="${run.id}|${lead.id}">Approve for Outreach Draft</button><button class="btn small" data-brain-one-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-one-analyze="${lead.id}">Analyze Again</button></div>` : `<div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn small" data-brain-one-analyze="${lead.id}">Run Again</button></div>`}
+        <div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn primary small" data-brain-one-approve="${run.id}|${lead.id}">Approve Opportunity</button><button class="btn small" data-brain-one-reject="${run.id}|${lead.id}">Reject</button><button class="btn small" data-brain-one-analyze="${lead.id}">Analyze Again</button></div>` : `<div class="actions mobile-action-bar" style="margin-top:10px;"><button class="btn small" data-brain-one-analyze="${lead.id}">Run Again</button></div>`}
         <p class="hint" id="brainOneStatus-${lead.id}"></p></div>`;
     }
     function brainTwoEmailHtml(email = {}, index = 0){

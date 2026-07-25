@@ -91,17 +91,33 @@ test("Fresh Leads explains the simple review-send-pipeline flow", () => {
   for (const file of FILES) {
     const html = read(file);
     assert.match(html, /<h1>Fresh Leads<\/h1>/);
-    assert.match(html, /Fresh lead/);
-    assert.match(html, /Review email/);
-    assert.match(html, /Send from Email Queue/);
-    assert.match(html, /Track in Pipeline/);
+    assert.match(html, /Fresh Lead/);
+    assert.match(html, /Verify Business/);
+    assert.match(html, /Research/);
+    assert.match(html, /Brain One/);
+    assert.match(html, /Approve Opportunity/);
+    assert.match(html, /Brain Two/);
     assert.match(html, /Review Email/);
+    assert.match(html, /Approve &amp; Send/);
+    assert.match(html, /Pipeline/);
+    assert.match(html, /Follow-up/);
     assert.match(html, /Verify Business/);
     assert.doesNotMatch(html, /Research \+ Draft/);
     assert.doesNotMatch(html, /Research \+ Approve & Send/);
   }
 });
 
+test("workflow approval labels distinguish opportunity approval from final send approval", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    assert.match(html, /data-brain-one-approve[^>]*>Approve Opportunity<\/button>/);
+    assert.match(html, /id="composerApprove"[^>]*>Approve Only<\/button>/);
+    assert.match(html, /id="composerSend"[^>]*>Approve &amp; Send<\/button>/);
+    assert.match(html, /5\. Approve Opportunity/);
+    assert.match(html, /8\. Approve &amp; Send/);
+    assert.doesNotMatch(html, />Approve for Outreach Draft<\/button>/);
+  }
+});
 test("Verify Business runs identity verification before opening outreach", () => {
   for (const file of FILES) {
     const html = read(file);
