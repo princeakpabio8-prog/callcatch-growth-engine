@@ -1823,8 +1823,18 @@
         const crm = await api("/api/crm");
         applyServerState(crm);
         render();
-        toast(approved ? "Business analysis approved for outreach draft" : "Business analysis rejected");
-        return result;
+        if (!approved) {
+          toast("Business analysis rejected");
+          return result;
+        }
+        const existingDraft = brainTwoLatestRun(leadId);
+        if (existingDraft?.executionStatus === "completed") {
+          toast("Opportunity approved. Outreach draft ready for review");
+          return { ...result, brainTwoRun: existingDraft };
+        }
+        toast("Opportunity approved. Generating outreach draft...");
+        const draftResult = await generateBrainTwo(leadId);
+        return { ...result, brainTwoRun: draftResult?.run || null };
       } catch(error) {
         toast(error.message);
         return null;
@@ -1856,9 +1866,11 @@
         applyServerState(crm);
         render();
         toast("Outreach draft ready for review");
+        return result;
       } catch(error) {
         if (status) status.textContent = `Outreach draft blocked: ${error.message}`;
-        toast("Outreach draft blocked");
+        toast(error.message || "Outreach draft blocked");
+        return null;
       } finally {
         brainTwoStarting.delete(leadId);
       }

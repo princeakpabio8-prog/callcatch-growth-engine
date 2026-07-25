@@ -118,6 +118,30 @@ test("workflow approval labels distinguish opportunity approval from final send 
     assert.doesNotMatch(html, />Approve for Outreach Draft<\/button>/);
   }
 });
+test("approving an opportunity immediately prepares its Brain Two outreach draft", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    assert.match(html, /const existingDraft = brainTwoLatestRun\(leadId\);/);
+    assert.match(html, /if \(existingDraft\?\.executionStatus === "completed"\)/);
+    assert.match(html, /const draftResult = await generateBrainTwo\(leadId\);/);
+    assert.match(html, /return \{ \.\.\.result, brainTwoRun: draftResult\?\.run \|\| null \};/);
+    assert.match(html, /toast\("Opportunity approved\. Generating outreach draft\.\.\."\)/);
+  }
+});
+
+test("outreach generation returns its result without approving or sending it", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    const start = html.indexOf("async function generateBrainTwo(leadId)");
+    const end = html.indexOf("async function reviewBrainTwo", start);
+    const source = html.slice(start, end);
+    assert.match(source, /api\("\/api\/brain-two\/generate"/);
+    assert.match(source, /return result;/);
+    assert.doesNotMatch(source, /\/api\/brain-two\/approve/);
+    assert.doesNotMatch(source, /\/api\/sending\//);
+    assert.doesNotMatch(source, /\/api\/email\//);
+  }
+});
 test("Verify Business runs identity verification before opening outreach", () => {
   for (const file of FILES) {
     const html = read(file);
