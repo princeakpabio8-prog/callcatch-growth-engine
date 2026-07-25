@@ -573,7 +573,7 @@ test("normalization metadata and raw response are preserved during run", async (
 test("founder-facing Blueprint displays insufficient-evidence money statement", () => {
   const html = markdownToSafeHtml("## Money Left on the Table\nInsufficient public evidence was available to produce a responsible monetary estimate.");
   assert.match(html, /Insufficient public evidence was available to produce a responsible monetary estimate/);
-  assert.doesNotMatch(html, /\$0|£0|zero loss/i);
+  assert.doesNotMatch(html, /\$0|Â£0|zero loss/i);
 });
 
 test("duplicated opportunities are rejected", () => {
@@ -1431,7 +1431,7 @@ test("manual approval flow marks report without triggering outbound work", () =>
   const output = sampleOutput(sampleContext(4));
   const state = {
     leads: [{ id: "lead-4", business: "Sample Service 4", timeline: [] }],
-    brainOneRuns: [{ id: "run-4", businessId: "lead-4", executionStatus: "completed", approvalStatus: "pending-review", validatedOutput: output, blueprintMarkdown: "Blueprint" }],
+    brainOneRuns: [{ id: "run-4", businessId: "lead-4", executionStatus: "completed", approvalStatus: "pending-review", inputSnapshot: { businessIdentity: { businessId: "lead-4" } }, validatedOutput: output, blueprintMarkdown: "Blueprint" }],
     auditLog: []
   };
   const result = applyBrainOneReviewState(state, { runId: "run-4", leadId: "lead-4", approved: true, reviewedAt: "2026-07-11T10:00:00.000Z" });

@@ -21,10 +21,10 @@ const {
 const { enrichProspect, outreachAssets } = require("./lead-engine/prospectIntelligence");
 const { assertProductionStorageReady, audit, mutateStore, newId, readStore, storageMode, storageStatus } = require("./lead-engine/dataStore");
 const { resolveHost, resolvePort } = require("./lead-engine/runtimeConfig");
-const { buildCampaign, buildSequenceTasks } = require("./lead-engine/campaigns");
-const { DEFAULT_DAILY_GROWTH, automationCapabilities, mergeConfig, runDailyGrowth } = require("./lead-engine/dailyGrowth");
-const { activeProvider, configured: emailConfigured, emailConfig, maskEmail, parseEmail, sanitizeEmailError, sendEmail, verifyEmailTransport } = require("./lead-engine/emailAdapter");
-const { configured: smsConfigured, normalizePhone, sendSms, smsConfig } = require("./lead-engine/smsAdapter");
+const { buildCampaign } = require("./lead-engine/campaigns");
+const { automationCapabilities, mergeConfig } = require("./lead-engine/dailyGrowth");
+const { activeProvider, configured: emailConfigured, emailConfig, maskEmail, parseEmail, sanitizeEmailError, verifyEmailTransport } = require("./lead-engine/emailAdapter");
+const { configured: smsConfigured, normalizePhone, smsConfig } = require("./lead-engine/smsAdapter");
 const {
   applyBrainOneReviewState,
   buildBrainOneContextPackage,
@@ -43,11 +43,8 @@ const {
 const {
   generateFollowUps,
   metrics: sendingMetrics,
+  randomDelaySeconds,
   recordReply,
-  runSequenceAutomation,
-  runDueScheduled,
-  scheduleTask,
-  sendApprovedBatch,
   sendTaskNow
 } = require("./lead-engine/sendingEngine");
 const {
@@ -56,12 +53,30 @@ const {
   findDuplicateManualLead,
   validateManualProspectInput
 } = require("./lead-engine/manualProspect");
+const {
+  assertProductionSecurityReady,
+  authenticate,
+  originAllowed,
+  routeAccess,
+  securityConfig,
+  verifyResendWebhook
+} = require("./lead-engine/security");
+const {
+  approveQueuedBrainTwoTask,
+  queueApprovedBrainTwoDraft
+} = require("./lead-engine/outboundPipeline");
+const {
+  assertDraftIdentity,
+  auditAndMarkIdentityRecords,
+  isIdentityVerified,
+  validateIdentityChain,
+  verifyBusinessIdentity
+} = require("./lead-engine/businessIdentity");
 
 const PORT = resolvePort();
 const HOST = resolveHost();
 const PUBLIC_DIR = __dirname;
 const BRAIN_ONE_MAX_DURATION_MS = Number(process.env.BRAIN_ONE_MAX_DURATION_MS || 300000);
-let automationRunning = false;
 
 function sanitizedError(error) {
   const secretPatterns = [
@@ -133,6 +148,11 @@ function mergeLeadRecord(existing = {}, incoming = {}) {
   merged.timeline = mergeUniqueList(incoming.timeline || [], existing.timeline || []).slice(0, 300);
   merged.sentEmails = mergeUniqueList(existing.sentEmails || [], incoming.sentEmails || []).slice(0, 100);
   merged.replies = mergeUniqueList(existing.replies || [], incoming.replies || []).slice(0, 100);
+  merged.identityVerification = existing.identityVerification || incoming.identityVerification || null;
+  merged.identityStatus = existing.identityStatus || incoming.identityStatus || "";
+  merged.verifiedIndustry = existing.verifiedIndustry || incoming.verifiedIndustry || "";
+  merged.industryVerified = existing.industryVerified === true || incoming.industryVerified === true;
+  merged.emailSourceUrl = existing.emailSourceUrl || incoming.emailSourceUrl || "";
   merged.callCatchFitScore = Math.max(Number(existing.callCatchFitScore || 0), Number(incoming.callCatchFitScore || 0));
   merged.revenueOpportunityEstimate = Math.max(Number(existing.revenueOpportunityEstimate || 0), Number(incoming.revenueOpportunityEstimate || 0));
   merged.updatedAt = new Date().toISOString();
@@ -166,7 +186,7 @@ function normalizeInboundReplyPayload(body = {}, headers = {}) {
     to: toValue,
     subject: data.subject || body.subject || "",
     body: text || stripHtml(html),
-    provider: body.provider || (urlSafeHeader(headers, "resend-signature") ? "resend" : "inbound"),
+    provider: body.provider || (urlSafeHeader(headers, "svix-signature") ? "resend" : "inbound"),
     rawType: body.type || data.type || "",
     messageId: data.message_id || data.id || body.id || ""
   };
@@ -678,14 +698,57 @@ async function enrichLeadForOutreach(lead = {}) {
 
 function send(res, status, payload) {
   const body = JSON.stringify(payload);
-  res.writeHead(status, {
+  const headers = {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type"
-  });
+    "Cache-Control": "no-store",
+    "Vary": "Origin"
+  };
+  if (res.callcatchCorsOrigin) {
+    headers["Access-Control-Allow-Origin"] = res.callcatchCorsOrigin;
+    headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS";
+    headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-CallCatch-Token";
+  }
+  res.writeHead(status, headers);
   res.end(body);
   return { status, bodyLength: Buffer.byteLength(body) };
+}
+
+function applyResendDeliveryEvent(state, payload = {}) {
+  const eventType = String(payload.type || "").toLowerCase();
+  const data = payload.data || {};
+  const messageId = data.email_id || data.id || payload.email_id || "";
+  const task = (state.approvalQueue || []).find(item => item.messageId && item.messageId === messageId);
+  if (!task) return { matched: false, eventType, messageId };
+  const at = data.created_at || payload.created_at || new Date().toISOString();
+  const transitions = {
+    "email.sent": "Sent",
+    "email.delivered": "Delivered",
+    "email.opened": "Opened",
+    "email.bounced": "Bounced",
+    "email.failed": "Failed"
+  };
+  const next = transitions[eventType];
+  const rank = { Draft: 0, Approved: 1, Queued: 2, Sending: 3, Sent: 4, Delivered: 5, Opened: 6, Replied: 7, Bounced: 8, Failed: 8 };
+  if (next && (rank[next] >= Number(rank[task.status] ?? 0) || ["Bounced", "Failed"].includes(next))) {
+    task.status = next;
+    task.deliveryStatus = next;
+    task[`${next.toLowerCase()}At`] = at;
+    if (next === "Bounced" || next === "Failed") task.error = String(data.bounce?.message || data.reason || next).slice(0, 300);
+  }
+  if (eventType === "email.clicked") task.clickedAt = at;
+  const lead = (state.leads || []).find(item => item.id === task.leadId);
+  const sentRecord = (lead?.sentEmails || []).find(item => item.taskId === task.id || (messageId && item.messageId === messageId));
+  if (sentRecord && next) {
+    sentRecord.status = next;
+    sentRecord[`${next.toLowerCase()}At`] = at;
+  }
+  if (lead && next) {
+    lead.timeline = lead.timeline || [];
+    lead.timeline.unshift({ at, text: `Email ${next.toLowerCase()}: ${task.title || "Outbound email"}` });
+  }
+  state.auditLog = state.auditLog || [];
+  state.auditLog.unshift({ id: newId("audit"), at, action: `resend_${eventType.replace(/[^a-z0-9]+/g, "_")}`, details: { taskId: task.id, leadId: task.leadId, messageId } });
+  return { matched: true, eventType, messageId, status: next || task.status, taskId: task.id };
 }
 
 function brainOneStartResponse(status, payload) {
@@ -719,7 +782,7 @@ function log(level, message, meta = {}) {
   console.log(JSON.stringify(entry));
 }
 
-function readJson(req) {
+function readRawBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
     req.on("data", chunk => {
@@ -729,30 +792,17 @@ function readJson(req) {
         req.destroy();
       }
     });
-    req.on("end", () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch {
-        reject(new Error("Invalid JSON"));
-      }
-    });
+    req.on("end", () => resolve(body));
     req.on("error", reject);
   });
 }
 
-async function runBackgroundAutomation() {
-  if (automationRunning) return;
-  automationRunning = true;
+async function readJson(req) {
+  const body = await readRawBody(req);
   try {
-    await mutateStore(state => {
-      const config = mergeConfig(state.dailyGrowth || {});
-      const autoPilot = config.enabled && config.automationLevel === "Auto Pilot";
-      return runSequenceAutomation(state, { autoPilot });
-    });
-  } catch (error) {
-    log("error", "sequence_automation_failed", { error: error.message });
-  } finally {
-    automationRunning = false;
+    return body ? JSON.parse(body) : {};
+  } catch {
+    throw new Error("Invalid JSON");
   }
 }
 
@@ -1212,11 +1262,29 @@ async function completeBrainOneRun(runId, contextPackage, modelName, logger = lo
 }
 
 const server = http.createServer(async (req, res) => {
+  const origin = String(req.headers.origin || "");
+  if (!originAllowed(origin)) {
+    log("warn", "cors_origin_rejected", { origin, method: req.method, path: String(req.url || "").split("?")[0] });
+    return send(res, 403, { ok: false, error: { code: "ORIGIN_NOT_ALLOWED", message: "This origin is not allowed to access CallCatch." } });
+  }
+  if (origin) res.callcatchCorsOrigin = origin;
   if (req.method === "OPTIONS") {
     return send(res, 204, {});
   }
 
   const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
+  const requiredRole = routeAccess(req.method, url.pathname);
+  const auth = authenticate(req.headers, requiredRole);
+  if (!auth.ok) {
+    log("warn", "api_authentication_rejected", { method: req.method, path: url.pathname, requiredRole });
+    return send(res, requiredRole === "admin" ? 403 : 401, {
+      ok: false,
+      error: {
+        code: requiredRole === "admin" ? "ADMIN_AUTH_REQUIRED" : "AUTH_REQUIRED",
+        message: requiredRole === "admin" ? "Administrator authentication is required." : "CallCatch authentication is required."
+      }
+    });
+  }
 
   if (req.method === "GET" && ["/", "/dashboard", "/callcatch-lead-dashboard.html"].includes(url.pathname)) {
     return sendFile(res, path.join(PUBLIC_DIR, "callcatch-lead-dashboard.html"), "text/html; charset=utf-8");
@@ -1257,10 +1325,10 @@ const server = http.createServer(async (req, res) => {
         enabled: true,
         mode: "manual-after-approved-brain-one",
         sendsEmail: false,
-        queuesEmail: false
+        queuesEmailAfterApproval: true
       },
-      automation: ["daily-growth", "campaign-sequences", "approval-first-autopilot"],
-      sendingEngine: ["send-now", "bulk-send", "scheduled-send", "rate-limits", "reply-tracking"],
+      automation: [],
+      sendingEngine: ["brain-two-approved-drafts", "send-now", "bulk-send", "rate-limits", "reply-tracking"],
       storage: storageStatus(),
       storageMode: storageMode(),
       email: {
@@ -1414,13 +1482,58 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/scan-website") {
     try {
       const body = await readJson(req);
-      const scan = await scanWebsite(body.website || body.url);
-      const discoveredEmail = scan.emails && scan.emails[0] ? scan.emails[0] : "";
-      const lead = body.lead ? enrichProspect({ ...body.lead, email: body.lead.email || discoveredEmail }, scan) : null;
-      await audit("website_scan", { website: body.website || body.url, ok: scan.ok });
-      return send(res, 200, { scan, lead });
+      const leadId = body.leadId || body.lead?.id || "";
+      const snapshot = await readStore();
+      const storedLead = (snapshot.leads || []).find(item => item.id === leadId);
+      if (!storedLead) return send(res, 404, { ok: false, error: "Lead not found" });
+      const scan = await scanWebsite(storedLead.website);
+      let identityVerification = verifyBusinessIdentity({ lead: storedLead, scan, email: storedLead.email });
+      let verifiedEmail = isIdentityVerified(identityVerification) ? storedLead.email : "";
+      if (!verifiedEmail) {
+        for (const candidate of scan.emails || []) {
+          const result = verifyBusinessIdentity({ lead: storedLead, scan, email: candidate });
+          if (isIdentityVerified(result)) {
+            verifiedEmail = candidate;
+            identityVerification = result;
+            break;
+          }
+          if (!identityVerification || identityVerification.status === "Needs Review") identityVerification = result;
+        }
+      }
+      const lead = await mutateStore(state => {
+        const current = (state.leads || []).find(item => item.id === leadId);
+        if (!current) throw new Error("Lead not found");
+        const enriched = enrichProspect({
+          ...current,
+          email: verifiedEmail,
+          searchTrade: current.searchTrade || current.trade,
+          trade: identityVerification.confirmedIndustry || current.trade,
+          verifiedIndustry: isIdentityVerified(identityVerification) ? identityVerification.confirmedIndustry : "",
+          industryVerified: isIdentityVerified(identityVerification),
+          emailSourceUrl: identityVerification.emailSourceUrl || "",
+          identityVerification,
+          identityStatus: isIdentityVerified(identityVerification) ? identityVerification.status : "Needs Re-verification",
+          websiteVerificationStatus: scan.ok ? "completed" : "failed"
+        }, scan);
+        Object.assign(current, enriched);
+        state.auditLog = state.auditLog || [];
+        state.auditLog.unshift({
+          id: newId("audit"),
+          at: new Date().toISOString(),
+          action: "business_identity_checked",
+          details: { leadId, status: identityVerification.status, websiteDomain: identityVerification.websiteDomain, emailDomain: identityVerification.emailDomain }
+        });
+        return current;
+      });
+      return send(res, isIdentityVerified(identityVerification) ? 200 : 409, {
+        ok: isIdentityVerified(identityVerification),
+        scan,
+        lead,
+        identityVerification,
+        error: isIdentityVerified(identityVerification) ? "" : "Business identity mismatch"
+      });
     } catch (error) {
-      return send(res, 400, { error: error.message });
+      return send(res, 400, { ok: false, error: error.message });
     }
   }
 
@@ -1511,17 +1624,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && url.pathname === "/api/outreach") {
-    try {
-      const body = await readJson(req);
-      const lead = body.scan === false ? (body.lead || {}) : await enrichLeadForOutreach(body.lead || {});
-      return send(res, 200, {
-        approvalRequired: true,
-        lead,
-        assets: outreachAssets(lead)
-      });
-    } catch (error) {
-      return send(res, 400, { error: error.message });
-    }
+    return send(res, 410, { ok: false, error: "Legacy outreach drafting is disabled. Use the verified Brain Two workflow." });
   }
 
   if (req.method === "GET" && url.pathname === "/api/brain-one/runs") {
@@ -1529,7 +1632,8 @@ const server = http.createServer(async (req, res) => {
     const leadId = url.searchParams.get("leadId") || "";
     const runs = (state.brainOneRuns || [])
       .filter(run => !leadId || run.businessId === leadId)
-      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+      .map(({ rawResponse, phaseARawResponse, inputSnapshot, ...run }) => run);
     return send(res, 200, { runs });
   }
 
@@ -1610,6 +1714,14 @@ const server = http.createServer(async (req, res) => {
         ? (state.brainZeroRuns || []).find(item => item.run_id === body.brainZeroRunId || item.id === body.brainZeroRunId)
         : null;
       const brainZeroRun = requestedBrainZeroRun || latestBrainZeroRun(state.brainZeroRuns || [], lead.id);
+      const brainZeroBusinessId = brainZeroRun?.business_id || brainZeroRun?.businessId || "";
+      if (brainZeroRun && brainZeroBusinessId !== lead.id) {
+        return send(res, 409, brainOneStartResponse(409, {
+          ok: false,
+          status: "blocked",
+          error: { code: "BUSINESS_IDENTITY_MISMATCH", message: "Business identity mismatch" }
+        }));
+      }
       const gate = brainZeroCanRunBrainOne(brainZeroRun, { acceptPartial: !!body.acceptPartial && !!requestedBrainZeroRun });
       if (!gate.allowed) {
         responseMeta = send(res, 409, brainOneStartResponse(409, {
@@ -1773,6 +1885,11 @@ const server = http.createServer(async (req, res) => {
           : state.brainOneRuns
             .filter(item => item.businessId === lead.id)
             .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))[0];
+        if (brainOneRun && brainOneRun.businessId !== lead.id) {
+          const error = new Error("Business identity mismatch");
+          error.statusCode = 409;
+          throw error;
+        }
         const eligibility = evaluateBrainTwoEligibility({ lead, brainOneRun });
         if (!eligibility.eligible) {
           const error = new Error(eligibility.reasons.join(" ") || "Brain Two is not eligible for this lead.");
@@ -1818,16 +1935,44 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readJson(req);
       const approved = url.pathname.endsWith("/approve");
-      const result = await mutateStore(state => applyBrainTwoReviewState(state, {
-        runId: body.runId,
-        leadId: body.leadId,
-        approved,
-        reviewedBy: body.reviewedBy || "CallCatch user",
-        notes: body.notes || ""
-      }));
+      const result = await mutateStore(state => {
+        const reviewedAt = new Date().toISOString();
+        const review = applyBrainTwoReviewState(state, {
+          runId: body.runId,
+          leadId: body.leadId,
+          approved,
+          reviewedBy: body.reviewedBy || "CallCatch user",
+          notes: body.notes || "",
+          reviewedAt
+        });
+        if (approved) {
+          review.outbound = queueApprovedBrainTwoDraft(state, {
+            run: review.run,
+            lead: review.lead,
+            reviewer: body.reviewedBy || "CallCatch user",
+            reviewedAt
+          });
+        } else {
+          for (const task of state.approvalQueue || []) {
+            if (task.brainTwoRunId === body.runId && !["Sent", "Delivered", "Opened", "Replied"].includes(task.status)) task.status = "Rejected";
+          }
+          for (const approval of state.outboundApprovals || []) {
+            if (approval.brainTwoRunId === body.runId && !approval.consumedAt) approval.status = "revoked";
+          }
+        }
+        return review;
+      });
       return send(res, 200, { ok: true, ...result });
     } catch (error) {
-      return send(res, 400, { ok: false, error: error.message });
+      if (error.code === "BUSINESS_IDENTITY_MISMATCH") {
+        log("warn", "business_identity_mismatch", { route: "brain-two-review", conflicts: error.details || [] });
+      }
+      return send(res, error.code === "BUSINESS_IDENTITY_MISMATCH" ? 409 : 400, {
+        ok: false,
+        error: error.code === "BUSINESS_IDENTITY_MISMATCH" ? "Business identity mismatch" : error.message,
+        code: error.code || "",
+        conflicts: error.details || []
+      });
     }
   }
 
@@ -1858,9 +2003,21 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && url.pathname === "/api/crm") {
     const state = await mutateStore(state => {
       hydrateSentEmailHistory(state);
+      state.approvalQueue = (state.approvalQueue || []).filter(task =>
+        task.source === "brain-two-quality-gate"
+        || ["Sent", "Delivered", "Opened", "Replied", "Bounced", "Failed"].includes(task.status)
+      );
       return state;
     });
-    return send(res, 200, state);
+    return send(res, 200, {
+      leads: state.leads || [],
+      campaigns: state.campaigns || [],
+      approvalQueue: state.approvalQueue || [],
+      savedSearches: state.savedSearches || [],
+      brainZeroRuns: state.brainZeroRuns || [],
+      brainOneRuns: (state.brainOneRuns || []).map(({ rawResponse, phaseARawResponse, inputSnapshot, ...run }) => run),
+      brainTwoRuns: state.brainTwoRuns || []
+    });
   }
 
   if (req.method === "GET" && url.pathname === "/api/pipeline/contacted") {
@@ -1887,46 +2044,57 @@ const server = http.createServer(async (req, res) => {
       const incoming = Array.isArray(body.leads) ? body.leads : [];
       const saved = await mutateStore(state => {
         state.leads = state.leads || [];
-        const existing = new Map(state.leads.map(lead => [lead.id, lead]));
-        const keyToId = new Map(state.leads.map(lead => [normalizeCompanyKey(lead), lead.id]));
+        const existing = new Map(state.leads.filter(lead => lead.id).map(lead => [lead.id, lead]));
+        const identityKeys = new Map();
+        for (const lead of state.leads || []) {
+          const key = normalizeCompanyKey(lead);
+          if (key) {
+            const ids = identityKeys.get(key) || new Set();
+            ids.add(lead.id);
+            identityKeys.set(key, ids);
+          }
+        }
         let skippedNoEmail = 0;
-        let mergedDuplicate = 0;
+        let conflictingIdentity = 0;
         incoming.forEach(lead => {
           const id = lead.id || newId("lead");
           const alreadySaved = existing.has(id);
-          const key = normalizeCompanyKey(lead);
           if (!storableProspect(lead) && !alreadySaved) {
             skippedNoEmail += 1;
             return;
           }
-          const duplicateId = keyToId.get(key);
-          if (!alreadySaved && duplicateId && existing.has(duplicateId)) {
-            existing.set(duplicateId, mergeLeadRecord(existing.get(duplicateId), lead));
-            mergedDuplicate += 1;
-            return;
+          const candidate = alreadySaved
+            ? mergeLeadRecord(existing.get(id), { ...lead, id })
+            : { ...lead, id, updatedAt: new Date().toISOString() };
+          const key = normalizeCompanyKey(candidate);
+          const differentIds = [...(identityKeys.get(key) || [])].filter(existingId => existingId && existingId !== id);
+          if (differentIds.length) {
+            candidate.identityVerification = {
+              ...(candidate.identityVerification || {}),
+              leadId: id,
+              status: "Needs Review",
+              verified: false,
+              reasons: ["Another immutable lead ID uses the same business identity key; manual re-verification is required."],
+              conflicts: [{ field: "leadId", expected: id, actual: differentIds.join(", ") }],
+              checkedAt: new Date().toISOString()
+            };
+            candidate.identityStatus = "Needs Re-verification";
+            conflictingIdentity += 1;
           }
-          keyToId.set(key, id);
-          existing.set(id, alreadySaved ? mergeLeadRecord(existing.get(id), lead) : { ...lead, id, updatedAt: new Date().toISOString() });
+          existing.set(id, candidate);
+          if (key) {
+            const ids = identityKeys.get(key) || new Set();
+            ids.add(id);
+            identityKeys.set(key, ids);
+          }
         });
+        state.leads = [...existing.values()].filter(storableProspect);
         hydrateSentEmailHistory(state);
-        state.leads = [...existing.values(), ...state.leads.filter(lead => !existing.has(lead.id))].filter(storableProspect);
-        hydrateSentEmailHistory(state);
-        const leadById = new Map(state.leads.map(lead => [lead.id, lead]));
-        for (const task of state.approvalQueue || []) {
-          if (["email", "sms"].includes(task.channel) && !task.to && !task.recipient) {
-            const lead = leadById.get(task.leadId);
-            const recipient = task.channel === "sms" ? lead?.phone : lead?.email;
-            if (recipient) {
-              task.to = recipient;
-              task.recipient = recipient;
-            }
-          }
-        }
         state.auditLog.unshift({
           id: newId("audit"),
           at: new Date().toISOString(),
           action: "crm_leads_synced",
-          details: { count: incoming.length, skippedNoEmail, mergedDuplicate, emailFirst: true }
+          details: { count: incoming.length, skippedNoEmail, conflictingIdentity, mergeMode: "immutable-lead-id-only" }
         });
         return state.leads;
       });
@@ -1977,85 +2145,80 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && url.pathname === "/api/campaigns/enroll") {
+    return send(res, 409, {
+      ok: false,
+      error: "Legacy campaign enrollment cannot create sendable drafts. Complete Brain Two and approve its Quality Gate output instead."
+    });
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/outbound-review") {
+    const taskId = url.searchParams.get("taskId") || "";
+    const state = await readStore();
+    const task = (state.approvalQueue || []).find(item => item.id === taskId);
+    const lead = (state.leads || []).find(item => item.id === task?.leadId);
+    const brainTwoRun = (state.brainTwoRuns || []).find(item => item.id === task?.brainTwoRunId);
+    const brainOneRun = (state.brainOneRuns || []).find(item => item.id === brainTwoRun?.brainOneRunId);
+    const brainZeroRun = brainOneRun?.brainZeroRunId
+      ? (state.brainZeroRuns || []).find(item => item.run_id === brainOneRun.brainZeroRunId || item.id === brainOneRun.brainZeroRunId)
+      : null;
+    const approval = (state.outboundApprovals || []).find(item => item.id === task?.approvalId);
+    try {
+      if (!task || !lead || !brainTwoRun || !brainOneRun) throw new Error("Business identity mismatch");
+      const identity = assertDraftIdentity({ state, lead, brainZeroRun, brainOneRun, brainTwoRun, task, approval });
+      return send(res, 200, {
+        ok: true,
+        task: {
+          id: task.id,
+          leadId: task.leadId,
+          business: task.business,
+          channel: task.channel,
+          status: task.status,
+          title: task.title,
+          subject: task.subject,
+          body: task.body,
+          to: task.to,
+          recipient: task.recipient,
+          source: task.source
+        },
+        identity
+      });
+    } catch (error) {
+      const details = error.details || [];
+      log("warn", "business_identity_mismatch", { route: "outbound-review", taskId, leadId: task?.leadId || "", conflicts: details });
+      await audit("business_identity_mismatch_blocked", { route: "outbound-review", taskId, leadId: task?.leadId || "", conflicts: details });
+      return send(res, 409, { ok: false, error: "Business identity mismatch", code: "BUSINESS_IDENTITY_MISMATCH", conflicts: details });
+    }
+  }
+  if (req.method === "POST" && url.pathname === "/api/approval-queue/approve") {
+    let approvalTaskId = "";
     try {
       const body = await readJson(req);
-      const campaign = { ...(body.campaign || buildCampaign(body)) };
-      const currentState = await readStore();
-      hydrateSentEmailHistory(currentState);
-      const contactedKeys = contactedKeySet(currentState.leads || []);
-      const sourceLeads = Array.isArray(body.leads) ? body.leads : currentState.leads;
-      const candidates = sourceLeads
-        .filter(emailReadyLead)
-        .filter(lead => Number(lead.callCatchFitScore || 0) >= Number(campaign.minFitScore || 68))
-        .filter(lead => !campaign.trade || lead.trade === campaign.trade)
-        .filter(lead => !taskMatchesContacted({ channel: "email", leadId: lead.id, business: lead.business, website: lead.website, city: lead.city, state: lead.state, to: lead.email, title: "Cold Email" }, lead, contactedKeys));
-      const enrichedCandidates = [];
-      for (const lead of candidates) {
-        enrichedCandidates.push(await enrichLeadForOutreach(lead));
-      }
-      const result = await mutateStore(state => {
-        const campaign = { ...(body.campaign || buildCampaign(body)), variantStats: state.sending?.variantStats || {} };
-        const tasks = enrichedCandidates.flatMap(lead => buildSequenceTasks(lead, campaign, outreachAssets(lead))
-          .filter(task => !body.mobileEmailOnly || task.channel === "email")
-          .map(task => ({ ...task, id: newId("task"), createdAt: new Date().toISOString() })));
-        state.leads = (state.leads || []).map(existing => enrichedCandidates.find(lead => lead.id && lead.id === existing.id) || existing);
-        state.approvalQueue.unshift(...tasks);
-        state.approvalQueue = compactApprovalQueue(state.approvalQueue || [], state.leads || []);
-        const savedTasks = tasks.filter(task => state.approvalQueue.some(item => item.id === task.id));
-        state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "campaign_enrolled", details: { campaign: campaign.name, leads: enrichedCandidates.length, tasks: savedTasks.length, skippedWorked: tasks.length - savedTasks.length, enriched: true } });
-        return { leads: enrichedCandidates.length, enrichedLeads: enrichedCandidates, tasks: savedTasks, skippedWorked: tasks.length - savedTasks.length };
-      });
-      return send(res, 200, result);
+      approvalTaskId = body.taskId || "";
+      const result = await mutateStore(state => approveQueuedBrainTwoTask(state, {
+        taskId: approvalTaskId,
+        reviewer: body.reviewedBy || "CallCatch user"
+      }));
+      return send(res, 200, { ok: true, ...result });
     } catch (error) {
-      return send(res, 400, { error: error.message });
+      if (error.code === "BUSINESS_IDENTITY_MISMATCH") {
+        log("warn", "business_identity_mismatch", { route: "approval", taskId: approvalTaskId, conflicts: error.details || [] });
+      }
+      return send(res, error.code === "BUSINESS_IDENTITY_MISMATCH" ? 409 : 400, { ok: false, error: error.message, code: error.code || "", conflicts: error.details || [] });
     }
   }
 
   if (req.method === "POST" && url.pathname === "/api/approval-queue") {
-    try {
-      const body = await readJson(req);
-      const saved = await mutateStore(state => {
-        const items = Array.isArray(body.items) ? body.items : [];
-        state.approvalQueue = state.approvalQueue || [];
-        hydrateSentEmailHistory(state);
-        if (body.replace === true) {
-          const normalized = items.map(item => ({ id: item.id || newId("task"), createdAt: item.createdAt || new Date().toISOString(), status: item.status || "Needs Approval", ...item }));
-          state.approvalQueue = compactApprovalQueue(normalized, state.leads || []);
-          state.auditLog.unshift({
-            id: newId("audit"),
-            at: new Date().toISOString(),
-            action: "approval_queue_replaced",
-            details: { count: state.approvalQueue.length }
-          });
-          return state.approvalQueue;
-        }
-        if (items.length === 0) {
-          state.approvalQueue = compactApprovalQueue(state.approvalQueue, state.leads || []);
-          return state.approvalQueue;
-        }
-        const normalized = items.map(item => ({ id: item.id || newId("task"), createdAt: item.createdAt || new Date().toISOString(), status: item.status || "Needs Approval", ...item }));
-        const incomingIds = new Set(normalized.map(item => item.id));
-        const existing = new Map(state.approvalQueue.map(item => [item.id, item]));
-        const mergedIncoming = normalized.map(item => ({ ...(existing.get(item.id) || {}), ...item }));
-        const untouched = state.approvalQueue.filter(item => !incomingIds.has(item.id));
-        state.approvalQueue = compactApprovalQueue(mergedIncoming.concat(untouched), state.leads || []);
-        state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: "approval_queue_updated", details: { count: normalized.length } });
-        return state.approvalQueue;
-      });
-      return send(res, 200, { items: saved });
-    } catch (error) {
-      return send(res, 400, { error: error.message });
-    }
+    const state = await readStore();
+    return send(res, 200, {
+      ok: true,
+      serverManaged: true,
+      message: "The send queue is managed only by Brain Two approval.",
+      items: state.approvalQueue || []
+    });
   }
 
   if (req.method === "POST" && url.pathname === "/api/outreach/generate") {
-    try {
-      const body = await readJson(req);
-      const lead = body.scan === false ? (body.lead || {}) : await enrichLeadForOutreach(body.lead || {});
-      return send(res, 200, { lead, assets: outreachAssets(lead) });
-    } catch (error) {
-      return send(res, 400, { error: error.message });
-    }
+    return send(res, 410, { ok: false, error: "Legacy outreach drafting is disabled. Use the verified Brain Two workflow." });
   }
 
   if (req.method === "GET" && url.pathname === "/api/audit-log") {
@@ -2137,22 +2300,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && url.pathname === "/api/email/send-test") {
-    try {
-      const body = await readJson(req);
-      if (body.test !== true) {
-        return send(res, 400, { error: "Test flag is required before sending a test email." });
-      }
-      const result = await sendEmail({
-        to: body.to,
-        subject: body.subject || "CallCatch test email - delivery check",
-        body: body.body || "This is a CallCatch email delivery test. No prospect outreach or follow-up was triggered."
-      });
-      await audit("email_test_sent", { to: result.to, messageId: result.messageId });
-      return send(res, 200, result);
-    } catch (error) {
-      const safe = sanitizeEmailError(error);
-      return send(res, 400, { error: safe.message, responseCode: safe.responseCode || "", causes: safe.causes || [] });
-    }
+    return send(res, 410, { ok: false, error: "Test sends are disabled. CallCatch sends only approved Brain Two drafts." });
   }
 
   if (req.method === "GET" && url.pathname === "/api/sms/status") {
@@ -2168,106 +2316,15 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && url.pathname === "/api/sms/send-test") {
-    try {
-      const body = await readJson(req);
-      const result = await sendSms({
-        to: body.to,
-        body: body.body || "CallCatch SMS delivery test."
-      });
-      await audit("sms_test_sent", { to: result.to, messageId: result.messageId });
-      return send(res, 200, result);
-    } catch (error) {
-      return send(res, 400, { error: error.message });
-    }
+    return send(res, 410, { ok: false, error: "SMS sending is disabled for this reliability sprint." });
   }
 
   if (req.method === "POST" && ["/api/email/opened", "/api/email/clicked"].includes(url.pathname)) {
-    try {
-      const body = await readJson(req);
-      const eventType = url.pathname.endsWith("opened") ? "opened" : "clicked";
-      const result = await mutateStore(state => {
-        state.sending = state.sending || {};
-        state.sending.metrics = state.sending.metrics || {};
-        state.sending.variantStats = state.sending.variantStats || {};
-        const task = (state.approvalQueue || []).find(item => item.id === body.taskId);
-        if (!task) throw new Error("Task not found");
-        const lead = (state.leads || []).find(item => item.id === task.leadId) || {};
-        task[eventType === "opened" ? "openedAt" : "clickedAt"] = new Date().toISOString();
-        state.sending.metrics[eventType] = Number(state.sending.metrics[eventType] || 0) + 1;
-        const trade = lead.trade || "Unknown";
-        const variant = task.emailVariant || "A";
-        state.sending.variantStats[trade] = state.sending.variantStats[trade] || {};
-        state.sending.variantStats[trade][variant] = state.sending.variantStats[trade][variant] || { sent: 0, opened: 0, replies: 0, meetings: 0 };
-        if (eventType === "opened") state.sending.variantStats[trade][variant].opened += 1;
-        state.auditLog.unshift({ id: newId("audit"), at: new Date().toISOString(), action: `email_${eventType}`, details: { taskId: task.id, leadId: lead.id || "" } });
-        return { task, lead };
-      });
-      return send(res, 200, { ok: true, event: eventType, ...result });
-    } catch (error) {
-      return send(res, 400, { error: error.message });
-    }
+    return send(res, 410, { ok: false, error: "Email engagement status is accepted only from a verified provider webhook." });
   }
 
   if (req.method === "POST" && url.pathname === "/api/email/send-approved") {
-    try {
-      const result = await mutateStore(async state => {
-        const queue = state.approvalQueue || [];
-        const leads = state.leads || [];
-        const approved = queue.filter(item => item.channel === "email" && /^approved/i.test(item.status || ""));
-        const sent = [];
-        const failed = [];
-
-        for (const item of approved) {
-          const lead = leads.find(candidate => candidate.id === item.leadId) || {};
-          const to = parseEmail(item.to || item.recipient || lead.email);
-          if (!to) {
-            item.status = "Needs Email";
-            failed.push({ id: item.id, business: item.business, error: "No recipient email found" });
-            continue;
-          }
-          try {
-            const sendResult = await sendEmail({ to, task: item, lead });
-            item.status = "Sent";
-            item.sentAt = sendResult.sentAt;
-            item.messageId = sendResult.messageId;
-            lead.lastContact = sendResult.sentAt.slice(0, 10);
-            lead.stage = lead.stage === "New" ? "Contacted" : lead.stage;
-            lead.timeline = lead.timeline || [];
-            lead.timeline.unshift({ at: sendResult.sentAt, text: `Email sent: ${item.title || "Approved email"}` });
-            lead.sentEmails = lead.sentEmails || [];
-            lead.sentEmails.unshift({
-              id: newId("sent"),
-              taskId: item.id,
-              title: item.title || "Approved email",
-              to,
-              subject: String(item.body || "").split(/\r?\n/).find(line => /^subject:/i.test(line))?.replace(/^subject:\s*/i, "") || "CallCatch follow-up",
-              sentAt: sendResult.sentAt,
-              provider: sendResult.provider || "email",
-              messageId: sendResult.messageId
-            });
-            lead.sentEmails = lead.sentEmails.slice(0, 100);
-            sent.push({ id: item.id, business: item.business, to, messageId: sendResult.messageId });
-          } catch (error) {
-            const safe = sanitizeEmailError(error);
-            item.status = "Send Failed";
-            item.error = safe.message;
-            failed.push({ id: item.id, business: item.business, error: safe.message, responseCode: safe.responseCode || "", causes: safe.causes || [] });
-          }
-        }
-
-        state.auditLog.unshift({
-          id: newId("audit"),
-          at: new Date().toISOString(),
-          action: "approved_emails_sent",
-          details: { sent: sent.length, failed: failed.length }
-        });
-
-        return { sent, failed };
-      });
-      return send(res, 200, result);
-    } catch (error) {
-      return send(res, 400, { error: error.message });
-    }
+    return send(res, 410, { ok: false, error: "Legacy sending is disabled. Use the authoritative sending endpoint." });
   }
 
   if (req.method === "GET" && url.pathname === "/api/sending/metrics") {
@@ -2302,43 +2359,69 @@ const server = http.createServer(async (req, res) => {
       const result = await mutateStore(state => sendTaskNow(state, body.taskId));
       return send(res, 200, result);
     } catch (error) {
-      return send(res, 400, { error: error.message });
+      if (error.code === "BUSINESS_IDENTITY_MISMATCH") {
+        log("warn", "business_identity_mismatch", { route: "send-now", conflicts: error.details || [] });
+      }
+      return send(res, error.code === "BUSINESS_IDENTITY_MISMATCH" ? 409 : 400, {
+        ok: false,
+        error: error.code === "BUSINESS_IDENTITY_MISMATCH" ? "Business identity mismatch" : error.message,
+        code: error.code || "",
+        conflicts: error.details || []
+      });
     }
   }
 
   if (req.method === "POST" && url.pathname === "/api/sending/send-all-approved") {
     try {
       const body = await readJson(req);
-      const result = await mutateStore(state => sendApprovedBatch(state, { limit: body.limit, taskIds: body.taskIds }));
-      return send(res, 200, result);
+      const snapshot = await readStore();
+      const requested = Array.isArray(body.taskIds) && body.taskIds.length ? new Set(body.taskIds) : null;
+      const taskIds = (snapshot.approvalQueue || [])
+        .filter(task => task.status === "Approved" && task.channel === "email" && (!requested || requested.has(task.id)))
+        .slice(0, Math.min(100, Number(body.limit) || 100))
+        .map(task => task.id);
+      const sent = [];
+      const failed = [];
+      const skipped = [];
+      for (let index = 0; index < taskIds.length; index += 1) {
+        if (index > 0) {
+          const current = await readStore();
+          const delaySeconds = randomDelaySeconds(current);
+          await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
+        }
+        const item = await mutateStore(state => sendTaskNow(state, taskIds[index]));
+        if (item.sent) sent.push(item);
+        else if (item.rateLimited) {
+          skipped.push(item);
+          break;
+        } else failed.push(item);
+      }
+      return send(res, 200, {
+        total: taskIds.length,
+        complete: sent.length + failed.length,
+        sent: sent.length,
+        failed: failed.length,
+        skipped: skipped.length,
+        remaining: Math.max(0, taskIds.length - sent.length - failed.length),
+        results: { sent, failed, skipped }
+      });
     } catch (error) {
       return send(res, 400, { error: error.message });
     }
   }
 
   if (req.method === "POST" && url.pathname === "/api/sending/schedule") {
-    try {
-      const body = await readJson(req);
-      const job = await mutateStore(state => scheduleTask(state, { taskId: body.taskId, when: body.when }));
-      return send(res, 200, { job });
-    } catch (error) {
-      return send(res, 400, { error: error.message });
-    }
+    return send(res, 410, { ok: false, error: "Scheduled sending is disabled. Every send requires an explicit user action." });
   }
 
   if (req.method === "POST" && url.pathname === "/api/sending/run-due") {
-    try {
-      const results = await mutateStore(state => runDueScheduled(state));
-      return send(res, 200, { results });
-    } catch (error) {
-      return send(res, 400, { error: error.message });
-    }
+    return send(res, 410, { ok: false, error: "Scheduled sending is disabled." });
   }
 
   if (req.method === "POST" && url.pathname === "/api/sending/generate-followups") {
     try {
       const body = await readJson(req);
-      const generated = await mutateStore(state => generateFollowUps(state, { autoPilot: body.autoPilot }));
+      const generated = await mutateStore(state => generateFollowUps(state, { now: new Date() }));
       return send(res, 200, { generated });
     } catch (error) {
       return send(res, 400, { error: error.message });
@@ -2346,13 +2429,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && url.pathname === "/api/sending/run-sequence") {
-    try {
-      const body = await readJson(req);
-      const result = await mutateStore(state => runSequenceAutomation(state, { autoPilot: body.autoPilot }));
-      return send(res, 200, result);
-    } catch (error) {
-      return send(res, 400, { error: error.message });
-    }
+    return send(res, 410, { ok: false, error: "Automatic sequence sending is disabled. Follow-ups are generated for manual approval only." });
   }
 
   if (req.method === "POST" && url.pathname === "/api/replies/record") {
@@ -2365,13 +2442,47 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (req.method === "POST" && (url.pathname === "/api/replies/inbound" || url.pathname === "/api/webhooks/resend/inbound")) {
+  if (req.method === "POST" && url.pathname === "/api/replies/inbound") {
     try {
       const body = await readJson(req);
       const result = await mutateStore(state => recordReply(state, normalizeInboundReplyPayload(body, req.headers)));
       return send(res, 200, { accepted: true, ...result });
     } catch (error) {
       return send(res, 400, { error: error.message });
+    }
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/webhooks/resend/inbound") {
+    let rawBody = "";
+    try {
+      rawBody = await readRawBody(req);
+      const verification = verifyResendWebhook({
+        rawBody,
+        headers: req.headers,
+        secret: securityConfig().webhookSecret
+      });
+      if (!verification.ok) {
+        log("warn", "resend_webhook_verification_failed", { code: verification.code });
+        return send(res, 401, { accepted: false, error: { code: verification.code, message: "Webhook signature verification failed." } });
+      }
+      const body = rawBody ? JSON.parse(rawBody) : {};
+      const result = await mutateStore(state => {
+        state.webhookEvents = state.webhookEvents || [];
+        if (state.webhookEvents.some(item => item.id === verification.messageId)) {
+          return { duplicate: true, eventType: String(body.type || ""), messageId: verification.messageId };
+        }
+        state.webhookEvents.unshift({ id: verification.messageId, type: String(body.type || ""), receivedAt: new Date().toISOString() });
+        state.webhookEvents = state.webhookEvents.slice(0, 5000);
+        if (String(body.type || "").toLowerCase() === "email.received") {
+          return recordReply(state, normalizeInboundReplyPayload(body, req.headers));
+        }
+        return applyResendDeliveryEvent(state, body);
+      });
+      log("info", "resend_webhook_accepted", { eventType: String(body.type || ""), matched: result.matched !== false });
+      return send(res, 200, { accepted: true, result });
+    } catch (error) {
+      log("error", "resend_webhook_processing_failed", { error: sanitizedError(error) });
+      return send(res, 400, { accepted: false, error: "The verified webhook payload could not be processed." });
     }
   }
 
@@ -2398,7 +2509,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && url.pathname === "/api/daily-growth") {
     const state = await readStore();
-    const config = mergeConfig(state.dailyGrowth || {});
+    const config = { ...mergeConfig(state.dailyGrowth || {}), enabled: false, automationLevel: "Manual", sendEnabled: false };
     return send(res, 200, {
       config,
       capabilities: automationCapabilities(config),
@@ -2407,56 +2518,15 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && url.pathname === "/api/daily-growth/settings") {
-    try {
-      const body = await readJson(req);
-      const config = await mutateStore(state => {
-        state.dailyGrowth = mergeConfig(body);
-        state.auditLog.unshift({
-          id: newId("audit"),
-          at: new Date().toISOString(),
-          action: "daily_growth_settings_updated",
-          details: {
-            enabled: state.dailyGrowth.enabled,
-            runTime: state.dailyGrowth.runTime,
-            automationLevel: state.dailyGrowth.automationLevel,
-            scoreThreshold: state.dailyGrowth.scoreThreshold
-          }
-        });
-        return state.dailyGrowth;
-      });
-      return send(res, 200, {
-        config,
-        capabilities: automationCapabilities(config)
-      });
-    } catch (error) {
-      return send(res, 400, { error: error.message });
-    }
+    return send(res, 410, { ok: false, error: "Automatic growth settings are disabled. CallCatch is manual approval only." });
   }
 
   if (req.method === "POST" && url.pathname === "/api/daily-growth/start") {
-    try {
-      const body = await readJson(req);
-      const result = await mutateStore(async state => {
-        state.dailyGrowth = mergeConfig({ ...(state.dailyGrowth || DEFAULT_DAILY_GROWTH), ...body, enabled: true });
-        return runDailyGrowth({ state, config: state.dailyGrowth });
-      });
-      return send(res, 200, result);
-    } catch (error) {
-      return send(res, 400, { error: error.message });
-    }
+    return send(res, 410, { ok: false, error: "Auto Pilot is disabled. No automatic sending can be started." });
   }
 
   if (req.method === "POST" && url.pathname === "/api/daily-growth/run") {
-    try {
-      const body = await readJson(req);
-      const result = await mutateStore(async state => runDailyGrowth({
-        state,
-        config: mergeConfig({ ...(state.dailyGrowth || DEFAULT_DAILY_GROWTH), ...body })
-      }));
-      return send(res, 200, result);
-    } catch (error) {
-      return send(res, 400, { error: error.message });
-    }
+    return send(res, 410, { ok: false, error: "Automatic growth runs are disabled. Use Discovery manually." });
   }
 
   send(res, 404, { error: "Not found" });
@@ -2541,11 +2611,35 @@ async function recoverStaleBrainOneRuns() {
   }
 }
 
+async function repairExistingIdentityRecords() {
+  try {
+    const result = await mutateStore(state => {
+      if (Number(state.identityIntegrityVersion || 0) >= 1) return { skipped: true, leadsMarked: 0, draftsMarked: 0, approvalsRevoked: 0 };
+      const report = auditAndMarkIdentityRecords(state);
+      state.identityIntegrityVersion = 1;
+      state.auditLog = state.auditLog || [];
+      state.auditLog.unshift({
+        id: newId("audit"),
+        at: new Date().toISOString(),
+        action: "business_identity_migration_completed",
+        details: report
+      });
+      return { skipped: false, ...report };
+    });
+    log("info", "business_identity_migration_completed", result);
+    return result;
+  } catch (error) {
+    log("error", "business_identity_migration_failed", { error: sanitizedError(error) });
+    throw error;
+  }
+}
 async function startServer() {
   try {
     await assertProductionStorageReady();
+    assertProductionSecurityReady();
+    await repairExistingIdentityRecords();
   } catch (error) {
-    log("error", "production_storage_startup_failed", { error: sanitizedError(error) });
+    log("error", "production_startup_validation_failed", { error: sanitizedError(error) });
     process.exitCode = 1;
     return;
   }
@@ -2553,7 +2647,8 @@ async function startServer() {
   server.listen(PORT, HOST, () => {
     log("info", "server_started", {
       url: HOST === "0.0.0.0" ? `http://0.0.0.0:${PORT}` : `http://127.0.0.1:${PORT}`,
-      requiresApiKey: false,
+      requiresApiKey: true,
+      allowedOriginCount: securityConfig().allowedOrigins.length,
       storage: storageStatus(),
       nvidiaModel: resolvedNvidiaModel(),
       nvidiaTimeoutMs: resolvedNvidiaTimeoutMs(),
@@ -2567,8 +2662,6 @@ async function startServer() {
     });
     recoverStaleBrainZeroRuns();
     recoverStaleBrainOneRuns();
-    runBackgroundAutomation();
-    setInterval(runBackgroundAutomation, 30 * 60 * 1000);
   });
 }
 

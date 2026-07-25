@@ -11,11 +11,20 @@ const {
 } = require("../lead-engine/brainTwoService");
 
 function approvedBrainOne(overrides = {}) {
+  const businessId = overrides.businessId || "lead-1";
   return {
     id: "brain1-approved",
-    businessId: "lead-1",
+    businessId,
     executionStatus: "completed",
     approvalStatus: "approved-for-crm-brain-two",
+    inputSnapshot: {
+      businessIdentity: { businessId, businessName: "Spring HVAC", websiteUrl: "https://spring.example", trade: "HVAC" },
+      evidenceLog: [
+        { id: "ev-dna", sourceUrl: "https://spring.example", excerpt: "Spring HVAC offers emergency HVAC repair." },
+        { id: "ev-opp", sourceUrl: "https://spring.example", excerpt: "Emergency HVAC repair and contact forms are visible." },
+        { id: "ev-contact", sourceUrl: "https://spring.example/contact", excerpt: "office@spring.example" }
+      ]
+    },
     validatedOutput: {
       modules: {
         foundation: {
@@ -125,14 +134,32 @@ function approvedBrainOne(overrides = {}) {
 }
 
 function lead(overrides = {}) {
+  const leadId = overrides.id || "lead-1";
+  const businessName = overrides.business || "Spring HVAC";
   return {
-    id: "lead-1",
-    business: "Spring HVAC",
+    id: leadId,
+    business: businessName,
     trade: "HVAC",
     city: "Dallas",
     state: "TX",
     email: "office@spring.example",
     phone: "+12145550123",
+    website: "https://spring.example",
+    verifiedIndustry: "HVAC",
+    industryVerified: true,
+    emailSourceUrl: "https://spring.example/contact",
+    identityVerification: {
+      status: "Verified",
+      verified: true,
+      leadId,
+      businessName,
+      canonicalWebsite: "https://spring.example",
+      websiteDomain: "spring.example",
+      recipientEmail: "office@spring.example",
+      emailDomain: "spring.example",
+      emailSourceUrl: "https://spring.example/contact",
+      confirmedIndustry: "HVAC"
+    },
     timeline: [],
     ...overrides
   };

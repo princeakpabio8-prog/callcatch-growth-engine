@@ -1,9 +1,7 @@
 const { sendEmail, parseEmail, sanitizeEmailError } = require("./emailAdapter");
-const { normalizePhone, sendSms } = require("./smsAdapter");
-const { outreachAssets } = require("./prospectIntelligence");
-const { scanWebsite } = require("./websiteScanner");
 const { newId } = require("./dataStore");
 const { outreachDisabled } = require("./manualProspect");
+const { assertAuthorizedSend, consumeApproval, queueDueBrainTwoFollowUps } = require("./outboundPipeline");
 
 const DEFAULT_LIMITS = {
   maxPerHour: 20,
@@ -119,35 +117,8 @@ function randomDelaySeconds(state) {
   return Math.round(min + Math.random() * (max - min));
 }
 
-function parseSchedule(label) {
-  const lower = String(label || "").toLowerCase().trim();
-  const date = new Date();
-  if (!lower) return date;
-
-  const timeMatch = lower.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
-  let hours = 9;
-  let minutes = 0;
-  if (timeMatch) {
-    hours = Number(timeMatch[1]);
-    minutes = Number(timeMatch[2] || 0);
-    const suffix = timeMatch[3];
-    if (suffix === "pm" && hours < 12) hours += 12;
-    if (suffix === "am" && hours === 12) hours = 0;
-  }
-  date.setHours(hours, minutes, 0, 0);
-
-  if (lower.includes("tomorrow")) date.setDate(date.getDate() + 1);
-  if (lower.includes("next monday")) {
-    const day = date.getDay();
-    const daysUntilMonday = ((8 - day) % 7) || 7;
-    date.setDate(date.getDate() + daysUntilMonday);
-  }
-  if (lower.includes("today") && date < new Date()) date.setDate(date.getDate() + 1);
-  return date;
-}
-
 function approvedSendableTasks(state) {
-  return (state.approvalQueue || []).filter(task => ["email", "sms"].includes(task.channel) && /^approved/i.test(task.status || ""));
+  return (state.approvalQueue || []).filter(task => task.channel === "email" && task.status === "Approved");
 }
 
 function findLead(state, task) {
@@ -160,24 +131,9 @@ function hasLeadReply(lead) {
 
 function isInitialEmail(task = {}) {
   const title = String(task.title || "").toLowerCase();
-  return task.channel === "email" && task.status === "Sent" && !title.includes("follow-up") && !title.includes("followup") && !task.sequenceStep;
-}
-
-function sequenceEmailBody(lead, stepKey) {
-  const assets = outreachAssets(lead);
-  const profile = assets.weakness || {};
-  const city = [lead.city, lead.state].filter(Boolean).join(", ") || lead.area || "your area";
-  const revenue = Number(lead.revenueOpportunityEstimate || 0);
-  const revenueLine = revenue
-    ? `For a business like yours, even one recovered missed call every few days could represent roughly $${revenue.toLocaleString()}/month in booked work.`
-    : `Even a few recovered missed callers each month can matter for a busy service team.`;
-  const subject = stepKey === "followup-1"
-    ? `Subject: Small thought for ${lead.business}`
-    : `Subject: Last note for ${lead.business}`;
-  if (stepKey === "followup-1") {
-    return `${subject}\n\nHi ${lead.business} team,\n\nOne thing that stood out from ${city} was ${profile.weakness || "missed calls"}: ${profile.pain || "new customers often move on when they cannot reach someone quickly"}.\n\n${revenueLine}\n\nCallCatch keeps the first touch alive by texting missed callers within seconds, so your team can respond when free.\n\nIf useful, I can show what I mean.\n\nBest,\n\nPrince Esien\nFounder, CallCatch\nEmail: hello@callcatch.site\nWeb: https://callcatch.site\n\nHelping home service businesses recover missed revenue.`;
-  }
-  return `${subject}\n\nHi ${lead.business} team,\n\nI will leave this here for now.\n\nThe thought is simple: ${profile.proof || "CallCatch texts missed callers instantly and routes the next step back into the CRM"}.\n\nIf ${profile.weakness || "missed calls"} is already handled, perfect. If not, a fast text reply can keep more urgent callers from moving on.\n\nIf missed-call recovery becomes useful later, happy to help.\n\nBest,\n\nPrince Esien\nFounder, CallCatch\nEmail: hello@callcatch.site\nWeb: https://callcatch.site\n\nHelping home service businesses recover missed revenue.`;
+  return task.channel === "email"
+    && ["Sent", "Delivered", "Opened", "Replied"].includes(task.status)
+    && (task.sequenceStep === "initial-email" || (!title.includes("follow-up") && !title.includes("followup") && !task.sequenceStep));
 }
 
 function followUpPlanFromTask(task = {}, lead = {}, queue = [], now = new Date()) {
@@ -232,19 +188,10 @@ function duplicateSentTask(state, lead, task) {
 async function sendTaskNow(state, taskId) {
   const task = (state.approvalQueue || []).find(item => item.id === taskId);
   if (!task) throw new Error("Task not found");
-  if (!["email", "sms"].includes(task.channel)) throw new Error("Only email and SMS tasks can be sent");
-  if (!/^approved/i.test(task.status || "")) throw new Error("Task must be approved before sending");
-
-  const limit = canSendMore(state);
-  if (!limit.allowed) {
-    task.status = "Rate Limited";
-    task.nextAttemptAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-    const blockedBy = limit.remainingThisHour <= 0 ? "hourly" : "daily";
-    const resetAt = blockedBy === "hourly" ? limit.resetHourAt : limit.resetDayAt;
-    task.error = `Sending paused: ${blockedBy} limit reached. Try again after ${resetAt}.`;
-    return { sent: false, rateLimited: true, error: task.error, limit, resetAt, task };
+  if (["Sent", "Delivered", "Opened", "Replied"].includes(task.status)) {
+    return { sent: true, idempotent: true, task, result: { messageId: task.messageId || "", sentAt: task.sentAt || "", provider: task.provider || "" } };
   }
-
+  if (task.status === "Sending") return { sent: false, inProgress: true, task, error: "This approved email is already being processed." };
   const lead = findLead(state, task);
   if (outreachDisabled(lead)) {
     task.status = "Blocked - Manual Test";
@@ -253,102 +200,92 @@ async function sendTaskNow(state, taskId) {
     state.auditLog.unshift({ id: newId("audit"), at: nowIso(), action: "manual_test_outreach_blocked", details: { taskId: task.id, leadId: lead.id } });
     return { sent: false, blocked: true, error: task.error, task };
   }
+  if (!["Approved", "Queued", "Failed"].includes(task.status)) throw new Error("Task must have a valid server-side approval before sending");
+  const authorization = assertAuthorizedSend(state, task);
+  const limit = canSendMore(state);
+  if (!limit.allowed) {
+    task.status = "Approved";
+    task.nextAttemptAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const blockedBy = limit.remainingThisHour <= 0 ? "hourly" : "daily";
+    const resetAt = blockedBy === "hourly" ? limit.resetHourAt : limit.resetDayAt;
+    task.error = `Sending paused: ${blockedBy} limit reached. Try again after ${resetAt}.`;
+    return { sent: false, rateLimited: true, error: task.error, limit, resetAt, task };
+  }
   const duplicate = duplicateSentTask(state, lead, task);
   task.sendFingerprint = duplicate.fingerprint;
   if (duplicate.duplicate) {
-    task.status = "Duplicate Blocked";
+    task.status = "Failed";
+    task.deliveryStatus = "Failed";
     task.error = "This message was already sent to this company.";
     task.duplicateOfTaskId = duplicate.duplicate.id;
     addTimeline(lead, `Duplicate send blocked for ${task.title || task.channel}`);
     state.auditLog.unshift({ id: newId("audit"), at: nowIso(), action: "duplicate_send_blocked", details: { taskId: task.id, duplicateTaskId: duplicate.duplicate.id, leadId: lead.id, fingerprint: duplicate.fingerprint } });
     return { sent: false, duplicate: true, error: task.error, task };
   }
-  let to = task.channel === "sms"
-    ? normalizePhone(task.to || task.recipient || lead.phone)
-    : parseEmail(task.to || task.recipient || lead.email);
-  if (task.channel === "email" && !to && lead.website) {
-    try {
-      const scan = await scanWebsite(lead.website);
-      const discovered = parseEmail((scan.emails || [])[0]);
-      if (discovered) {
-        lead.email = discovered;
-        task.to = discovered;
-        task.recipient = discovered;
-        task.emailDiscovery = {
-          source: "website-scan",
-          at: nowIso(),
-          url: scan.url
-        };
-        addTimeline(lead, `Email discovered from website: ${discovered}`);
-        to = discovered;
-      }
-    } catch {}
-  }
+  const to = parseEmail(task.to || task.recipient || lead.email);
   if (!to) {
-    task.status = task.channel === "sms" ? "Needs Phone" : "Needs Email";
-    addTimeline(lead, `${task.channel === "sms" ? "SMS" : "Email"} send blocked: no recipient ${task.channel === "sms" ? "phone number" : "email"} found`);
-    return { sent: false, failed: true, error: `No recipient ${task.channel === "sms" ? "phone number" : "email"} found`, task };
+    task.status = "Failed";
+    addTimeline(lead, "Email send blocked: no recipient email found");
+    return { sent: false, failed: true, error: "No recipient email found", task };
   }
 
   try {
     task.status = "Sending";
     task.startedAt = nowIso();
-    const result = task.channel === "sms"
-      ? await sendSms({ to, task, lead })
-      : await sendEmail({ to, task, lead });
+    const result = await sendEmail({ to, task, lead });
     task.status = "Sent";
     task.sentAt = result.sentAt;
     task.messageId = result.messageId;
     task.provider = result.provider || "Email";
+    task.deliveryStatus = "Sent";
     task.sendFingerprint = duplicate.fingerprint;
     task.nextFollowUpAt = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
     lead.stage = lead.stage === "New" ? "Contacted" : lead.stage;
     lead.lastContact = result.sentAt.slice(0, 10);
-    if (task.channel === "email") {
-      lead.sentEmails = lead.sentEmails || [];
-      lead.sentEmails.unshift({
-        id: newId("sent"),
-        taskId: task.id,
-        title: task.title || "Outbound email",
-        to,
-        subject: String(task.body || "").split(/\r?\n/).find(line => /^subject:/i.test(line))?.replace(/^subject:\s*/i, "") || "CallCatch follow-up",
-        sentAt: result.sentAt,
-        provider: task.provider,
-        messageId: task.messageId
-      });
-      lead.sentEmails = lead.sentEmails.slice(0, 100);
-      if (task.sequenceStep === "final-followup") {
-        lead.nextFollowUp = "";
-        lead.followUpStatus = "Sequence complete";
-      } else {
-        const waitDays = task.sequenceStep === "followup-1" ? SEQUENCE_STEPS[1].waitDays : SEQUENCE_STEPS[0].waitDays;
-        const nextDue = addDaysIso(result.sentAt, waitDays);
-        lead.nextFollowUp = nextDue.slice(0, 10);
-        lead.followUpStatus = task.sequenceStep === "followup-1" ? "Final follow-up scheduled" : "Follow-up #1 scheduled";
-        lead.followUpPlan = {
-          nextStep: task.sequenceStep === "followup-1" ? "Final follow-up" : "Follow-up #1",
-          nextDueAt: nextDue,
-          lastSentTaskId: task.id,
-          lastSentAt: result.sentAt
-        };
-      }
+    lead.sentEmails = lead.sentEmails || [];
+    lead.sentEmails.unshift({
+      id: newId("sent"),
+      taskId: task.id,
+      approvalId: task.approvalId,
+      brainTwoRunId: task.brainTwoRunId,
+      title: task.title || "Outbound email",
+      to,
+      subject: String(task.body || "").split(/\r?\n/).find(line => /^subject:/i.test(line))?.replace(/^subject:\s*/i, "") || "CallCatch follow-up",
+      body: task.body || "",
+      sentAt: result.sentAt,
+      status: "Sent",
+      provider: task.provider,
+      messageId: task.messageId
+    });
+    lead.sentEmails = lead.sentEmails.slice(0, 100);
+    if (task.sequenceStep === "final-followup" || task.sequenceStep === "followup-4") {
+      lead.nextFollowUp = "";
+      lead.followUpStatus = "Sequence complete";
+    } else {
+      const waitDays = task.sequenceStep === "followup-1" ? SEQUENCE_STEPS[1].waitDays : SEQUENCE_STEPS[0].waitDays;
+      const nextDue = addDaysIso(result.sentAt, waitDays);
+      lead.nextFollowUp = nextDue.slice(0, 10);
+      lead.followUpStatus = "Next Brain Two follow-up pending review";
+      lead.followUpPlan = { nextStep: "Brain Two follow-up", nextDueAt: nextDue, lastSentTaskId: task.id, lastSentAt: result.sentAt };
     }
-    addTimeline(lead, `Sent ${task.channel === "sms" ? "SMS" : "email"}: ${task.title || "Outbound message"}`, result.sentAt);
+    consumeApproval(authorization.approval, result.sentAt);
+    addTimeline(lead, `Sent email: ${task.title || "Outbound message"}`, result.sentAt);
     recordSendCount(state);
     recordVariantSent(state, lead, task);
-    state.auditLog.unshift({ id: newId("audit"), at: result.sentAt, action: `${task.channel}_sent`, details: { taskId: task.id, leadId: lead.id, to } });
+    state.auditLog.unshift({ id: newId("audit"), at: result.sentAt, action: "email_sent", details: { taskId: task.id, approvalId: task.approvalId, brainTwoRunId: task.brainTwoRunId, leadId: lead.id, messageId: task.messageId } });
     return { sent: true, task, result };
   } catch (error) {
     const safeError = sanitizeEmailError(error);
-    task.status = "Send Failed";
+    task.status = "Failed";
+    task.deliveryStatus = "Failed";
     task.error = safeError.message;
     sendingState(state).metrics.failed += 1;
-    state.auditLog.unshift({ id: newId("audit"), at: nowIso(), action: `${task.channel}_send_failed`, details: { taskId: task.id, error: safeError.message, responseCode: safeError.responseCode || "" } });
+    state.auditLog.unshift({ id: newId("audit"), at: nowIso(), action: "email_send_failed", details: { taskId: task.id, approvalId: task.approvalId, error: safeError.message, responseCode: safeError.responseCode || "" } });
     return { sent: false, failed: true, error: safeError.message, responseCode: safeError.responseCode, causes: safeError.causes || [], task };
   }
 }
 
-async function sendApprovedBatch(state, { limit, taskIds } = {}) {
+async function sendApprovedBatch(state, { limit, taskIds, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   const allowedIds = Array.isArray(taskIds) && taskIds.length ? new Set(taskIds) : null;
   const tasks = approvedSendableTasks(state)
     .filter(task => !allowedIds || allowedIds.has(task.id))
@@ -358,14 +295,21 @@ async function sendApprovedBatch(state, { limit, taskIds } = {}) {
   const failed = [];
   const skipped = [];
 
-  for (const task of tasks) {
+  for (let index = 0; index < tasks.length; index += 1) {
+    const task = tasks[index];
+    if (index > 0) {
+      task.randomizedDelaySeconds = randomDelaySeconds(state);
+      task.notBefore = new Date(Date.now() + task.randomizedDelaySeconds * 1000).toISOString();
+      await wait(task.randomizedDelaySeconds * 1000);
+    } else {
+      task.randomizedDelaySeconds = 0;
+    }
     const result = await sendTaskNow(state, task.id);
     if (result.sent) sent.push(result);
     else if (result.rateLimited) {
       skipped.push(result);
       break;
     } else failed.push(result);
-    task.randomizedDelaySeconds = randomDelaySeconds(state);
   }
 
   return {
@@ -379,126 +323,10 @@ async function sendApprovedBatch(state, { limit, taskIds } = {}) {
   };
 }
 
-function scheduleTask(state, { taskId, when }) {
-  const task = (state.approvalQueue || []).find(item => item.id === taskId);
-  if (!task) throw new Error("Task not found");
-  const runAt = parseSchedule(when).toISOString();
-  task.status = "Scheduled";
-  task.scheduledAt = runAt;
-  const job = {
-    id: newId("schedule"),
-    taskId,
-    runAt,
-    status: "Scheduled",
-    createdAt: nowIso()
-  };
-  state.scheduledJobs.push(job);
-  state.auditLog.unshift({ id: newId("audit"), at: nowIso(), action: "email_scheduled", details: { taskId, runAt } });
-  return job;
-}
-
-async function runDueScheduled(state, date = new Date()) {
-  const due = (state.scheduledJobs || []).filter(job => job.status === "Scheduled" && new Date(job.runAt) <= date);
-  const results = [];
-  for (const job of due) {
-    const task = (state.approvalQueue || []).find(item => item.id === job.taskId);
-    if (task) task.status = "Approved - scheduled send";
-    const result = await sendTaskNow(state, job.taskId);
-    job.status = result.sent ? "Sent" : "Failed";
-    job.completedAt = nowIso();
-    results.push({ job, result });
-  }
-  return results;
-}
-
-function generateFollowUps(state, { autoPilot = false, now = new Date() } = {}) {
-  const queue = state.approvalQueue || [];
-  const generated = [];
-  const existingSteps = new Set(queue.map(task => `${task.leadId}|${task.sequenceStep || task.title}`));
-
-  for (const initial of queue.filter(isInitialEmail)) {
-    if (!initial.sentAt) continue;
-    const lead = findLead(state, initial);
-    if (outreachDisabled(lead) || lead.followUpsDisabled) continue;
-    if (!lead.id || hasLeadReply(lead)) continue;
-
-    const firstDue = new Date(addDaysIso(initial.sentAt, SEQUENCE_STEPS[0].waitDays));
-    if (firstDue <= now && !existingSteps.has(`${lead.id}|followup-1`)) {
-      const follow = {
-        id: newId("task"),
-        leadId: lead.id,
-        business: lead.business,
-        channel: "email",
-        title: "Follow-up #1",
-        sequenceStep: "followup-1",
-        sequenceParentTaskId: initial.id,
-        dueAt: firstDue.toISOString(),
-        to: initial.to || initial.recipient || lead.email || "",
-        recipient: initial.to || initial.recipient || lead.email || "",
-        body: sequenceEmailBody(lead, "followup-1"),
-        status: autoPilot ? "Approved - sequence" : "Needs Approval",
-        createdAt: nowIso()
-      };
-      queue.unshift(follow);
-      existingSteps.add(`${lead.id}|followup-1`);
-      lead.nextFollowUp = firstDue.toISOString().slice(0, 10);
-      lead.followUpStatus = "Follow-up #1 ready for approval";
-      lead.followUpPlan = { nextStep: "Follow-up #1", nextDueAt: firstDue.toISOString(), taskId: follow.id };
-      addTimeline(lead, "Generated Follow-up #1 after 3 days with no reply");
-      generated.push(follow);
-    }
-
-    const firstSent = queue.find(task => task.leadId === lead.id && task.sequenceStep === "followup-1" && task.status === "Sent" && task.sentAt);
-    if (!firstSent || hasLeadReply(lead)) continue;
-    const finalDue = new Date(addDaysIso(firstSent.sentAt, SEQUENCE_STEPS[1].waitDays));
-    if (finalDue <= now && !existingSteps.has(`${lead.id}|final-followup`)) {
-      const final = {
-        id: newId("task"),
-        leadId: lead.id,
-        business: lead.business,
-        channel: "email",
-        title: "Final Follow-up",
-        sequenceStep: "final-followup",
-        sequenceParentTaskId: initial.id,
-        dueAt: finalDue.toISOString(),
-        to: initial.to || initial.recipient || lead.email || "",
-        recipient: initial.to || initial.recipient || lead.email || "",
-        body: sequenceEmailBody(lead, "final-followup"),
-        status: autoPilot ? "Approved - sequence" : "Needs Approval",
-        createdAt: nowIso()
-      };
-      queue.unshift(final);
-      existingSteps.add(`${lead.id}|final-followup`);
-      lead.nextFollowUp = finalDue.toISOString().slice(0, 10);
-      lead.followUpStatus = "Final follow-up ready for approval";
-      lead.followUpPlan = { nextStep: "Final follow-up", nextDueAt: finalDue.toISOString(), taskId: final.id };
-      addTimeline(lead, "Generated Final Follow-up after 4 more days with no reply");
-      generated.push(final);
-    }
-  }
-
-  state.approvalQueue = queue;
+function generateFollowUps(state, { now = new Date() } = {}) {
+  const generated = queueDueBrainTwoFollowUps(state, { now });
   sendingState(state).metrics.followUpsGenerated += generated.length;
   return generated;
-}
-
-async function runSequenceAutomation(state, { autoPilot = false, now = new Date() } = {}) {
-  const generated = generateFollowUps(state, { autoPilot, now });
-  const scheduled = await runDueScheduled(state, now);
-  const sent = [];
-  if (autoPilot) {
-    for (const task of generated.filter(item => /^approved/i.test(item.status || ""))) {
-      const result = await sendTaskNow(state, task.id);
-      sent.push(result);
-    }
-  }
-  state.auditLog.unshift({
-    id: newId("audit"),
-    at: nowIso(),
-    action: "sequence_automation_run",
-    details: { generated: generated.length, scheduled: scheduled.length, sent: sent.filter(item => item.sent).length, autoPilot }
-  });
-  return { generated, scheduled, sent };
 }
 
 function detectMeetingIntent(text) {
@@ -554,8 +382,15 @@ function recordReply(state, { leadId, taskId, from, body, subject, provider, mes
   addTimeline(lead, meetingIntent ? "Reply received with meeting intent" : "Reply received", at);
   addTimeline(lead, `Inbox reply needs response: ${suggestedReply(lead, body, meetingIntent)}`, at);
   if (task) {
+    task.status = "Replied";
+    task.deliveryStatus = "Replied";
     task.replyAt = at;
     task.replyBody = body;
+    const sentRecord = (lead.sentEmails || []).find(item => item.taskId === task.id);
+    if (sentRecord) {
+      sentRecord.status = "Replied";
+      sentRecord.repliedAt = at;
+    }
   }
   for (const item of state.approvalQueue || []) {
     if (item.leadId === lead.id && item.status !== "Sent" && item.id !== task?.id) {
@@ -598,10 +433,8 @@ module.exports = {
   DEFAULT_LIMITS,
   generateFollowUps,
   metrics,
+  randomDelaySeconds,
   recordReply,
-  runSequenceAutomation,
-  runDueScheduled,
-  scheduleTask,
   sendApprovedBatch,
   sendTaskNow
 };

@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { isIdentityVerified } = require("./businessIdentity");
 
 const BRAIN_TWO_VERSION = "brain-two-v1.0";
 const RUNTIME_PROMPT = fs.readFileSync(path.join(__dirname, "..", "brains", "brain-two-runtime.md"), "utf8");
@@ -116,6 +117,10 @@ function evaluateBrainTwoEligibility({ lead = {}, brainOneRun = {} } = {}) {
   brainOneRun = brainOneRun || {};
   const reasons = [];
   if (!brainOneRun || !brainOneRun.id) reasons.push("Brain One has not run.");
+  if (brainOneRun.id && brainOneRun.businessId !== lead.id) reasons.push("Brain One belongs to a different business identity.");
+  if (brainOneRun.id && brainOneRun.inputSnapshot?.businessIdentity?.businessId !== lead.id) reasons.push("Brain One input belongs to a different business identity.");
+  if (!isIdentityVerified(lead.identityVerification)) reasons.push("Business identity is not verified.");
+  if (!lead.verifiedIndustry || lead.verifiedIndustry !== lead.trade) reasons.push("The business industry is not verified by the official website.");
   if (brainOneRun.id && brainOneRun.executionStatus !== "completed") reasons.push("Brain One has not completed.");
   if (brainOneRun.id && !approvedBrainOne(brainOneRun)) reasons.push("Brain One has not been manually approved.");
   if (isManualTestLead(lead)) reasons.push("Lead is still in Manual Test mode.");
@@ -1092,13 +1097,18 @@ function applyBrainTwoReviewState(state = {}, { runId, leadId, approved, reviewe
   state.brainTwoRuns = state.brainTwoRuns || [];
   const record = state.brainTwoRuns.find(item => item.id === runId);
   if (!record) throw new Error("Brain Two run not found");
+  if (!leadId || record.businessId !== leadId || record.output?.brain_three_handoff?.lead_id !== leadId) {
+    const error = new Error("Business identity mismatch");
+    error.code = "BUSINESS_IDENTITY_MISMATCH";
+    throw error;
+  }
   if (!["completed", "blocked"].includes(record.executionStatus)) throw new Error("Only completed Brain Two runs can be reviewed");
   record.approvalStatus = approved ? "approved" : "rejected";
   record.reviewedAt = reviewedAt;
   record.reviewedBy = reviewedBy;
   record.reviewNotes = notes;
   if (record.output) record.output.approval_state = approved ? "approved" : "rejected";
-  const lead = (state.leads || []).find(item => item.id === leadId || item.id === record.businessId);
+  const lead = (state.leads || []).find(item => item.id === leadId);
   if (lead) {
     lead.brainTwoLatestRunId = record.id;
     lead.brainTwoApprovalStatus = record.approvalStatus;

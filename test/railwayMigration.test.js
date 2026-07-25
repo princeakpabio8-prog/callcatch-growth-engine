@@ -42,7 +42,7 @@ test("production startup fails when DATABASE_URL is missing", () => {
     timeout: 8000
   });
   assert.equal(child.status, 1);
-  assert.match(`${child.stdout}\n${child.stderr}`, /production_storage_startup_failed/);
+  assert.match(`${child.stdout}\n${child.stderr}`, /production_startup_validation_failed/);
   assert.match(`${child.stdout}\n${child.stderr}`, /DATABASE_URL is required/);
 });
 

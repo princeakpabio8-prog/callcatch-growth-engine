@@ -96,7 +96,7 @@ test("Fresh Leads explains the simple review-send-pipeline flow", () => {
     assert.match(html, /Send from Email Queue/);
     assert.match(html, /Track in Pipeline/);
     assert.match(html, /Review Email/);
-    assert.match(html, /Email ready to review/);
+    assert.match(html, /Verify Business/);
     assert.doesNotMatch(html, /Research \+ Draft/);
     assert.doesNotMatch(html, /Research \+ Approve & Send/);
   }

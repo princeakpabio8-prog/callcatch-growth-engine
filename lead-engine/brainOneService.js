@@ -2622,12 +2622,22 @@ function duplicateBrainOneRun(runs = [], businessId = "") {
 function applyBrainOneReviewState(state = {}, { runId, leadId, approved, reviewedBy = "CallCatch user", notes = "", reviewedAt = nowIso() } = {}) {
   const record = (state.brainOneRuns || []).find(item => item.id === runId);
   if (!record) throw new Error("Brain One run not found");
+  if (!leadId || record.businessId !== leadId) {
+    const error = new Error("Business identity mismatch");
+    error.code = "BUSINESS_IDENTITY_MISMATCH";
+    throw error;
+  }
+  if (record.inputSnapshot?.businessIdentity?.businessId !== leadId) {
+    const error = new Error("Business identity mismatch");
+    error.code = "BUSINESS_IDENTITY_MISMATCH";
+    throw error;
+  }
   if (record.executionStatus !== "completed") throw new Error("Only completed Brain One runs can be reviewed");
   record.approvalStatus = approved ? "approved-for-crm-brain-two" : "rejected";
   record.reviewedAt = reviewedAt;
   record.reviewedBy = reviewedBy;
   record.reviewNotes = notes;
-  const lead = (state.leads || []).find(item => item.id === (leadId || record.businessId));
+  const lead = (state.leads || []).find(item => item.id === leadId);
   if (lead) {
     lead.brainOneLatestRunId = record.id;
     lead.brainOneApprovalStatus = record.approvalStatus;

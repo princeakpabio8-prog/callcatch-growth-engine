@@ -13,9 +13,12 @@ const initialState = {
   savedSearches: [],
   auditLog: [],
   jobs: [],
+  outboundApprovals: [],
+  webhookEvents: [],
   brainOneRuns: [],
   brainTwoRuns: [],
-  brainZeroRuns: []
+  brainZeroRuns: [],
+  identityIntegrityVersion: 0
 };
 
 let writeQueue = Promise.resolve();
@@ -118,18 +121,18 @@ async function readStore() {
 
 async function writeStore(state) {
   const nextState = normalizeState(state);
-  const pool = await getPool();
-  if (pool) {
-    writeQueue = writeQueue.then(() => pool.query(
-      "INSERT INTO callcatch_state (id, data, updated_at) VALUES ($1, $2::jsonb, now()) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
-      [STATE_ID, JSON.stringify(nextState)]
-    ));
-    await writeQueue;
-    return;
-  }
-  await ensureStore();
-  writeQueue = writeQueue.then(() => fs.writeFile(DB_FILE, JSON.stringify(nextState, null, 2)));
-  await writeQueue;
+  return serializeWrite(async () => {
+    const pool = await getPool();
+    if (pool) {
+      await pool.query(
+        "INSERT INTO callcatch_state (id, data, updated_at) VALUES ($1, $2::jsonb, now()) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
+        [STATE_ID, JSON.stringify(nextState)]
+      );
+      return;
+    }
+    await ensureStore();
+    await fs.writeFile(DB_FILE, JSON.stringify(nextState, null, 2));
+  });
 }
 
 function newId(prefix) {
@@ -137,10 +140,48 @@ function newId(prefix) {
 }
 
 async function mutateStore(mutator) {
-  const state = await readStore();
-  const result = await mutator(state);
-  await writeStore(state);
-  return result;
+  return serializeWrite(async () => {
+    const pool = await getPool();
+    if (!pool) {
+      await ensureStore();
+      const raw = await fs.readFile(DB_FILE, "utf8");
+      const state = normalizeState(JSON.parse(raw || "{}"));
+      const result = await mutator(state);
+      await fs.writeFile(DB_FILE, JSON.stringify(normalizeState(state), null, 2));
+      return result;
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "INSERT INTO callcatch_state (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO NOTHING",
+        [STATE_ID, JSON.stringify(initialState)]
+      );
+      const selected = await client.query("SELECT data FROM callcatch_state WHERE id = $1 FOR UPDATE", [STATE_ID]);
+      const state = normalizeState(selected.rows[0]?.data || {});
+      const result = await mutator(state);
+      await client.query(
+        "UPDATE callcatch_state SET data = $2::jsonb, updated_at = now() WHERE id = $1",
+        [STATE_ID, JSON.stringify(normalizeState(state))]
+      );
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {}
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
+}
+
+function serializeWrite(operation) {
+  const pending = writeQueue.then(operation, operation);
+  writeQueue = pending.then(() => undefined, () => undefined);
+  return pending;
 }
 
 async function audit(action, details = {}) {
@@ -198,6 +239,7 @@ async function assertProductionStorageReady() {
 function __resetForTests() {
   poolPromise = null;
   postgresUnavailableReason = "";
+  writeQueue = Promise.resolve();
 }
 
 module.exports = {

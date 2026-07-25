@@ -112,10 +112,13 @@ function commonProbeLinks(url, links = []) {
 function mergeSignals(scans) {
   const merged = {
     emails: [],
+    emailEvidence: [],
     phones: [],
     pageTitles: [],
+    businessNameCandidates: [],
     metaDescriptions: [],
     serviceKeywords: [],
+    industryEvidence: [],
     trustSignals: [],
     weakSignals: [],
     contactForms: false,
@@ -140,10 +143,13 @@ function mergeSignals(scans) {
 
   for (const scan of scans) {
     merged.emails.push(...(scan.emails || []));
+    merged.emailEvidence.push(...(scan.emailEvidence || []));
     merged.phones.push(...(scan.phones || []));
     merged.pageTitles.push(...(scan.pageTitles || []));
+    merged.businessNameCandidates.push(...(scan.businessNameCandidates || []));
     merged.metaDescriptions.push(...(scan.metaDescriptions || []));
     merged.serviceKeywords.push(...(scan.serviceKeywords || []));
+    merged.industryEvidence.push(...(scan.industryEvidence || []));
     merged.trustSignals.push(...(scan.trustSignals || []));
     merged.weakSignals.push(...(scan.weakSignals || []));
     merged.ownerMentions.push(...(scan.ownerMentions || []));
@@ -169,10 +175,19 @@ function mergeSignals(scans) {
   merged.emails = unique(merged.emails)
     .filter(email => !/(example\.com|domain\.com|sentry\.io|wixpress\.com|wordpress\.com)$/i.test(email))
     .slice(0, 12);
+  const seenEmailEvidence = new Set();
+  merged.emailEvidence = merged.emailEvidence.filter(item => {
+    const key = `${String(item.email || "").toLowerCase()}|${item.sourceUrl || ""}`;
+    if (!item.email || !item.sourceUrl || seenEmailEvidence.has(key)) return false;
+    seenEmailEvidence.add(key);
+    return true;
+  }).slice(0, 30);
   merged.phones = unique(merged.phones).slice(0, 12);
   merged.pageTitles = unique(merged.pageTitles).slice(0, 8);
+  merged.businessNameCandidates = unique(merged.businessNameCandidates).slice(0, 12);
   merged.metaDescriptions = unique(merged.metaDescriptions).slice(0, 8);
   merged.serviceKeywords = unique(merged.serviceKeywords).slice(0, 16);
+  merged.industryEvidence = unique(merged.industryEvidence).slice(0, 20);
   merged.trustSignals = unique(merged.trustSignals).slice(0, 16);
   merged.weakSignals = unique(merged.weakSignals).slice(0, 16);
   merged.ownerMentions = unique(merged.ownerMentions).slice(0, 8);
@@ -224,12 +239,25 @@ function facebookProbeUrls(link) {
   }
 }
 
-function detect(html, links) {
+function detect(html, links, sourceUrl = "", sourceType = "official-website", verifiedOfficialProfile = false) {
   const lower = html.toLowerCase();
   const emailMatches = extractEmails(html);
   const phoneMatches = html.match(/(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/g) || [];
   const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "";
   const metaDescription = (html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i) || [])[1] || "";
+  const siteName = (html.match(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i) || [])[1] || "";
+  const jsonLdNames = [];
+  const jsonLdRegex = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let jsonLdMatch;
+  while ((jsonLdMatch = jsonLdRegex.exec(html))) {
+    try {
+      const value = JSON.parse(jsonLdMatch[1]);
+      const nodes = Array.isArray(value) ? value : [value, ...(value?.["@graph"] || [])];
+      for (const node of nodes) {
+        if (node && /organization|localbusiness|corporation|store|service/i.test(String(node["@type"] || "")) && node.name) jsonLdNames.push(node.name);
+      }
+    } catch {}
+  }
   const social = {
     facebook: links.find(link => link.includes("facebook.com")) || "",
     instagram: links.find(link => link.includes("instagram.com")) || "",
@@ -238,17 +266,24 @@ function detect(html, links) {
   const bookingWords = ["book online", "schedule online", "request appointment", "calendly", "acuityscheduling", "jobber", "housecall pro", "servicetitan", "fieldedge"];
   const chatWords = ["live chat", "intercom", "drift.com", "tawk.to", "crisp.chat", "zendesk chat", "chatbot"];
   const aiWords = ["ai chatbot", "virtual assistant", "automated assistant"];
-  const serviceWords = ["repair", "installation", "maintenance", "replacement", "inspection", "tune-up", "drain cleaning", "water heater", "roof replacement", "ac repair", "furnace", "garage door", "emergency service"];
+  const serviceWords = ["repair", "installation", "maintenance", "replacement", "inspection", "tune-up", "drain cleaning", "water heater", "roof replacement", "ac repair", "air conditioning", "heating and cooling", "hvac", "furnace", "garage door", "plumbing", "electrician", "electrical", "roofing", "landscaping", "pest control", "cleaning service", "painting contractor", "locksmith", "appliance repair", "tree service", "flooring contractor", "solar installation", "pool service", "junk removal", "emergency service"];
   const trustWords = ["licensed", "insured", "bonded", "family owned", "locally owned", "years of experience", "bbb", "5-star", "five star", "reviews", "guarantee", "warranty"];
   const weakWords = ["coming soon", "under construction", "parked domain", "not secure", "copyright 2018", "copyright 2019", "copyright 2020", "wordpress", "wix", "weebly"];
   const ownerMatches = html.match(/(?:owner|founder|president|ceo|operator)\s*(?:[:\-]|is|,)?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})/g) || [];
 
   return {
     emails: unique(emailMatches).slice(0, 8),
+    emailEvidence: unique(emailMatches).slice(0, 8).map(email => ({ email: email.toLowerCase(), sourceUrl, sourceType, verifiedOfficialProfile })),
     phones: unique(phoneMatches).slice(0, 8),
     pageTitles: title ? [title.replace(/\s+/g, " ").trim()] : [],
+    businessNameCandidates: unique([
+      siteName,
+      ...jsonLdNames,
+      ...(title ? title.split(/\s+[|\-]\s+/).map(value => value.trim()) : [])
+    ]).slice(0, 8),
     metaDescriptions: metaDescription ? [metaDescription.replace(/\s+/g, " ").trim()] : [],
     serviceKeywords: serviceWords.filter(word => lower.includes(word)),
+    industryEvidence: serviceWords.filter(word => lower.includes(word)),
     trustSignals: trustWords.filter(word => lower.includes(word)),
     weakSignals: weakWords.filter(word => lower.includes(word)),
     ownerMentions: ownerMatches.map(text => text.replace(/\s+/g, " ").trim()).slice(0, 4),
@@ -283,7 +318,7 @@ async function scanPublicFacebookPages(links) {
         "Accept-Language": "en-US,en;q=0.9"
       }
     });
-    const scan = detect(html, extractLinks(html, link));
+    const scan = detect(html, extractLinks(html, link), link, "verified-official-profile", true);
     return {
       ...scan,
       publicSocialPages: publicPages,
@@ -329,10 +364,10 @@ async function scanWebsite(rawUrl) {
     const html = await textFetch(url, { signal: AbortSignal.timeout(10000) });
     const links = extractLinks(html, url);
     const contactLinks = commonProbeLinks(url, links);
-    const pageScans = [detect(html, links)];
+    const pageScans = [detect(html, links, url, "official-website", false)];
     const contactPages = await Promise.allSettled(contactLinks.map(async link => {
       const contactHtml = await textFetch(link, { signal: AbortSignal.timeout(8000) });
-      return detect(contactHtml, extractLinks(contactHtml, link));
+      return detect(contactHtml, extractLinks(contactHtml, link), link, "official-website", false);
     }));
     contactPages.forEach(result => {
       if (result.status === "fulfilled") pageScans.push(result.value);

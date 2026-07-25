@@ -403,7 +403,8 @@ async function sendViaResend({ recipient, subject, body, lead, task, config }) {
     method: "POST",
     headers: {
       Authorization: `Bearer ${config.resendApiKey}`,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      ...(task?.sendIdempotencyKey ? { "Idempotency-Key": String(task.sendIdempotencyKey).slice(0, 200) } : {})
     },
     body: JSON.stringify({
       from: formatAddress(config.from, config.fromName),

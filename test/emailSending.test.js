@@ -5,7 +5,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const emailAdapter = require("../lead-engine/emailAdapter");
-const { sendTaskNow } = require("../lead-engine/sendingEngine");
+const { sendApprovedBatch, sendTaskNow } = require("../lead-engine/sendingEngine");
+const { queueApprovedBrainTwoDraft } = require("../lead-engine/outboundPipeline");
 
 const SMTP_ENV = {
   EMAIL_PROVIDER: "smtp",
@@ -107,6 +108,62 @@ function mockFetch(responseFactory) {
   return calls;
 }
 
+function approvedSendState({ leadId = "lead_1", business = "Mock HVAC" } = {}) {
+  const domain = leadId.replace(/[^a-z0-9]/gi, "") + ".example";
+  const email = "owner@" + domain;
+  const website = "https://" + domain;
+  const lead = {
+    id: leadId,
+    business,
+    email,
+    website,
+    trade: "HVAC",
+    verifiedIndustry: "HVAC",
+    industryVerified: true,
+    emailSourceUrl: website + "/contact",
+    identityVerification: {
+      status: "Verified",
+      verified: true,
+      leadId,
+      businessName: business,
+      canonicalWebsite: website,
+      websiteDomain: domain,
+      recipientEmail: email,
+      emailDomain: domain,
+      emailSourceUrl: website + "/contact",
+      confirmedIndustry: "HVAC"
+    },
+    stage: "New",
+    timeline: []
+  };
+  const brainOneRun = {
+    id: "brain1_" + leadId,
+    businessId: leadId,
+    inputSnapshot: {
+      businessIdentity: { businessId: leadId, businessName: business, websiteUrl: website, trade: "HVAC" },
+      evidenceLog: [{ id: "ev-test", sourceUrl: website + "/contact", excerpt: "HVAC service" }]
+    },
+    executionStatus: "completed",
+    approvalStatus: "approved-for-crm-brain-two"
+  };
+  const run = {
+    id: "brain2_" + leadId,
+    businessId: leadId,
+    brainOneRunId: brainOneRun.id,
+    executionStatus: "completed",
+    approvalStatus: "approved",
+    output: {
+      status: "READY",
+      first_email: { subject: "Hi", body: "A quality-gated mocked email body.", evidence_ids: ["ev-test"] },
+      email_quality_gate: { passed: true, status: "READY TO REVIEW", quality_score: 92, human_score: 94 },
+      follow_up_emails: [],
+      brain_three_handoff: { lead_id: leadId }
+    }
+  };
+  const state = { leads: [lead], brainOneRuns: [brainOneRun], brainTwoRuns: [run], approvalQueue: [], outboundApprovals: [], auditLog: [] };
+  queueApprovedBrainTwoDraft(state, { run, lead, reviewer: "Test reviewer", reviewedAt: "2026-07-19T10:00:00.000Z" });
+  return state;
+}
 test("SMTP config parsing keeps Gmail provider and numeric timeout", async () => {
   await withEnv(SMTP_ENV, () => {
     const config = emailAdapter.emailConfig();
@@ -175,12 +232,8 @@ test("send failure path returns sanitized SMTP error", async () => {
 test("sendTaskNow marks CRM and audit as sent only after SMTP success", async () => {
   await withEnv(SMTP_ENV, async () => {
     installFakeSmtp();
-    const state = {
-      leads: [{ id: "lead_1", business: "Mock HVAC", email: "owner@example.net", stage: "New", timeline: [] }],
-      approvalQueue: [{ id: "task_1", leadId: "lead_1", channel: "email", status: "Approved", title: "Cold Email", body: "Subject: Hi\n\nBody" }],
-      auditLog: []
-    };
-    const result = await sendTaskNow(state, "task_1");
+    const state = approvedSendState();
+    const result = await sendTaskNow(state, state.approvalQueue[0].id);
     assert.equal(result.sent, true);
     assert.equal(state.approvalQueue[0].status, "Sent");
     assert.equal(state.leads[0].stage, "Contacted");
@@ -192,15 +245,11 @@ test("sendTaskNow marks CRM and audit as sent only after SMTP success", async ()
 test("failed send is not marked as sent and records sanitized CRM failure", async () => {
   await withEnv(SMTP_ENV, async () => {
     installFakeSmtp({ failAt: "AUTH_PASSWORD" });
-    const state = {
-      leads: [{ id: "lead_1", business: "Mock HVAC", email: "owner@example.net", stage: "New", timeline: [] }],
-      approvalQueue: [{ id: "task_1", leadId: "lead_1", channel: "email", status: "Approved", title: "Cold Email", body: "Subject: Hi\n\nBody" }],
-      auditLog: []
-    };
-    const result = await sendTaskNow(state, "task_1");
+    const state = approvedSendState();
+    const result = await sendTaskNow(state, state.approvalQueue[0].id);
     assert.equal(result.sent, false);
     assert.equal(result.failed, true);
-    assert.equal(state.approvalQueue[0].status, "Send Failed");
+    assert.equal(state.approvalQueue[0].status, "Failed");
     assert.equal(state.leads[0].stage, "New");
     assert.equal(state.leads[0].sentEmails, undefined);
     assert.equal(state.auditLog[0].action, "email_send_failed");
@@ -397,24 +446,21 @@ test("mocked Resend failure returns sanitized HTTP status and does not leak API 
 
 test("sendTaskNow marks CRM and audit as sent after mocked Resend success", async () => {
   await withEnv(RESEND_ENV, async () => {
-    mockFetch(async () => ({
+    const calls = mockFetch(async () => ({
       ok: true,
       status: 200,
       async json() {
         return { id: "resend_sent_task" };
       }
     }));
-    const state = {
-      leads: [{ id: "lead_resend", business: "Resend HVAC", email: "owner@example.net", stage: "New", timeline: [] }],
-      approvalQueue: [{ id: "task_resend", leadId: "lead_resend", channel: "email", status: "Approved", title: "Cold Email", body: "Subject: Hi\n\nBody" }],
-      auditLog: []
-    };
-    const result = await sendTaskNow(state, "task_resend");
+    const state = approvedSendState({ leadId: "lead_resend", business: "Resend HVAC" });
+    const result = await sendTaskNow(state, state.approvalQueue[0].id);
     assert.equal(result.sent, true);
     assert.equal(state.approvalQueue[0].status, "Sent");
     assert.equal(state.leads[0].stage, "Contacted");
     assert.equal(state.leads[0].sentEmails[0].provider, "Resend");
     assert.equal(state.auditLog[0].action, "email_sent");
+    assert.equal(calls[0].options.headers["Idempotency-Key"], state.approvalQueue[0].sendIdempotencyKey);
   });
 });
 
@@ -427,26 +473,40 @@ test("failed mocked Resend send is not marked as sent", async () => {
         return { message: "Invalid sender" };
       }
     }));
-    const state = {
-      leads: [{ id: "lead_resend", business: "Resend HVAC", email: "owner@example.net", stage: "New", timeline: [] }],
-      approvalQueue: [{ id: "task_resend", leadId: "lead_resend", channel: "email", status: "Approved", title: "Cold Email", body: "Subject: Hi\n\nBody" }],
-      auditLog: []
-    };
-    const result = await sendTaskNow(state, "task_resend");
+    const state = approvedSendState({ leadId: "lead_resend", business: "Resend HVAC" });
+    const result = await sendTaskNow(state, state.approvalQueue[0].id);
     assert.equal(result.sent, false);
     assert.equal(result.failed, true);
     assert.equal(result.responseCode, 422);
-    assert.equal(state.approvalQueue[0].status, "Send Failed");
+    assert.equal(state.approvalQueue[0].status, "Failed");
     assert.equal(state.leads[0].stage, "New");
     assert.equal(state.leads[0].sentEmails, undefined);
     assert.equal(state.auditLog[0].action, "email_send_failed");
   });
 });
 
-test("test-email route requires explicit test flag before send", () => {
+test("bulk delivery applies its randomized spacing before the next approved send", async () => {
+  await withEnv(RESEND_ENV, async () => {
+    const calls = mockFetch(async () => ({ ok: true, status: 200, async json() { return { id: `resend_${Date.now()}` }; } }));
+    const state = approvedSendState({ leadId: "lead_bulk_1", business: "First HVAC" });
+    const second = approvedSendState({ leadId: "lead_bulk_2", business: "Second HVAC" });
+    state.leads.push(...second.leads);
+    state.brainOneRuns.push(...second.brainOneRuns);
+    state.brainTwoRuns.push(...second.brainTwoRuns);
+    state.approvalQueue.push(...second.approvalQueue);
+    state.outboundApprovals.push(...second.outboundApprovals);
+    state.sending = { limits: { maxPerHour: 20, maxPerDay: 100, minDelaySeconds: 2, maxDelaySeconds: 2 } };
+    const waits = [];
+    const result = await sendApprovedBatch(state, { wait: async ms => waits.push(ms) });
+    assert.equal(result.sent, 2);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(waits, [2000]);
+    assert.equal(state.approvalQueue[1].randomizedDelaySeconds, 2);
+  });
+});
+
+test("test-email route is closed so no delivery can bypass Brain Two approval", () => {
   const serverSource = fs.readFileSync(path.join(__dirname, "..", "callcatch-lead-server.js"), "utf8");
   assert.match(serverSource, /url\.pathname === "\/api\/email\/send-test"/);
-  assert.match(serverSource, /body\.test !== true/);
-  assert.match(serverSource, /Test flag is required before sending a test email/);
-  assert.match(serverSource, /CallCatch test email - delivery check/);
+  assert.match(serverSource, /Test sends are disabled\. CallCatch sends only approved Brain Two drafts\./);
 });

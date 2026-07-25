@@ -8,6 +8,11 @@ const { enrichProspect } = require("./prospectIntelligence");
 const { scanWebsite } = require("./websiteScanner");
 const { fallbackLocation } = require("./usLocations");
 const { readStore } = require("./dataStore");
+const {
+  isIdentityVerified,
+  newLeadId,
+  verifyBusinessIdentity
+} = require("./businessIdentity");
 
 const cache = new MemoryCache(1000 * 60 * 30);
 const DISCOVERY_LIMITS = {
@@ -170,24 +175,23 @@ function isUsableBusinessEmail(value = "", lead = {}) {
   return true;
 }
 
-function preferredEmail(emails = [], lead = {}) {
+function rankedUsableEmails(emails = [], lead = {}) {
   const rolePrefixes = /^(info|hello|contact|office|sales|bookings|booking|support|service|admin|reception|dispatch|team|estimate|quotes?)@/i;
-  const usable = [...new Set(emails.map(email => String(email || "").trim().toLowerCase()))]
-    .filter(email => isUsableBusinessEmail(email, lead));
-  return usable.find(email => rolePrefixes.test(email)) || usable[0] || "";
+  return [...new Set(emails.map(email => String(email || "").trim().toLowerCase()))]
+    .filter(email => isUsableBusinessEmail(email, lead))
+    .sort((a, b) => Number(rolePrefixes.test(b)) - Number(rolePrefixes.test(a)));
+}
+
+function preferredEmail(emails = [], lead = {}) {
+  return rankedUsableEmails(emails, lead)[0] || "";
 }
 
 function hasEnoughDiscoveryEvidence(lead = {}, scan = {}) {
   return Boolean(
     lead.business
     && lead.email
-    && (
-      scan.ok
-      || lead.website
-      || lead.phone
-      || lead.address
-      || lead.description
-    )
+    && scan.ok
+    && isIdentityVerified(lead.identityVerification)
   );
 }
 
@@ -343,8 +347,14 @@ function enrichLead(lead) {
   const confidence = confidenceScore(lead);
   const opportunity = opportunityScore(lead);
   const base = {
+    id: lead.id || newLeadId(lead),
     business: lead.business || "",
-    trade: lead.trade || "Home Services",
+    searchTrade: lead.searchTrade || lead.trade || "Home Services",
+    trade: lead.verifiedIndustry || lead.trade || "Home Services",
+    verifiedIndustry: lead.verifiedIndustry || "",
+    industryVerified: lead.industryVerified === true,
+    identityVerification: lead.identityVerification || null,
+    emailSourceUrl: lead.emailSourceUrl || "",
     city: lead.city || "",
     state: lead.state || "",
     country: lead.country || "",
@@ -565,7 +575,7 @@ async function savedCrmFallback(input, count, errors = []) {
     const wantedState = normalizeState(input.state);
     const wantedCity = cityFromArea(input.area || input.city);
     const matches = (state.leads || [])
-      .filter(lead => lead.email)
+      .filter(lead => lead.email && isIdentityVerified(lead.identityVerification))
       .filter(lead => !trade || normalizeText(lead.trade).includes(trade) || normalizeText(lead.business).includes(trade))
       .filter(lead => !wantedState || normalizeState(lead.state).includes(wantedState) || normalizeText(lead.area).includes(wantedState))
       .filter(lead => !wantedCity || normalizeText(lead.city).includes(wantedCity) || normalizeText(lead.area).includes(wantedCity))
@@ -624,15 +634,42 @@ async function inspectCandidateForEmail(lead, errors, readiness) {
   }
 
   readiness.emailsFound += candidateEmails.filter(Boolean).length;
-  const email = preferredEmail(candidateEmails, lead);
-  if (!email) {
+  const candidates = rankedUsableEmails(candidateEmails, lead);
+  if (!candidates.length) {
     if (candidateEmails.length) readiness.skipped.invalidEmail += 1;
     else readiness.skipped.noEmail += 1;
     readiness.emailsRejected += candidateEmails.filter(Boolean).length;
     return null;
   }
 
-  const enriched = enrichProspect({ ...lead, email, phone: lead.phone || (scan.phones || [])[0] || "" }, scan);
+  let email = "";
+  let identityVerification = null;
+  for (const candidate of candidates) {
+    const verification = verifyBusinessIdentity({ lead, scan, email: candidate });
+    if (isIdentityVerified(verification)) {
+      email = candidate;
+      identityVerification = verification;
+      break;
+    }
+    identityVerification = identityVerification || verification;
+  }
+  if (!email || !identityVerification) {
+    readiness.skipped.insufficientEvidence += 1;
+    readiness.emailsRejected += candidates.length;
+    errors.push(`Identity verification blocked ${lead.business || "candidate"}: ${identityVerification?.reasons?.[0] || "email is not tied to the verified business website"}`);
+    return null;
+  }
+
+  const enriched = enrichProspect({
+    ...lead,
+    email,
+    trade: identityVerification.confirmedIndustry,
+    verifiedIndustry: identityVerification.confirmedIndustry,
+    industryVerified: true,
+    emailSourceUrl: identityVerification.emailSourceUrl,
+    identityVerification,
+    phone: lead.phone || (scan.phones || [])[0] || ""
+  }, scan);
   if (!hasEnoughDiscoveryEvidence(enriched, scan)) {
     readiness.skipped.insufficientEvidence += 1;
     return null;
@@ -641,6 +678,10 @@ async function inspectCandidateForEmail(lead, errors, readiness) {
   return {
     ...enriched,
     email,
+    emailSourceUrl: identityVerification.emailSourceUrl,
+    identityVerification,
+    identityStatus: identityVerification.status,
+    websiteVerificationStatus: "completed",
     websiteIntelligence: enriched.websiteIntelligence || scan,
     researchDepth: scan.researchDepth || enriched.researchDepth || "email-ready",
     discoveryStatus: "outreach-ready"
@@ -759,7 +800,7 @@ async function searchLeads(input = {}) {
   });
   const rawProviderCount = providerResult.leads.length;
   const dedupedProviderLeads = dedupe(providerResult.leads);
-  const rawLeads = dedupedProviderLeads.map(enrichLead);
+  const rawLeads = dedupedProviderLeads.map(lead => enrichLead({ ...lead, id: lead.id || newLeadId(lead), searchTrade: lead.searchTrade || trade }));
   let skippedExisting = 0;
   const afterRatingFilters = applyFilters(rawLeads, input);
   const afterExistingFilterLeads = afterRatingFilters

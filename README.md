@@ -157,7 +157,12 @@ Core server and storage:
 PORT
 HOST
 DATABASE_URL
+CALLCATCH_OPERATOR_TOKEN
+CALLCATCH_ADMIN_TOKEN
+CALLCATCH_ALLOWED_ORIGINS
 ```
+
+Production requires different operator and administrator tokens of at least 24 characters. Configure them only in Railway. The browser keeps the entered token in session storage, so it is cleared when that browser session ends. `CALLCATCH_ALLOWED_ORIGINS` must contain only the deployed CallCatch frontend origins.
 
 Email and SMS:
 
