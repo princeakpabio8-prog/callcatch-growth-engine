@@ -4,6 +4,7 @@ const fs = require("node:fs");
 
 const {
   applyBrainTwoReviewState,
+  createBrainTwoRunForApprovedOpportunity,
   evaluateEmailQualityGate,
   evaluateBrainTwoEligibility,
   runBrainTwo,
@@ -407,8 +408,84 @@ test("Brain Two approval flow does not send or queue email", () => {
   assert.match(state.leads[0].timeline[0].text, /No email was sent or queued/);
 });
 
+test("approved opportunity handoff uses the exact approved Brain One run", () => {
+  const exactRun = approvedBrainOne({ id: "brain1-exact" });
+  const newerPendingRun = approvedBrainOne({
+    id: "brain1-newer-pending",
+    approvalStatus: "pending-review",
+    createdAt: "2026-08-04T12:00:00.000Z"
+  });
+  const state = {
+    leads: [lead()],
+    brainOneRuns: [newerPendingRun, exactRun],
+    brainTwoRuns: [],
+    auditLog: []
+  };
+
+  const result = createBrainTwoRunForApprovedOpportunity(state, {
+    leadId: "lead-1",
+    brainOneRunId: "brain1-exact",
+    runId: "brain2-exact",
+    createdAt: "2026-08-04T12:01:00.000Z"
+  });
+
+  assert.equal(result.run.executionStatus, "completed");
+  assert.equal(result.run.brainOneRunId, "brain1-exact");
+  assert.equal(state.leads[0].brainTwoLatestRunId, "brain2-exact");
+});
+
+test("approved opportunity handoff replaces a stale blocked run once eligible", () => {
+  const approvedRun = approvedBrainOne({ id: "brain1-approved-later" });
+  const state = {
+    leads: [lead()],
+    brainOneRuns: [approvedRun],
+    brainTwoRuns: [{
+      id: "brain2-stale-block",
+      businessId: "lead-1",
+      brainOneRunId: "brain1-approved-later",
+      executionStatus: "blocked",
+      approvalStatus: "pending-review",
+      output: { eligibility: { eligible: false, reasons: ["Brain One has not been manually approved."] } }
+    }],
+    auditLog: []
+  };
+
+  const result = createBrainTwoRunForApprovedOpportunity(state, {
+    leadId: "lead-1",
+    brainOneRunId: "brain1-approved-later",
+    runId: "brain2-recovered",
+    createdAt: "2026-08-04T12:02:00.000Z"
+  });
+
+  assert.equal(result.alreadyExisting, false);
+  assert.equal(result.run.executionStatus, "completed");
+  assert.equal(result.run.id, "brain2-recovered");
+  assert.equal(state.leads[0].brainTwoLatestRunId, "brain2-recovered");
+});
+
+test("blocked opportunity handoff preserves the exact requirements", () => {
+  const pendingRun = approvedBrainOne({ id: "brain1-not-approved", approvalStatus: "pending-review" });
+  const state = {
+    leads: [lead()],
+    brainOneRuns: [pendingRun],
+    brainTwoRuns: [],
+    auditLog: []
+  };
+
+  const result = createBrainTwoRunForApprovedOpportunity(state, {
+    leadId: "lead-1",
+    brainOneRunId: "brain1-not-approved",
+    runId: "brain2-blocked",
+    createdAt: "2026-08-04T12:03:00.000Z"
+  });
+
+  assert.equal(result.run.executionStatus, "blocked");
+  assert.match(result.eligibility.reasons.join(" "), /not been manually approved/i);
+  assert.deepEqual(result.run.output.eligibility.reasons, result.eligibility.reasons);
+  assert.match(state.leads[0].timeline[0].text, /not been manually approved/i);
+});
 test("server source exposes Brain Two routes without touching sending endpoints", () => {
-  const source = fs.readFileSync("callcatch-lead-server.js", "utf8");
+  const source = [fs.readFileSync("callcatch-lead-server.js", "utf8"), fs.readFileSync("lead-engine/brainTwoService.js", "utf8")].join("\n");
   assert.match(source, /\/api\/brain-two\/generate/);
   assert.match(source, /\/api\/brain-two\/approve/);
   assert.match(source, /No email was sent or queued/);

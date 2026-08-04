@@ -642,6 +642,10 @@
       <p class="side-note">Daily flow: find email-ready prospects, review the draft, send, then work follow-ups from Pipeline.</p>
     </aside>
     <main>
+      <div class="panel" id="workflowAlert" hidden style="border-color:#b94a48;margin-bottom:14px;">
+        <strong>Workflow blocked</strong>
+        <p class="hint" id="workflowAlertMessage"></p>
+      </div>
       <section class="view active" id="assistant">
         <div class="top"><div><h1>Daily AI Sales Assistant</h1><p class="sub">Your best prospects, follow-ups, demos, and pipeline value for today.</p></div><div class="actions"><button class="btn" id="themeBtn" type="button">Dark Mode</button><button class="btn primary" id="startGrowthBtn" type="button">â–¶ Start Daily Growth</button><button class="btn" id="refreshAssistantBtn" type="button">Refresh</button></div></div>
         <div class="quick-metrics" id="quickMetrics"></div>
@@ -867,6 +871,7 @@
     let emailReady = false;
     let smsReady = false;
     let serverSynced = false;
+    let serverAccessError = "";
     let sendCenterFilter = "ready";
     let composerTaskId = "";
     let composerRequestId = 0;
@@ -900,9 +905,17 @@
     const PRODUCTION_API_BASE = "https://callcatch-growth-engine-production.up.railway.app";
     const OPERATOR_TOKEN_KEY = "ccOperatorToken";
     const ADMIN_TOKEN_KEY = "ccAdminToken";
+    const ADMIN_API_PATHS = new Set(["/api/audit-log", "/api/export/json", "/api/email/verify", "/api/recovery/resend-sent", "/api/sending/settings"]);
     function apiUrl(path){ return window.location.protocol === "file:" || window.location.hostname.endsWith("github.io") ? `${PRODUCTION_API_BASE}${path}` : path; }
     function storedToken(key){ try { return sessionStorage.getItem(key) || ""; } catch { return ""; } }
     function rememberToken(key, value){ try { sessionStorage.setItem(key, value); } catch {} }
+    function forgetToken(key){ try { sessionStorage.removeItem(key); } catch {} }
+    function tokenForPath(path = ""){
+      const adminFirst = ADMIN_API_PATHS.has(String(path).split("?")[0]);
+      return adminFirst
+        ? storedToken(ADMIN_TOKEN_KEY) || storedToken(OPERATOR_TOKEN_KEY)
+        : storedToken(OPERATOR_TOKEN_KEY) || storedToken(ADMIN_TOKEN_KEY);
+    }
 
     function markDirty(){ dataVersion += 1; derivedCache.stamp = -1; }
     function save(){ markDirty(); localStorage.setItem("ccProspectsV2", JSON.stringify(leads)); localStorage.setItem("ccApprovalQueueV2", JSON.stringify(queue)); localStorage.setItem("ccSettingsV2", JSON.stringify(settings)); }
@@ -939,19 +952,30 @@
     async function api(path, options = {}, authRetry = "") {
       let response;
       try {
-        const token = authRetry || storedToken(ADMIN_TOKEN_KEY) || storedToken(OPERATOR_TOKEN_KEY);
+        const token = authRetry || tokenForPath(path);
         response = await fetch(apiUrl(path), {
           ...options,
           headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.headers || {}) }
         });
       } catch (error) {
         const target = apiUrl("/health");
-        throw new Error(`Cannot reach CallCatch backend at ${target}. Open https://callcatch-growth-engine-production.up.railway.app/ directly, or wait for Railway to finish waking up, then try again.`);
+        const message = `Cannot reach CallCatch backend at ${target}. Open https://callcatch-growth-engine-production.up.railway.app/ directly, or wait for Railway to finish waking up, then try again.`;
+        if (path.startsWith("/api/")) {
+          serverAccessError = message;
+          renderWorkflowAlert();
+        }
+        throw new Error(message);
       }
       const payload = await parseApiResponse(response, path);
       const authCode = payload.error?.code || "";
       if (!response.ok && ["AUTH_REQUIRED", "ADMIN_AUTH_REQUIRED"].includes(authCode) && !authRetry) {
         const isAdmin = authCode === "ADMIN_AUTH_REQUIRED";
+        if (!isAdmin) {
+          if (token && token === storedToken(OPERATOR_TOKEN_KEY)) forgetToken(OPERATOR_TOKEN_KEY);
+          if (token && token === storedToken(ADMIN_TOKEN_KEY)) forgetToken(ADMIN_TOKEN_KEY);
+          const fallback = tokenForPath(path);
+          if (fallback && fallback !== token) return api(path, options, fallback);
+        }
         const supplied = window.prompt(isAdmin ? "Enter the CallCatch administrator access token" : "Enter the CallCatch access token");
         if (supplied?.trim()) {
           rememberToken(isAdmin ? ADMIN_TOKEN_KEY : OPERATOR_TOKEN_KEY, supplied.trim());
@@ -964,12 +988,23 @@
           payload.error?.code ? `Code: ${payload.error.code}` : "",
           payload.failureStage ? `Stage: ${payload.failureStage}` : "",
           payload.upstreamStatus ? `NVIDIA status: ${payload.upstreamStatus}` : "",
-          payload.upstreamBody ? `Body: ${String(payload.upstreamBody).slice(0, 500)}` : ""
+          payload.upstreamBody ? `Body: ${String(payload.upstreamBody).slice(0, 500)}` : "",
+          (payload.blockingRequirements || payload.eligibility?.reasons || []).length
+            ? `Blocked by: ${(payload.blockingRequirements || payload.eligibility.reasons).join(" ")}`
+            : ""
         ].filter(Boolean).join(" | ");
         const error = new Error(detail);
         error.status = response.status;
         error.payload = payload;
+        if (path.startsWith("/api/")) {
+          serverAccessError = detail;
+          renderWorkflowAlert();
+        }
         throw error;
+      }
+      if (path.startsWith("/api/")) {
+        serverAccessError = "";
+        renderWorkflowAlert();
       }
       return payload;
     }
@@ -985,17 +1020,30 @@
         return true;
       } catch (error) {
         serverSynced = false;
-        if (!silent) toast("Server sync unavailable");
+        serverAccessError = error.message || "Server synchronization failed.";
+        renderWorkflowAlert();
+        toast(serverAccessError);
         return false;
       }
     }
     async function loadServerCrm() {
       try {
         const crm = await api("/api/crm");
-        applyServerState(crm, true);
-        await syncCrm(true);
-      } catch {
+        applyServerState(crm, false);
+        serverAccessError = "";
+        return true;
+      } catch (error) {
         serverSynced = false;
+        serverAccessError = error.message || "Authenticated server state could not be loaded.";
+        if (window.location.protocol !== "file:") {
+          leads = [];
+          queue = [];
+          brainZeroRuns = [];
+          brainOneRuns = [];
+          brainTwoRuns = [];
+        }
+        renderWorkflowAlert();
+        throw error;
       }
     }
     function applyServerState(crm = {}, mergeLocal = false){
@@ -1023,6 +1071,13 @@
       (localItems || []).forEach(item => merged.set(item.id, item));
       (serverItems || []).forEach(item => merged.set(item.id, { ...(merged.get(item.id) || {}), ...item }));
       return [...merged.values()];
+    }
+    function renderWorkflowAlert(){
+      const alert = $("workflowAlert");
+      const message = $("workflowAlertMessage");
+      if (!alert || !message) return;
+      alert.hidden = !serverAccessError;
+      message.textContent = serverAccessError || "";
     }
     function toast(text){ const t=$("toast"); t.textContent=text; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),1500); }
     function esc(v){ return String(v ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;"); }
@@ -1402,12 +1457,20 @@
       ].filter(Boolean);
     }
     function brainOneLatestRun(leadId){
-      return (brainOneRuns || [])
+      const lead = leads.find(item => item.id === leadId);
+      const linked = lead?.brainOneLatestRunId
+        ? (brainOneRuns || []).find(run => run.id === lead.brainOneLatestRunId && run.businessId === leadId)
+        : null;
+      return linked || (brainOneRuns || [])
         .filter(run => run.businessId === leadId)
         .sort((a,b)=>new Date(b.createdAt || 0)-new Date(a.createdAt || 0))[0] || null;
     }
     function brainTwoLatestRun(leadId){
-      return (brainTwoRuns || [])
+      const lead = leads.find(item => item.id === leadId);
+      const linked = lead?.brainTwoLatestRunId
+        ? (brainTwoRuns || []).find(run => run.id === lead.brainTwoLatestRunId && run.businessId === leadId)
+        : null;
+      return linked || (brainTwoRuns || [])
         .filter(run => run.businessId === leadId)
         .sort((a,b)=>new Date(b.createdAt || 0)-new Date(a.createdAt || 0))[0] || null;
     }
@@ -1820,6 +1883,7 @@
       }
     }
     async function reviewBrainOne(runId, leadId, approved){
+      const status = $(`brainTwoStatus-${leadId}`) || $(`brainOneStatus-${leadId}`);
       try {
         const result = await api(approved ? "/api/brain-one/approve" : "/api/brain-one/reject", { method:"POST", body: JSON.stringify({ runId, leadId }) });
         const crm = await api("/api/crm");
@@ -1829,15 +1893,18 @@
           toast("Business analysis rejected");
           return result;
         }
-        const existingDraft = brainTwoLatestRun(leadId);
-        if (existingDraft?.executionStatus === "completed") {
+        const brainTwoRun = result.brainTwoRun || brainTwoLatestRun(leadId);
+        const requirements = result.blockingRequirements || result.eligibility?.reasons || brainTwoRun?.output?.eligibility?.reasons || [];
+        if (brainTwoRun?.executionStatus === "completed") {
           toast("Opportunity approved. Outreach draft ready for review");
-          return { ...result, brainTwoRun: existingDraft };
+          return { ...result, brainTwoRun };
         }
-        toast("Opportunity approved. Generating outreach draft...");
-        const draftResult = await generateBrainTwo(leadId);
-        return { ...result, brainTwoRun: draftResult?.run || null };
+        const message = requirements.join(" ") || "Opportunity approved, but the outreach draft could not be generated.";
+        if (status) status.textContent = message;
+        toast(message);
+        return { ...result, brainTwoRun };
       } catch(error) {
+        if (status) status.textContent = error.message;
         toast(error.message);
         return null;
       }
@@ -1850,15 +1917,19 @@
       brainTwoRuns = [...byId.values()];
       return incoming[0] || null;
     }
-    async function generateBrainTwo(leadId){
+    async function generateBrainTwo(leadId, brainOneRunId = ""){
       const status = $(`brainTwoStatus-${leadId}`);
       if (brainTwoStarting.has(leadId)) return;
       brainTwoStarting.add(leadId);
       if (status) status.textContent = "Generating outreach draft...";
       toast("Outreach draft starting");
       try {
-        const brainOne = brainOneLatestRun(leadId);
-        const result = await api("/api/brain-two/generate", { method:"POST", body: JSON.stringify({ leadId, brainOneRunId: brainOne?.id || "" }) });
+        const lead = leads.find(item => item.id === leadId);
+        const brainOne = brainOneRunId
+          ? (brainOneRuns || []).find(item => item.id === brainOneRunId && item.businessId === leadId)
+          : brainOneLatestRun(leadId);
+        const authoritativeRunId = brainOneRunId || lead?.brainOneLatestRunId || brainOne?.id || "";
+        const result = await api("/api/brain-two/generate", { method:"POST", body: JSON.stringify({ leadId, brainOneRunId: authoritativeRunId }) });
         if (result.run) {
           const byId = new Map((brainTwoRuns || []).map(run=>[run.id, run]));
           byId.set(result.run.id, result.run);
@@ -3369,6 +3440,7 @@
       $("auditTable").innerHTML = auditLog.length ? `<tr><th>Time</th><th>Action</th><th>Details</th></tr>${auditLog.slice(0,40).map(row=>`<tr><td>${new Date(row.at).toLocaleString()}</td><td>${esc(row.action)}</td><td>${esc(JSON.stringify(row.details || {}))}</td></tr>`).join("")}` : `<tr><td>No server audit entries loaded yet.</td></tr>`;
     }
     function render(){
+      renderWorkflowAlert();
       const activeView = document.querySelector(".view.active")?.id || "assistant";
       if (activeView === "assistant") { renderStats(); renderAssistant(); renderActionGuide(); renderTodayWork(); }
       if (activeView === "sendcenter") renderSendCenter();

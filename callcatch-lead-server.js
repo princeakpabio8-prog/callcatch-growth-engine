@@ -36,9 +36,7 @@ const {
 } = require("./lead-engine/brainOneService");
 const {
   applyBrainTwoReviewState,
-  duplicateBrainTwoRun,
-  evaluateBrainTwoEligibility,
-  runBrainTwo
+  createBrainTwoRunForApprovedOpportunity
 } = require("./lead-engine/brainTwoService");
 const {
   generateFollowUps,
@@ -1874,13 +1872,27 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const approved = url.pathname.endsWith("/approve");
       const result = await mutateStore(state => {
-        return applyBrainOneReviewState(state, {
+        const review = applyBrainOneReviewState(state, {
           runId: body.runId,
           leadId: body.leadId,
           approved,
           reviewedBy: body.reviewedBy || "CallCatch user",
           notes: body.notes || ""
         });
+        if (!approved) return review;
+        const brainTwo = createBrainTwoRunForApprovedOpportunity(state, {
+          leadId: review.lead.id,
+          brainOneRunId: review.run.id,
+          runId: newId("brain2"),
+          createdAt: new Date().toISOString()
+        });
+        return {
+          ...review,
+          brainTwoRun: brainTwo.run,
+          eligibility: brainTwo.eligibility,
+          blockingRequirements: brainTwo.eligibility?.reasons || [],
+          approvalPersisted: true
+        };
       });
       return send(res, 200, result);
     } catch (error) {
@@ -1900,62 +1912,42 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && url.pathname === "/api/brain-two/generate") {
     try {
       const body = await readJson(req);
-      const createdAt = new Date().toISOString();
       const result = await mutateStore(state => {
-        state.brainTwoRuns = state.brainTwoRuns || [];
-        state.brainOneRuns = state.brainOneRuns || [];
-        state.auditLog = state.auditLog || [];
         const lead = (state.leads || []).find(item => item.id === body.leadId);
         if (!lead) throw new Error("Lead not found");
-        const duplicate = duplicateBrainTwoRun(state.brainTwoRuns, lead.id);
-        if (duplicate) return { alreadyRunning: true, run: duplicate };
-        const brainOneRun = body.brainOneRunId
-          ? state.brainOneRuns.find(item => item.id === body.brainOneRunId)
-          : state.brainOneRuns
+        const linkedRunId = body.brainOneRunId || lead.brainOneLatestRunId || "";
+        const brainOneRun = linkedRunId
+          ? (state.brainOneRuns || []).find(item => item.id === linkedRunId)
+          : (state.brainOneRuns || [])
             .filter(item => item.businessId === lead.id)
             .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))[0];
-        if (brainOneRun && brainOneRun.businessId !== lead.id) {
-          const error = new Error("Business identity mismatch");
-          error.statusCode = 409;
-          throw error;
-        }
-        const eligibility = evaluateBrainTwoEligibility({ lead, brainOneRun });
-        if (!eligibility.eligible) {
-          const error = new Error(eligibility.reasons.join(" ") || "Brain Two is not eligible for this lead.");
-          error.statusCode = 409;
-          error.eligibility = eligibility;
-          throw error;
-        }
-        const runId = newId("brain2");
-        const generated = runBrainTwo({ lead, brainOneRun, runId, createdAt });
-        const record = {
-          id: runId,
-          businessId: lead.id,
-          brainOneRunId: brainOneRun.id,
-          executionStatus: generated.executionStatus,
-          approvalStatus: generated.approvalStatus,
-          output: generated.output,
-          generationMode: generated.output.generation_mode,
-          createdAt,
-          executionDurationMs: 0,
-          errorDetails: null
-        };
-        state.brainTwoRuns.unshift(record);
-        lead.brainTwoLatestRunId = runId;
-        lead.brainTwoApprovalStatus = "pending-review";
-        lead.timeline = lead.timeline || [];
-        lead.timeline.unshift({ at: createdAt, text: "Brain Two outreach intelligence generated. Manual approval required. No email was sent or queued." });
-        state.auditLog.unshift({ id: newId("audit"), at: createdAt, action: "brain_two_generated", details: { runId, businessId: lead.id, brainOneRunId: brainOneRun.id } });
-        return { run: record, eligibility };
+        return createBrainTwoRunForApprovedOpportunity(state, {
+          leadId: lead.id,
+          brainOneRunId: brainOneRun?.id || "",
+          runId: newId("brain2"),
+          createdAt: new Date().toISOString()
+        });
       });
-      if (result.alreadyRunning) return send(res, 200, { ok: true, status: "already_running", run: result.run });
+      if (result.alreadyExisting) {
+        return send(res, 200, { ok: true, status: "existing", run: result.run, eligibility: result.eligibility });
+      }
+      if (result.run.executionStatus === "blocked") {
+        return send(res, 409, {
+          ok: false,
+          status: "blocked",
+          error: result.eligibility.reasons.join(" ") || "Brain Two is not eligible for this lead.",
+          blockingRequirements: result.eligibility.reasons,
+          eligibility: result.eligibility,
+          run: result.run
+        });
+      }
       return send(res, 201, { ok: true, status: "completed", run: result.run, eligibility: result.eligibility });
     } catch (error) {
-      return send(res, error.statusCode || 400, {
+      return send(res, error.code === "BUSINESS_IDENTITY_MISMATCH" ? 409 : 400, {
         ok: false,
         status: "blocked",
         error: error.message,
-        eligibility: error.eligibility || null
+        blockingRequirements: [error.message]
       });
     }
   }

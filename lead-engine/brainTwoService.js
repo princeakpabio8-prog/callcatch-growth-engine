@@ -1097,6 +1097,69 @@ function duplicateBrainTwoRun(runs = [], leadId = "") {
   return (runs || []).find(run => run.businessId === leadId && run.executionStatus === "running") || null;
 }
 
+function createBrainTwoRunForApprovedOpportunity(state = {}, { leadId, brainOneRunId, runId = "", createdAt = nowIso() } = {}) {
+  state.leads = state.leads || [];
+  state.brainOneRuns = state.brainOneRuns || [];
+  state.brainTwoRuns = state.brainTwoRuns || [];
+  state.auditLog = state.auditLog || [];
+  const lead = state.leads.find(item => item.id === leadId);
+  if (!lead) throw new Error("Lead not found");
+  const brainOneRun = state.brainOneRuns.find(item => item.id === brainOneRunId);
+  if (!brainOneRun) throw new Error("The approved Brain One report was not found.");
+  if (brainOneRun.businessId !== lead.id || brainOneRun.inputSnapshot?.businessIdentity?.businessId !== lead.id) {
+    const error = new Error("Business identity mismatch");
+    error.code = "BUSINESS_IDENTITY_MISMATCH";
+    throw error;
+  }
+
+  const eligibility = evaluateBrainTwoEligibility({ lead, brainOneRun });
+  const existing = state.brainTwoRuns.find(item =>
+    item.businessId === lead.id
+    && item.brainOneRunId === brainOneRun.id
+    && ["running", "completed", "blocked"].includes(item.executionStatus)
+  );
+  if (existing && !(existing.executionStatus === "blocked" && eligibility.eligible)) {
+    return {
+      alreadyExisting: true,
+      run: existing,
+      eligibility
+    };
+  }
+
+  const resolvedRunId = runId || `brain2_${Date.now().toString(36)}`;
+  const generated = runBrainTwo({ lead, brainOneRun, runId: resolvedRunId, createdAt });
+  const record = {
+    id: resolvedRunId,
+    businessId: lead.id,
+    brainOneRunId: brainOneRun.id,
+    executionStatus: generated.executionStatus,
+    approvalStatus: generated.approvalStatus,
+    output: generated.output,
+    generationMode: generated.output.generation_mode,
+    createdAt,
+    executionDurationMs: 0,
+    errorDetails: null
+  };
+  state.brainTwoRuns.unshift(record);
+  lead.brainTwoLatestRunId = record.id;
+  lead.brainTwoApprovalStatus = "pending-review";
+  lead.timeline = lead.timeline || [];
+  const requirements = eligibility.reasons || [];
+  lead.timeline.unshift({
+    at: createdAt,
+    text: generated.executionStatus === "blocked"
+      ? `Brain Two blocked: ${requirements.join(" ") || "Outreach requirements are incomplete."}`
+      : "Brain Two outreach intelligence generated. Manual approval required. No email was sent or queued."
+  });
+  state.auditLog.unshift({
+    id: `audit_${Date.now().toString(36)}`,
+    at: createdAt,
+    action: generated.executionStatus === "blocked" ? "brain_two_blocked" : "brain_two_generated",
+    details: { runId: record.id, businessId: lead.id, brainOneRunId: brainOneRun.id, requirements }
+  });
+  return { alreadyExisting: false, run: record, eligibility };
+}
+
 function applyBrainTwoReviewState(state = {}, { runId, leadId, approved, reviewedBy = "CallCatch user", notes = "", reviewedAt = nowIso() } = {}) {
   state.brainTwoRuns = state.brainTwoRuns || [];
   const record = state.brainTwoRuns.find(item => item.id === runId);
@@ -1136,6 +1199,7 @@ module.exports = {
   BRAIN_TWO_VERSION,
   RUNTIME_PROMPT,
   applyBrainTwoReviewState,
+  createBrainTwoRunForApprovedOpportunity,
   duplicateBrainTwoRun,
   evaluateEmailQualityGate,
   evaluateBrainTwoEligibility,

@@ -121,18 +121,32 @@ test("workflow approval labels distinguish opportunity approval from final send 
 test("approving an opportunity immediately prepares its Brain Two outreach draft", () => {
   for (const file of FILES) {
     const html = read(file);
-    assert.match(html, /const existingDraft = brainTwoLatestRun\(leadId\);/);
-    assert.match(html, /if \(existingDraft\?\.executionStatus === "completed"\)/);
-    assert.match(html, /const draftResult = await generateBrainTwo\(leadId\);/);
-    assert.match(html, /return \{ \.\.\.result, brainTwoRun: draftResult\?\.run \|\| null \};/);
-    assert.match(html, /toast\("Opportunity approved\. Generating outreach draft\.\.\."\)/);
+    const start = html.indexOf("async function reviewBrainOne");
+    const end = html.indexOf("async function refreshBrainTwoRuns", start);
+    const source = html.slice(start, end);
+    assert.match(source, /const brainTwoRun = result\.brainTwoRun \|\| brainTwoLatestRun\(leadId\);/);
+    assert.match(source, /result\.blockingRequirements \|\| result\.eligibility\?\.reasons/);
+    assert.match(source, /Opportunity approved\. Outreach draft ready for review/);
+    assert.doesNotMatch(source, /generateBrainTwo\(/);
+  }
+});
+
+test("production API state stays authenticated and never silently falls back to local data", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    assert.match(html, /function tokenForPath\(path = ""\)/);
+    assert.match(html, /storedToken\(OPERATOR_TOKEN_KEY\) \|\| storedToken\(ADMIN_TOKEN_KEY\)/);
+    assert.match(html, /applyServerState\(crm, false\);/);
+    assert.match(html, /if \(window\.location\.protocol !== "file:"\) \{\s*leads = \[\];\s*queue = \[\];/);
+    assert.match(html, /serverAccessError = error\.message \|\| "Authenticated server state could not be loaded\."/);
+    assert.match(html, /id="workflowAlert"/);
   }
 });
 
 test("outreach generation returns its result without approving or sending it", () => {
   for (const file of FILES) {
     const html = read(file);
-    const start = html.indexOf("async function generateBrainTwo(leadId)");
+    const start = html.indexOf("async function generateBrainTwo(leadId, brainOneRunId = \"\")");
     const end = html.indexOf("async function reviewBrainTwo", start);
     const source = html.slice(start, end);
     assert.match(source, /api\("\/api\/brain-two\/generate"/);
