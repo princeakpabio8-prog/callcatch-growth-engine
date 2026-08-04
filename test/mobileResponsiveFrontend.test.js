@@ -131,6 +131,17 @@ test("approving an opportunity immediately prepares its Brain Two outreach draft
   }
 });
 
+test("authentication retry keeps the selected token in scope", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    const start = html.indexOf("async function api(path");
+    const end = html.indexOf("async function syncCrm", start);
+    const source = html.slice(start, end);
+    assert.match(source, /let response;\s*const token = authRetry \|\| tokenForPath\(path\);\s*try \{/);
+    assert.doesNotMatch(source, /try \{\s*const token = authRetry/);
+    assert.match(source, /if \(token && token === storedToken\(OPERATOR_TOKEN_KEY\)\)/);
+  }
+});
 test("production API state stays authenticated and never silently falls back to local data", () => {
   for (const file of FILES) {
     const html = read(file);

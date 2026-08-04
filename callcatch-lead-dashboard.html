@@ -951,8 +951,8 @@
     }
     async function api(path, options = {}, authRetry = "") {
       let response;
+      const token = authRetry || tokenForPath(path);
       try {
-        const token = authRetry || tokenForPath(path);
         response = await fetch(apiUrl(path), {
           ...options,
           headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.headers || {}) }
