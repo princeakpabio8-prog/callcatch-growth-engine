@@ -952,19 +952,30 @@
     async function api(path, options = {}, authRetry = "") {
       let response;
       const token = authRetry || tokenForPath(path);
+      const requestOptions = {
+        ...options,
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.headers || {}) }
+      };
+      let networkError = null;
       try {
-        response = await fetch(apiUrl(path), {
-          ...options,
-          headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.headers || {}) }
-        });
+        response = await fetch(apiUrl(path), requestOptions);
       } catch (error) {
-        const target = apiUrl("/health");
-        const message = `Cannot reach CallCatch backend at ${target}. Open https://callcatch-growth-engine-production.up.railway.app/ directly, or wait for Railway to finish waking up, then try again.`;
-        if (path.startsWith("/api/")) {
-          serverAccessError = message;
-          renderWorkflowAlert();
+        networkError = error;
+        const method = String(options.method || "GET").toUpperCase();
+        if (method === "GET") {
+          await new Promise(resolve=>setTimeout(resolve, 1500));
+          try { response = await fetch(apiUrl(path), requestOptions); } catch (retryError) { networkError = retryError; }
         }
-        throw new Error(message);
+        if (!response) {
+          const target = apiUrl("/health");
+          const browserReason = String(networkError?.message || "network request failed").slice(0, 180);
+          const message = `Cannot reach CallCatch backend at ${target}. Browser error: ${browserReason}. Open https://callcatch-growth-engine-production.up.railway.app/ directly, or wait for Railway to finish waking up, then try again.`;
+          if (path.startsWith("/api/")) {
+            serverAccessError = message;
+            renderWorkflowAlert();
+          }
+          throw new Error(message);
+        }
       }
       const payload = await parseApiResponse(response, path);
       const authCode = payload.error?.code || "";
@@ -989,9 +1000,11 @@
           payload.failureStage ? `Stage: ${payload.failureStage}` : "",
           payload.upstreamStatus ? `NVIDIA status: ${payload.upstreamStatus}` : "",
           payload.upstreamBody ? `Body: ${String(payload.upstreamBody).slice(0, 500)}` : "",
-          (payload.blockingRequirements || payload.eligibility?.reasons || []).length
-            ? `Blocked by: ${(payload.blockingRequirements || payload.eligibility.reasons).join(" ")}`
-            : ""
+          (payload.blockingConditions || payload.eligibility?.blocking_conditions || []).length
+            ? `Failed condition: ${(payload.blockingConditions || payload.eligibility.blocking_conditions).map(item=>`${item.condition}${item.actual ? ` (actual: ${item.actual})` : ""}: ${item.reason}`).join(" ")}`
+            : (payload.blockingRequirements || payload.eligibility?.reasons || []).length
+              ? `Blocked by: ${(payload.blockingRequirements || payload.eligibility.reasons).join(" ")}`
+              : ""
         ].filter(Boolean).join(" | ");
         const error = new Error(detail);
         error.status = response.status;
@@ -1883,28 +1896,47 @@
       }
     }
     async function reviewBrainOne(runId, leadId, approved){
-      const status = $(`brainTwoStatus-${leadId}`) || $(`brainOneStatus-${leadId}`);
+      const setStatus = message => {
+        const target = $(`brainTwoStatus-${leadId}`) || $(`brainOneStatus-${leadId}`);
+        if (target) target.textContent = message;
+      };
       try {
         const result = await api(approved ? "/api/brain-one/approve" : "/api/brain-one/reject", { method:"POST", body: JSON.stringify({ runId, leadId }) });
-        const crm = await api("/api/crm");
-        applyServerState(crm);
+        if (result.lead) leads = mergeById(leads, [result.lead]);
+        if (result.run) brainOneRuns = mergeById(brainOneRuns, [result.run]);
+        if (result.brainTwoRun) brainTwoRuns = mergeById(brainTwoRuns, [result.brainTwoRun]);
         render();
+
+        let refreshError = "";
+        try {
+          const crm = await api("/api/crm");
+          applyServerState(crm);
+          render();
+        } catch(error) {
+          refreshError = error.message || "Server refresh failed after approval.";
+        }
         if (!approved) {
           toast("Business analysis rejected");
           return result;
         }
         const brainTwoRun = result.brainTwoRun || brainTwoLatestRun(leadId);
         const requirements = result.blockingRequirements || result.eligibility?.reasons || brainTwoRun?.output?.eligibility?.reasons || [];
+        const conditions = result.blockingConditions || result.eligibility?.blocking_conditions || brainTwoRun?.output?.eligibility?.blocking_conditions || [];
         if (brainTwoRun?.executionStatus === "completed") {
+          setStatus("Outreach draft generated and ready for review.");
           toast("Opportunity approved. Outreach draft ready for review");
           return { ...result, brainTwoRun };
         }
-        const message = requirements.join(" ") || "Opportunity approved, but the outreach draft could not be generated.";
-        if (status) status.textContent = message;
-        toast(message);
+        const conditionText = conditions.map(item=>`${item.condition}${item.actual ? ` (actual: ${item.actual})` : ""}: ${item.reason}`).join(" ");
+        const reason = conditionText || requirements.join(" ") || "The server did not return a completed Brain Two draft.";
+        const message = `Outreach Draft blocked. ${reason}${refreshError ? ` Server refresh also failed: ${refreshError}` : ""}`;
+        serverAccessError = message;
+        renderWorkflowAlert();
+        setStatus(message);
+        toast("Outreach Draft blocked. See the exact requirement above.");
         return { ...result, brainTwoRun };
       } catch(error) {
-        if (status) status.textContent = error.message;
+        setStatus(error.message);
         toast(error.message);
         return null;
       }

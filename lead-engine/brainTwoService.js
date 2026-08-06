@@ -120,30 +120,41 @@ function approvedBrainOne(brainOneRun = {}) {
 function evaluateBrainTwoEligibility({ lead = {}, brainOneRun = {} } = {}) {
   brainOneRun = brainOneRun || {};
   const reasons = [];
-  if (!brainOneRun || !brainOneRun.id) reasons.push("Brain One has not run.");
-  if (brainOneRun.id && brainOneRun.businessId !== lead.id) reasons.push("Brain One belongs to a different business identity.");
-  if (brainOneRun.id && brainOneRun.inputSnapshot?.businessIdentity?.businessId !== lead.id) reasons.push("Brain One input belongs to a different business identity.");
-  if (!isIdentityVerified(lead.identityVerification)) reasons.push("Business identity is not verified.");
-  if (!lead.verifiedIndustry || lead.verifiedIndustry !== lead.trade) reasons.push("The business industry is not verified by the official website.");
-  if (brainOneRun.id && brainOneRun.executionStatus !== "completed") reasons.push("Brain One has not completed.");
-  if (brainOneRun.id && !approvedBrainOne(brainOneRun)) reasons.push("Brain One has not been manually approved.");
-  if (isManualTestLead(lead)) reasons.push("Lead is still in Manual Test mode.");
+  const blockingConditions = [];
+  const block = (failed, condition, message, actual = "") => {
+    if (!failed) return;
+    reasons.push(message);
+    blockingConditions.push({ condition, actual: String(actual || ""), reason: message });
+  };
+
+  block(!brainOneRun.id, "brainOneRun.id is present", "Brain One has not run.", brainOneRun.id || "missing");
+  block(brainOneRun.id && brainOneRun.businessId !== lead.id, "brainOneRun.businessId === lead.id", "Brain One belongs to a different business identity.", "mismatch");
+  block(brainOneRun.id && brainOneRun.inputSnapshot?.businessIdentity?.businessId !== lead.id, "brainOneRun.inputSnapshot.businessIdentity.businessId === lead.id", "Brain One input belongs to a different business identity.", "mismatch");
+  block(!isIdentityVerified(lead.identityVerification), "isIdentityVerified(lead.identityVerification) === true", "Business identity is not verified.", lead.identityVerification?.status || "missing");
+  block(!lead.verifiedIndustry || lead.verifiedIndustry !== lead.trade, "lead.verifiedIndustry === lead.trade", "The business industry is not verified by the official website.", lead.verifiedIndustry ? "mismatch" : "missing");
+  block(brainOneRun.id && brainOneRun.executionStatus !== "completed", "brainOneRun.executionStatus === \"completed\"", "Brain One has not completed.", brainOneRun.executionStatus || "missing");
+  block(brainOneRun.id && !approvedBrainOne(brainOneRun), "brainOneRun.approvalStatus starts with \"approved\"", "Brain One has not been manually approved.", brainOneRun.approvalStatus || "missing");
+  block(isManualTestLead(lead), "isManualTestLead(lead) === false", "Lead is still in Manual Test mode.", "manual_test");
 
   const flat = brainOneFlatOutput(brainOneRun);
   const decision = brainOneDecision(brainOneRun, flat);
-  if (decision === "DO NOT CONTACT") reasons.push("Brain One decision is DO NOT CONTACT.");
+  block(decision === "DO NOT CONTACT", "decision !== \"DO NOT CONTACT\"", "Brain One decision is DO NOT CONTACT.", decision);
 
   const paths = contactPaths(lead, flat);
   const manualResearchRequired = handoffNeedsManualResearch(flat);
-  if (!paths.hasUsablePath && !manualResearchRequired) {
-    reasons.push("No usable outreach path is available.");
-  }
+  block(
+    !paths.hasUsablePath && !manualResearchRequired,
+    "contact_paths.hasUsablePath || manual_research_required",
+    "No usable outreach path is available.",
+    `email:${paths.emails.length},phone:${paths.phones.length},form:${paths.forms.length}`
+  );
 
   const blocked = reasons.length > 0;
   return {
     eligible: !blocked,
     status: blocked ? "blocked" : manualResearchRequired && !paths.hasUsablePath ? "needs_review" : "eligible",
     reasons,
+    blocking_conditions: blockingConditions,
     brain_one_run_id: brainOneRun.id || "",
     manual_research_required: manualResearchRequired && !paths.hasUsablePath,
     contact_paths: paths

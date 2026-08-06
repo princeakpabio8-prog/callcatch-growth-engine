@@ -1868,8 +1868,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && ["/api/brain-one/approve", "/api/brain-one/reject"].includes(url.pathname)) {
+    let body = {};
     try {
-      const body = await readJson(req);
+      body = await readJson(req);
       const approved = url.pathname.endsWith("/approve");
       const result = await mutateStore(state => {
         const review = applyBrainOneReviewState(state, {
@@ -1891,15 +1892,39 @@ const server = http.createServer(async (req, res) => {
           brainTwoRun: brainTwo.run,
           eligibility: brainTwo.eligibility,
           blockingRequirements: brainTwo.eligibility?.reasons || [],
+          blockingConditions: brainTwo.eligibility?.blocking_conditions || [],
           approvalPersisted: true
         };
       });
+      if (approved) {
+        const blocked = result.brainTwoRun?.executionStatus === "blocked";
+        log(blocked ? "warn" : "info", blocked ? "brain_two_generation_blocked" : "brain_two_generation_completed", {
+          route: "/api/brain-one/approve",
+          leadId: body.leadId || "",
+          brainOneRunId: body.runId || "",
+          brainTwoRunId: result.brainTwoRun?.id || "",
+          executionStatus: result.brainTwoRun?.executionStatus || "missing",
+          blockingRequirements: result.blockingRequirements || [],
+          blockingConditions: result.blockingConditions || []
+        });
+      }
       return send(res, 200, result);
     } catch (error) {
-      return send(res, 400, { error: error.message });
+      log("error", "brain_one_approval_handoff_failed", {
+        route: url.pathname,
+        leadId: body.leadId || "",
+        brainOneRunId: body.runId || "",
+        error: error.message
+      });
+      return send(res, error.code === "BUSINESS_IDENTITY_MISMATCH" ? 409 : 400, {
+        ok: false,
+        status: "blocked",
+        error: error.message,
+        blockingRequirements: [error.message],
+        blockingConditions: [{ condition: "approval transaction completes", actual: "failed", reason: error.message }]
+      });
     }
   }
-
   if (req.method === "GET" && url.pathname === "/api/brain-two/runs") {
     const state = await readStore();
     const leadId = url.searchParams.get("leadId") || "";

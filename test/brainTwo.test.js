@@ -484,9 +484,21 @@ test("blocked opportunity handoff preserves the exact requirements", () => {
   assert.deepEqual(result.run.output.eligibility.reasons, result.eligibility.reasons);
   assert.match(state.leads[0].timeline[0].text, /not been manually approved/i);
 });
+test("blocked opportunity reports the exact failed guard expression", () => {
+  const run = approvedBrainOne({ id: "brain1-do-not-contact" });
+  run.validatedOutput.decision_engine.decision = "DO NOT CONTACT";
+  const result = evaluateBrainTwoEligibility({ lead: lead(), brainOneRun: run });
+  const guard = result.blocking_conditions.find(item => item.condition === 'decision !== "DO NOT CONTACT"');
+
+  assert.equal(result.eligible, false);
+  assert.equal(guard.actual, "DO NOT CONTACT");
+  assert.equal(guard.reason, "Brain One decision is DO NOT CONTACT.");
+});
 test("server source exposes Brain Two routes without touching sending endpoints", () => {
   const source = [fs.readFileSync("callcatch-lead-server.js", "utf8"), fs.readFileSync("lead-engine/brainTwoService.js", "utf8")].join("\n");
   assert.match(source, /\/api\/brain-two\/generate/);
   assert.match(source, /\/api\/brain-two\/approve/);
   assert.match(source, /No email was sent or queued/);
+  assert.match(source, /brain_two_generation_blocked/);
+  assert.match(source, /blockingConditions/);
 });

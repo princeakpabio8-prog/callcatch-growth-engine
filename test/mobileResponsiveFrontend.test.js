@@ -137,9 +137,33 @@ test("authentication retry keeps the selected token in scope", () => {
     const start = html.indexOf("async function api(path");
     const end = html.indexOf("async function syncCrm", start);
     const source = html.slice(start, end);
-    assert.match(source, /let response;\s*const token = authRetry \|\| tokenForPath\(path\);\s*try \{/);
+    assert.ok(source.indexOf("const token = authRetry || tokenForPath(path);") < source.indexOf("try {"));
     assert.doesNotMatch(source, /try \{\s*const token = authRetry/);
     assert.match(source, /if \(token && token === storedToken\(OPERATOR_TOKEN_KEY\)\)/);
+  }
+});
+test("approval result remains authoritative when the subsequent CRM refresh fails", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    const start = html.indexOf("async function reviewBrainOne");
+    const end = html.indexOf("async function refreshBrainTwoRuns", start);
+    const source = html.slice(start, end);
+    assert.ok(source.indexOf("if (result.brainTwoRun) brainTwoRuns") < source.indexOf('const crm = await api("/api/crm")'));
+    assert.match(source, /catch\(error\) \{\s*refreshError = error\.message/);
+    assert.match(source, /Outreach Draft blocked\. \$\{reason\}/);
+    assert.match(source, /result\.blockingConditions \|\| result\.eligibility\?\.blocking_conditions/);
+  }
+});
+
+test("read-only API requests retry once before showing an unreachable backend", () => {
+  for (const file of FILES) {
+    const html = read(file);
+    const start = html.indexOf("async function api(path");
+    const end = html.indexOf("async function syncCrm", start);
+    const source = html.slice(start, end);
+    assert.match(source, /if \(method === "GET"\)/);
+    assert.match(source, /setTimeout\(resolve, 1500\)/);
+    assert.match(source, /Browser error: \$\{browserReason\}/);
   }
 });
 test("production API state stays authenticated and never silently falls back to local data", () => {
