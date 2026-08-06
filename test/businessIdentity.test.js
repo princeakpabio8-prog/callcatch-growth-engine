@@ -121,6 +121,67 @@ test("official website email is correctly linked", () => {
   assert.equal(result.emailSourceUrl, "https://dmmechanical.com/contact");
 });
 
+test("Houston domain-matching email is verified without requiring a separate page mention", () => {
+  const lead = {
+    id: "lead-houston",
+    business: "Houston Heating & Cooling",
+    searchTrade: "HVAC",
+    trade: "HVAC",
+    website: "https://gohoustonhvac.com/",
+    email: "admin@gohoustonhvac.com"
+  };
+  const websiteScan = scan({
+    url: lead.website,
+    pageTitles: ["Houston Heating & Cooling | HVAC Services"],
+    businessNameCandidates: ["Houston Heating & Cooling"],
+    emails: [],
+    emailEvidence: []
+  });
+  const result = verifyBusinessIdentity({ lead, scan: websiteScan, email: lead.email });
+  assert.equal(result.status, IDENTITY_STATUS.VERIFIED);
+  assert.equal(result.recipientEmail, lead.email);
+  assert.equal(result.websiteDomain, "gohoustonhvac.com");
+});
+
+test("generic mailbox on the verified business domain is accepted", () => {
+  const lead = verifiedLead({ email: "hello@dmmechanical.com", identityVerification: null });
+  const result = verifyBusinessIdentity({
+    lead,
+    scan: scan({ emails: [], emailEvidence: [] }),
+    email: lead.email
+  });
+  assert.equal(result.status, IDENTITY_STATUS.VERIFIED);
+});
+
+test("different-domain email is accepted only when the verified website publishes it", () => {
+  const lead = verifiedLead({ email: "dispatch@service-office.com", identityVerification: null });
+  const unsupported = verifyBusinessIdentity({
+    lead,
+    scan: scan({ emails: [], emailEvidence: [] }),
+    email: lead.email
+  });
+  const supported = verifyBusinessIdentity({
+    lead,
+    scan: scan({
+      emails: [lead.email],
+      emailEvidence: [{ email: lead.email, sourceUrl: "https://dmmechanical.com/contact", sourceType: "official-website" }]
+    }),
+    email: lead.email
+  });
+  assert.equal(unsupported.status, IDENTITY_STATUS.NEEDS_REVIEW);
+  assert.equal(supported.status, IDENTITY_STATUS.VERIFIED);
+});
+
+test("malformed email cannot pass business identity verification", () => {
+  const lead = verifiedLead({ email: "admin@dmmechanical", identityVerification: null });
+  const result = verifyBusinessIdentity({
+    lead,
+    scan: scan({ emails: [lead.email], emailEvidence: [] }),
+    email: lead.email
+  });
+  assert.equal(result.status, IDENTITY_STATUS.NEEDS_REVIEW);
+  assert.match(result.reasons.join(" "), /malformed/i);
+});
 test("Gmail address published on the official website is accepted", () => {
   const lead = verifiedLead({ email: "dmmechanical@gmail.com", emailSourceUrl: "https://dmmechanical.com/contact", identityVerification: null });
   const websiteScan = scan({

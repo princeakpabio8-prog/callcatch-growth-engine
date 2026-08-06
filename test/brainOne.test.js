@@ -107,7 +107,7 @@ test("structured eligibility blocks a genuinely missing recipient email", () => 
   const result = deterministicDecision("no verified outreach", { context });
   assert.equal(result.decision, "DO NOT CONTACT");
   assert.equal(result.blocking_code, "RECIPIENT_EMAIL_NOT_VERIFIED");
-  assert.match(result.blocking_reason, /No usable recipient email/i);
+  assert.match(result.blocking_reason, /missing or malformed/i);
 });
 
 test("structured eligibility preserves the contactability threshold of 35", () => {
@@ -1185,6 +1185,155 @@ test("independent module scores preserve strong business quality when contactabi
   assert.doesNotMatch(result.blueprintMarkdown, /Business Foundation: Not scored|Business Foundation: Failed/i);
 });
 
+async function runStrongVerifiedContactFixture(context) {
+  let calls = 0;
+  return runBrainOne(context, {
+    callModel: async () => {
+      calls += 1;
+      if (calls === 1) return moduleJson(context, "foundation", { contacts: [] });
+      if (calls === 2) return moduleJson(context, "digital_intelligence");
+      if (calls === 3) {
+        const opportunities = moduleOutput(context, "opportunities");
+        opportunities.hidden_opportunities[0].ranking_factors = { evidence_strength: 95, business_impact: 95, feasibility: 95, urgency: 95 };
+        Object.values(opportunities.ai_opportunity_radar).forEach(item => { item.status = "strong"; });
+        return JSON.stringify(opportunities);
+      }
+      if (calls === 4) return moduleJson(context, "strategic_interpretation");
+      if (calls === 5) {
+        const contact = moduleOutput(context, "contact_decision");
+        contact.contact_decision = {
+          ...contact.contact_decision,
+          decision: "DO NOT CONTACT",
+          primary_reason: "No verified outreach path was found.",
+          disqualifying_factors: ["No verified outreach path was found."]
+        };
+        return JSON.stringify(contact);
+      }
+      return "# Business Growth Blueprint\n\nVerified contact and substantial opportunity support manual outreach review.";
+    }
+  });
+}
+
+function verifiedDomainLead(overrides = {}) {
+  const website = overrides.website || "https://gohoustonhvac.com/";
+  const email = overrides.email || "admin@gohoustonhvac.com";
+  return {
+    id: "lead-houston-hvac",
+    business: "Houston Heating & Cooling",
+    trade: "HVAC",
+    city: "Houston",
+    state: "TX",
+    country: "US",
+    website,
+    email,
+    source: "stored-lead",
+    identityVerification: {
+      status: "Verified",
+      verified: true,
+      canonicalWebsite: website,
+      recipientEmail: email
+    },
+    ...overrides
+  };
+}
+
+test("Houston verified business-domain email survives Brain One merge and scores at least 60", async () => {
+  const lead = verifiedDomainLead();
+  const context = buildBrainOneContextPackage(lead, {
+    ok: true,
+    url: lead.website,
+    text: "Houston Heating & Cooling provides residential HVAC repair and maintenance."
+  });
+  assert.equal(context.outreachEligibility.emailVerificationMethod, "domain_match");
+  assert.equal(context.outreachEligibility.recipientUsable, true);
+  assert.ok(context.evidenceLog.some(item => item.id === "ev-verified-contact-email" && item.excerpt.includes(lead.email)));
+
+  const result = await runStrongVerifiedContactFixture(context);
+  const contact = result.output.modules.foundation.output.contacts.find(item => item.contact_email === lead.email);
+  assert.ok(contact);
+  assert.equal(contact.status, "confirmed");
+  assert.deepEqual(contact.evidence_ids, ["ev-verified-contact-email"]);
+  assert.ok(result.output.score_metadata.module_scores.contactability.value >= 60);
+  assert.equal(result.output.decision_engine.decision, "CONTACT");
+  assert.equal(result.output.decision_engine.recommendation_status, "Generate Outreach");
+});
+
+test("hello mailbox on a verified business domain remains a usable Brain One contact", async () => {
+  const lead = verifiedDomainLead({
+    website: "https://business.com/",
+    email: "hello@business.com",
+    business: "Business Services",
+    identityVerification: {
+      status: "Verified",
+      verified: true,
+      canonicalWebsite: "https://business.com/",
+      recipientEmail: "hello@business.com"
+    }
+  });
+  const context = buildBrainOneContextPackage(lead, { ok: true, url: lead.website, text: "Business Services official website." });
+  const result = await runStrongVerifiedContactFixture(context);
+  assert.equal(context.outreachEligibility.recipientUsable, true);
+  assert.ok(result.output.score_metadata.module_scores.contactability.value >= 60);
+});
+
+test("source-backed different-domain email receives the safe contactability baseline", async () => {
+  const lead = verifiedDomainLead({
+    email: "dispatch@service-office.com",
+    identityVerification: {
+      status: "Verified",
+      verified: true,
+      canonicalWebsite: "https://gohoustonhvac.com/",
+      recipientEmail: "dispatch@service-office.com",
+      emailSourceUrl: "https://gohoustonhvac.com/contact"
+    }
+  });
+  const context = buildBrainOneContextPackage(lead, { ok: true, url: lead.website, text: "Official contact information." });
+  const result = await runStrongVerifiedContactFixture(context);
+  assert.equal(context.outreachEligibility.emailVerificationMethod, "source_backed");
+  assert.equal(context.outreachEligibility.recipientUsable, true);
+  assert.ok(result.output.score_metadata.module_scores.contactability.value >= 40);
+});
+
+test("unrelated, malformed, suppressed, and unsubscribed recipients are never usable", async () => {
+  const cases = [
+    verifiedDomainLead({
+      email: "person@unrelated.example",
+      identityVerification: { status: "Verified", verified: true, canonicalWebsite: "https://gohoustonhvac.com/", recipientEmail: "person@unrelated.example" }
+    }),
+    verifiedDomainLead({
+      email: "admin@gohoustonhvac",
+      identityVerification: { status: "Verified", verified: true, canonicalWebsite: "https://gohoustonhvac.com/", recipientEmail: "admin@gohoustonhvac" }
+    }),
+    verifiedDomainLead({ suppressed: true }),
+    verifiedDomainLead({ unsubscribed: true }),
+    verifiedDomainLead({ emailBounced: true }),
+    verifiedDomainLead({ email: "temporary@mailinator.com", identityVerification: { status: "Verified", verified: true, canonicalWebsite: "https://gohoustonhvac.com/", recipientEmail: "temporary@mailinator.com", emailSourceUrl: "https://gohoustonhvac.com/contact" } })
+  ];
+  for (const lead of cases) {
+    const context = buildBrainOneContextPackage(lead, { ok: true, url: lead.website, text: "Official business website." });
+    const result = await runStrongVerifiedContactFixture(context);
+    assert.equal(context.outreachEligibility.recipientUsable, false);
+    assert.equal(result.output.score_metadata.module_scores.contactability.value, 0);
+    assert.equal(result.output.decision_engine.decision, "DO NOT CONTACT");
+  }
+});
+
+test("an existing stored lead can be re-analysed with corrected contactability", async () => {
+  const storedLead = verifiedDomainLead({
+    brainOneLatestRunId: "brain1-stale-contactability-zero",
+    brainOneStatus: "completed"
+  });
+  const context = buildBrainOneContextPackage(storedLead, {
+    ok: true,
+    url: storedLead.website,
+    text: "Existing stored Houston HVAC lead re-analysis."
+  });
+  const result = await runStrongVerifiedContactFixture(context);
+  assert.equal(context.publicContactDetails.email, storedLead.email);
+  assert.ok(result.output.modules.foundation.output.contacts.some(item => item.contact_email === storedLead.email));
+  assert.ok(result.output.score_metadata.module_scores.contactability.value >= 60);
+  assert.equal(result.output.decision_engine.decision, "CONTACT");
+});
 test("verified public email survives an omitted model contact and resolves a stale contact-only block", async () => {
   const lead = sampleLead(1, {
     identityVerification: {
@@ -1276,7 +1425,7 @@ test("verified contact never overrides an explicit compliance suppression block"
       return "# Business Growth Blueprint\n\nManual review only.";
     }
   });
-  assert.ok(result.output.score_metadata.module_scores.contactability.value >= 35);
+  assert.equal(result.output.score_metadata.module_scores.contactability.value, 0);
   assert.ok(result.output.score_metadata.module_scores.opportunity.value >= 55);
   assert.equal(result.output.decision_engine.stale_contact_block_resolved, false);
   assert.equal(result.output.decision_engine.decision, "DO NOT CONTACT");

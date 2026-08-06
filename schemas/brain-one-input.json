@@ -67,6 +67,10 @@
       "properties": {
         "identityVerified": { "type": "boolean" },
         "identityStatus": { "type": "string" },
+        "canonicalWebsiteVerified": { "type": "boolean" },
+        "websiteDomain": { "type": "string" },
+        "recipientDomain": { "type": "string" },
+        "emailVerificationMethod": { "type": "string", "enum": ["domain_match", "source_backed", "none"] },
         "recipientEmail": { "type": "string" },
         "recipientMatchesIdentity": { "type": "boolean" },
         "verifiedContactEvidenceId": { "type": "string" },

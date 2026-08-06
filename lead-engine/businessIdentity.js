@@ -60,7 +60,14 @@ function canonicalDomain(value = "") {
   }
 }
 
+function isValidEmailAddress(value = "") {
+  const email = clean(value).toLowerCase();
+  if (!email || email.length > 254) return false;
+  return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(email);
+}
+
 function emailDomain(value = "") {
+  if (!isValidEmailAddress(value)) return "";
   const match = clean(value).toLowerCase().match(/^[^@\s]+@([^@\s]+)$/);
   return match ? match[1].replace(/^www\./, "") : "";
 }
@@ -183,11 +190,20 @@ function verifyBusinessIdentity({ lead = {}, scan = {}, email = "" } = {}) {
       conflicts: [{ field: "industry", expected: searchTrade, actual: industry.industry || "unconfirmed" }]
     });
   }
-  if (!recipient || !recipientDomain || !evidence?.sourceUrl) {
-    return identityResult(IDENTITY_STATUS.NEEDS_REVIEW, { ...base, reasons: ["The recipient email is not tied to a retained official source URL."] });
+  if (!recipient || !recipientDomain) {
+    return identityResult(IDENTITY_STATUS.NEEDS_REVIEW, { ...base, reasons: ["The recipient email is missing or malformed."] });
+  }
+  if (sameOrSubdomain(recipientDomain, websiteDomain)) {
+    return identityResult(IDENTITY_STATUS.VERIFIED, {
+      ...base,
+      reasons: ["Business name, industry, website, and business-domain recipient are consistent."]
+    });
+  }
+  if (!evidence?.sourceUrl) {
+    return identityResult(IDENTITY_STATUS.NEEDS_REVIEW, { ...base, reasons: ["The recipient email domain differs from the business website and has no retained official website evidence."] });
   }
   const sourceDomain = canonicalDomain(evidence.sourceUrl);
-  const officialSource = sameOrSubdomain(sourceDomain, websiteDomain) || evidence.verifiedOfficialProfile === true;
+  const officialSource = sameOrSubdomain(sourceDomain, websiteDomain);
   if (!officialSource) {
     return identityResult(IDENTITY_STATUS.REJECTED, {
       ...base,
@@ -198,14 +214,7 @@ function verifyBusinessIdentity({ lead = {}, scan = {}, email = "" } = {}) {
   if (FREE_EMAIL_DOMAINS.has(recipientDomain)) {
     return identityResult(IDENTITY_STATUS.VERIFIED_FREE_EMAIL, { ...base, reasons: ["The public free-email address is explicitly published by the verified business website."] });
   }
-  if (!sameOrSubdomain(recipientDomain, websiteDomain)) {
-    return identityResult(IDENTITY_STATUS.NEEDS_REVIEW, {
-      ...base,
-      reasons: ["The email is published by the official site, but its custom domain differs and needs manual confirmation."],
-      conflicts: [{ field: "emailDomain", expected: websiteDomain, actual: recipientDomain }]
-    });
-  }
-  return identityResult(IDENTITY_STATUS.VERIFIED, { ...base, reasons: ["Business name, industry, website, recipient, and source URL are consistent."] });
+  return identityResult(IDENTITY_STATUS.VERIFIED, { ...base, reasons: ["The recipient email is explicitly published by the verified business website."] });
 }
 
 function isIdentityVerified(value = {}) {
@@ -420,6 +429,7 @@ module.exports = {
   emailDomain,
   identityError,
   isIdentityVerified,
+  isValidEmailAddress,
   namesConsistent,
   newLeadId,
   validateIdentityChain,

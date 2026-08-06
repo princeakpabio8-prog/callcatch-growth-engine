@@ -8,11 +8,12 @@ const opportunitiesSchema = require("../schemas/brain-one-opportunities.json");
 const strategicSchema = require("../schemas/brain-one-strategic-interpretation.json");
 const contactDecisionSchema = require("../schemas/brain-one-contact-decision.json");
 const combinedSchema = require("../schemas/brain-one-combined-output.json");
-const { isIdentityVerified } = require("./businessIdentity");
+const { canonicalDomain, emailDomain, isIdentityVerified, isValidEmailAddress } = require("./businessIdentity");
 
 const DEFAULT_MODEL = process.env.NVIDIA_MODEL || "meta/llama-3.1-8b-instruct";
 const NVIDIA_URL = process.env.NVIDIA_API_URL || "https://integrate.api.nvidia.com/v1/chat/completions";
 const RUNTIME_PROMPT = fs.readFileSync(path.join(__dirname, "..", "brains", "brain-one-runtime.md"), "utf8");
+const DISPOSABLE_EMAIL_DOMAINS = new Set(["10minutemail.com", "guerrillamail.com", "mailinator.com", "tempmail.com", "yopmail.com"]);
 const LEGACY_OUTPUT_REQUIRED = [
   "business_identity",
   "contacts",
@@ -565,8 +566,9 @@ function normalizeContact(contact = {}, index = 0, meta = null) {
 }
 
 function verifiedContextEmail(contextPackage = {}) {
-  const email = String(contextPackage.publicContactDetails?.email || "").trim().toLowerCase();
-  if (!isEmailLike(email)) return null;
+  const snapshot = contextPackage.outreachEligibility || {};
+  const email = String(snapshot.recipientEmail || contextPackage.publicContactDetails?.email || "").trim().toLowerCase();
+  if (!isValidEmailAddress(email) || snapshot.recipientUsable === false) return null;
   const evidence = (contextPackage.evidenceLog || []).find(item => {
     if ((item?.id || item?.evidence_id) !== "ev-verified-contact-email") return false;
     const text = [item.excerpt, item.source_excerpt, item.value].filter(Boolean).join(" ").toLowerCase();
@@ -576,7 +578,9 @@ function verifiedContextEmail(contextPackage = {}) {
   return {
     email,
     sourceUrl: evidence.sourceUrl || evidence.source_url || contextPackage.businessIdentity?.websiteUrl || "",
-    evidenceId: evidence.id || evidence.evidence_id
+    evidenceId: evidence.id || evidence.evidence_id,
+    verificationMethod: snapshot.emailVerificationMethod || "source_backed",
+    contactConfidence: snapshot.emailVerificationMethod === "domain_match" ? 90 : 75
   };
 }
 
@@ -589,7 +593,7 @@ function mergeVerifiedContextContact(output = {}, contextPackage = {}, meta = nu
   if (existingIndex >= 0) {
     const contact = output.contacts[existingIndex];
     contact.contact_source = contact.contact_source || verified.sourceUrl;
-    contact.contact_confidence = Math.max(Number(contact.contact_confidence || 0), 90);
+    contact.contact_confidence = Math.max(Number(contact.contact_confidence || 0), verified.contactConfidence);
     contact.status = "confirmed";
     contact.evidence_ids = uniqueArray([...(contact.evidence_ids || []), verified.evidenceId]);
     recordNormalization(meta, `contacts[${existingIndex}].verified_context`);
@@ -602,7 +606,7 @@ function mergeVerifiedContextContact(output = {}, contextPackage = {}, meta = nu
     contact_email: verified.email,
     contact_phone: "",
     contact_source: verified.sourceUrl,
-    contact_confidence: 90,
+    contact_confidence: verified.contactConfidence,
     status: "confirmed",
     evidence_ids: [verified.evidenceId]
   }, output.contacts.length, meta));
@@ -789,7 +793,7 @@ function cleanModuleContacts(output = {}, meta = null) {
 }
 
 function isEmailLike(value = "") {
-  return /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i.test(String(value || ""));
+  return isValidEmailAddress(value);
 }
 
 function genericMailboxName(value = "") {
@@ -1780,19 +1784,26 @@ function scoreOpportunity(flat = {}, supportScores = {}) {
   });
 }
 
-function scoreContactability(flat = {}) {
+function scoreContactability(flat = {}, contextPackage = {}) {
   const contacts = Array.isArray(flat.contacts) ? flat.contacts : [];
-  const hasEmail = contacts.some(item => item.contact_email);
+  const verified = verifiedContextEmail(contextPackage);
+  const verifiedEmail = verified?.email || "";
+  const hasEmail = !!verifiedEmail && contacts.some(item => String(item.contact_email || "").trim().toLowerCase() === verifiedEmail);
   const hasPhone = contacts.some(item => item.contact_phone);
   const confidenceScores = contacts.map(item => numberOrNull(item.contact_confidence)).filter(value => value !== null);
   const base = (hasEmail ? 45 : 0) + (hasPhone ? 30 : 0) + Math.min(25, Math.round((averageScore(confidenceScores) || 0) / 4));
-  const score = contacts.length ? clampScore(base) : 0;
+  const baseline = verified?.verificationMethod === "domain_match" ? 60 : verified ? 40 : 0;
+  const score = verified && hasEmail ? Math.max(baseline, clampScore(base) || 0) : 0;
   return scoreCard("contactability", "Contactability", score, {
     status: "assessed",
-    explanation: score === 0 ? "No verified outreach path was found." : "Contactability is the only module scored from email, phone, forms, LinkedIn, CRM, or outreach feasibility.",
-    evidenceIds: contacts.flatMap(evidenceIdList),
-    componentsUsed: [hasEmail ? "email" : "", hasPhone ? "phone" : ""].filter(Boolean),
-    componentsMissing: [hasEmail ? "" : "verified_email", hasPhone ? "" : "verified_phone"].filter(Boolean)
+    explanation: score === 0
+      ? "No verified usable recipient email was found."
+      : verified.verificationMethod === "domain_match"
+        ? "A valid recipient email matches the verified canonical business domain."
+        : "A valid recipient email is supported by retained evidence from the verified business website.",
+    evidenceIds: verified ? uniqueArray([verified.evidenceId, ...contacts.flatMap(evidenceIdList)]) : [],
+    componentsUsed: [hasEmail ? verified.verificationMethod : "", hasPhone ? "phone" : ""].filter(Boolean),
+    componentsMissing: [hasEmail ? "" : "verified_email"].filter(Boolean)
   });
 }
 
@@ -1976,7 +1987,7 @@ function calculateScoreMetadata(combined = {}, contextPackage = {}) {
   module_scores.future_readiness = scoreFutureReadiness(flat, contextPackage);
   module_scores.trust = scoreTrust(flat, contextPackage);
   module_scores.opportunity = scoreOpportunity(flat, module_scores);
-  module_scores.contactability = scoreContactability(flat);
+  module_scores.contactability = scoreContactability(flat, contextPackage);
   module_scores.decision = scoreCard("decision", "Decision Engine", contactScore, {
     status: contactScore === null ? "needs_review" : "model_assisted",
     explanation: flat.contact_decision?.primary_reason || "Decision Engine consumes module scores without overwriting them.",
@@ -2693,6 +2704,89 @@ function evidenceItem(id, sourceType, sourceUrl, excerpt, capturedAt = nowIso())
   };
 }
 
+function sameBusinessDomain(left = "", right = "") {
+  const a = String(left || "").toLowerCase();
+  const b = String(right || "").toLowerCase();
+  return Boolean(a && b && (a === b || a.endsWith("." + b) || b.endsWith("." + a)));
+}
+
+function resolveVerifiedLeadContact(lead = {}, scan = null) {
+  const identity = lead.identityVerification || {};
+  const email = String(lead.email || "").trim().toLowerCase();
+  const identityEmail = String(identity.recipientEmail || "").trim().toLowerCase();
+  const verifiedWebsiteUrl = identity.canonicalWebsite || lead.website || scan?.url || "";
+  const verifiedWebsiteDomain = canonicalDomain(verifiedWebsiteUrl);
+  const currentWebsiteDomain = canonicalDomain(lead.website || scan?.url || "");
+  const websiteMatchesIdentity = !!verifiedWebsiteDomain
+    && !!currentWebsiteDomain
+    && sameBusinessDomain(verifiedWebsiteDomain, currentWebsiteDomain);
+  const identityVerified = isIdentityVerified(identity) && websiteMatchesIdentity;
+  const emailIsValid = isValidEmailAddress(email);
+  const recipientDomain = emailDomain(email);
+  const recipientConsistent = !identityEmail || identityEmail === email;
+  const domainMatchesWebsite = emailIsValid && sameBusinessDomain(recipientDomain, verifiedWebsiteDomain);
+  const scanEvidence = (scan?.emailEvidence || []).find(item =>
+    String(item?.email || "").trim().toLowerCase() === email
+  ) || null;
+  const sourceUrl = identityEmail === email && identity.emailSourceUrl
+    ? identity.emailSourceUrl
+    : scanEvidence?.sourceUrl || "";
+  const sourceBackedByWebsite = emailIsValid
+    && !!sourceUrl
+    && sameBusinessDomain(canonicalDomain(sourceUrl), verifiedWebsiteDomain);
+  const verificationMethod = domainMatchesWebsite
+    ? "domain_match"
+    : sourceBackedByWebsite
+      ? "source_backed"
+      : "none";
+  const complianceFlags = [
+    [lead.unsubscribed || lead.unsubscribe, "The recipient has unsubscribed."],
+    [lead.doNotEmail, "The business is marked do not email."],
+    [lead.suppressed || lead.emailSuppressed, "The recipient is suppressed."],
+    [lead.optOut || lead.optedOut, "The recipient has opted out."]
+  ];
+  const complianceBlockReason = complianceFlags.find(([blocked]) => !!blocked)?.[1] || "";
+  const recipientPolicyReason = lead.emailBounced || lead.bounced
+    ? "The verified recipient email previously bounced and is not usable."
+    : lead.emailBlocked || lead.blockedEmail
+      ? "The recipient email is explicitly blocked."
+      : lead.emailDisposable || lead.disposableEmail || DISPOSABLE_EMAIL_DOMAINS.has(recipientDomain)
+        ? "The recipient email uses a disposable address and is not usable."
+        : "";
+  const ownershipConfirmed = identityVerified
+    && emailIsValid
+    && recipientConsistent
+    && (domainMatchesWebsite || sourceBackedByWebsite);
+  const recipientBlockReason = !emailIsValid
+    ? "The recipient email is missing or malformed."
+    : !websiteMatchesIdentity
+      ? "The canonical business website does not match the verified identity."
+      : !recipientConsistent
+        ? "The recipient email does not match the email stored with the verified business identity."
+        : !domainMatchesWebsite && !sourceBackedByWebsite
+          ? "The recipient email neither matches the verified business domain nor has retained evidence from the business website."
+          : recipientPolicyReason;
+
+  return {
+    identity,
+    identityVerified,
+    identityStatus: identityVerified ? identity.status : (identity.status || "missing"),
+    email,
+    recipientDomain,
+    verifiedWebsiteUrl,
+    verifiedWebsiteDomain,
+    websiteMatchesIdentity,
+    recipientMatchesIdentity: ownershipConfirmed,
+    verificationMethod,
+    evidenceSourceUrl: sourceBackedByWebsite ? sourceUrl : verifiedWebsiteUrl,
+    evidenceConfirmed: ownershipConfirmed,
+    recipientUsable: ownershipConfirmed && !recipientPolicyReason && !complianceBlockReason,
+    recipientBlockReason,
+    complianceBlocked: !!complianceBlockReason,
+    complianceBlockReason
+  };
+}
+
 function buildBrainOneContextPackage(lead = {}, scan = null) {
   const capturedAt = nowIso();
   const sourceUrls = [...new Set([lead.website, lead.mapsUrl, lead.osmUrl, lead.facebook, scan?.url].filter(Boolean))];
@@ -2712,21 +2806,13 @@ function buildBrainOneContextPackage(lead = {}, scan = null) {
     ].filter(Boolean).join(" | "),
     capturedAt
   ));
-  const identity = lead.identityVerification || {};
-  const verifiedEmail = String(lead.email || "").trim().toLowerCase();
-  const identityEmail = String(identity.recipientEmail || "").trim().toLowerCase();
-  if (
-    identity.verified === true
-    && ["Verified", "Verified with public free-email address"].includes(identity.status)
-    && verifiedEmail
-    && identityEmail === verifiedEmail
-    && identity.emailSourceUrl
-  ) {
+  const verifiedContact = resolveVerifiedLeadContact(lead, scan);
+  if (verifiedContact.evidenceConfirmed) {
     evidenceLog.push(evidenceItem(
       "ev-verified-contact-email",
       "website",
-      identity.emailSourceUrl,
-      `Verified public business email: ${verifiedEmail}`,
+      verifiedContact.evidenceSourceUrl,
+      "Verified public business email: " + verifiedContact.email,
       capturedAt
     ));
   }
@@ -2745,18 +2831,6 @@ function buildBrainOneContextPackage(lead = {}, scan = null) {
   const scraperEvidence = evidenceLog.filter(item => ["scraper", "website"].includes(item.sourceType));
   const directoryEvidence = evidenceLog.filter(item => ["lead-record", "directory", "social"].includes(item.sourceType));
   const verifiedContactEvidence = evidenceLog.find(item => item.id === "ev-verified-contact-email") || null;
-  const identityVerified = isIdentityVerified(identity);
-  const recipientMatchesIdentity = !!verifiedEmail && verifiedEmail === identityEmail;
-  const complianceFlags = [
-    [lead.unsubscribed || lead.unsubscribe, "The recipient has unsubscribed."],
-    [lead.doNotEmail, "The business is marked do not email."],
-    [lead.suppressed || lead.emailSuppressed, "The recipient is suppressed."],
-    [lead.optOut || lead.optedOut, "The recipient has opted out."]
-  ];
-  const complianceBlockReason = complianceFlags.find(([blocked]) => !!blocked)?.[1] || "";
-  const recipientBlockReason = lead.emailBounced
-    ? "The verified recipient email previously bounced and is not usable."
-    : "";
   return {
     businessIdentity: {
       businessId: lead.id || "",
@@ -2781,17 +2855,21 @@ function buildBrainOneContextPackage(lead = {}, scan = null) {
     analysisTimestamp: capturedAt,
     evidenceLog,
     outreachEligibility: {
-      identityVerified,
-      identityStatus: identity.status || "missing",
-      recipientEmail: verifiedEmail,
-      recipientMatchesIdentity,
+      identityVerified: verifiedContact.identityVerified,
+      identityStatus: verifiedContact.identityStatus,
+      canonicalWebsiteVerified: verifiedContact.websiteMatchesIdentity,
+      websiteDomain: verifiedContact.verifiedWebsiteDomain,
+      recipientEmail: verifiedContact.email,
+      recipientDomain: verifiedContact.recipientDomain,
+      recipientMatchesIdentity: verifiedContact.recipientMatchesIdentity,
+      emailVerificationMethod: verifiedContact.verificationMethod,
       verifiedContactEvidenceId: verifiedContactEvidence?.id || "",
       verifiedContactEvidenceStatus: verifiedContactEvidence ? "confirmed" : "missing",
-      emailEvidenceOwnedByBusiness: !!verifiedContactEvidence && identityVerified && recipientMatchesIdentity,
-      recipientUsable: !!verifiedContactEvidence && identityVerified && recipientMatchesIdentity && !lead.emailBounced && !complianceBlockReason,
-      recipientBlockReason,
-      complianceBlocked: !!complianceBlockReason,
-      complianceBlockReason
+      emailEvidenceOwnedByBusiness: !!verifiedContactEvidence && verifiedContact.evidenceConfirmed,
+      recipientUsable: !!verifiedContactEvidence && verifiedContact.recipientUsable,
+      recipientBlockReason: verifiedContact.recipientBlockReason,
+      complianceBlocked: verifiedContact.complianceBlocked,
+      complianceBlockReason: verifiedContact.complianceBlockReason
     }
   };
 }
