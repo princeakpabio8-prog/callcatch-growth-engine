@@ -138,7 +138,11 @@ function evaluateBrainTwoEligibility({ lead = {}, brainOneRun = {} } = {}) {
 
   const flat = brainOneFlatOutput(brainOneRun);
   const decision = brainOneDecision(brainOneRun, flat);
-  block(decision === "DO NOT CONTACT", "decision !== \"DO NOT CONTACT\"", "Brain One decision is DO NOT CONTACT.", decision);
+  const decisionEngine = brainOneCombinedOutput(brainOneRun).decision_engine || {};
+  const decisionBlockReason = decisionEngine.blocking_reason
+    || decisionEngine.why_recommended
+    || "Brain One structured eligibility did not approve outreach.";
+  block(decision === "DO NOT CONTACT", "decision !== \"DO NOT CONTACT\"", decisionBlockReason, decision);
 
   const paths = contactPaths(lead, flat);
   const manualResearchRequired = handoffNeedsManualResearch(flat);

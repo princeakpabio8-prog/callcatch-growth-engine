@@ -6,6 +6,7 @@ const {
   applyBrainOneReviewState,
   buildBrainOneContextPackage,
   callNvidia,
+  decisionEngineFromScores,
   duplicateBrainOneRun,
   flattenCombinedOutput,
   markdownToSafeHtml,
@@ -46,6 +47,100 @@ function sampleContext(index = 1) {
       : "Basic service page with limited contact detail and no clear booking button."
   });
 }
+function verifiedDecisionContext(overrides = {}) {
+  const email = Object.prototype.hasOwnProperty.call(overrides, "email") ? overrides.email : "office1@example.com";
+  const website = overrides.website || "https://example1.com";
+  const lead = sampleLead(1, {
+    ...overrides,
+    email,
+    website,
+    identityVerification: overrides.identityVerification || {
+      status: "Verified",
+      verified: true,
+      recipientEmail: email,
+      emailSourceUrl: `${website}/contact`
+    }
+  });
+  return buildBrainOneContextPackage(lead, {
+    ok: true,
+    url: website,
+    text: "Emergency repairs, same-day service, and an official public contact page are visible."
+  });
+}
+
+function deterministicDecision(reason, options = {}) {
+  const moduleScores = {
+    business_foundation: { value: 85 },
+    business_dna: { value: 85 },
+    digital_health: { value: 75 },
+    ai_discoverability: { value: 70 },
+    future_readiness: { value: 70 },
+    trust: { value: 80 },
+    opportunity: { value: options.opportunity ?? 80 },
+    contactability: { value: options.contactability ?? 68 },
+    decision: { value: 70 }
+  };
+  const flat = {
+    contact_decision: {
+      decision: options.modelDecision || "DO NOT CONTACT",
+      primary_reason: reason,
+      disqualifying_factors: options.disqualifyingFactors || [reason]
+    }
+  };
+  return decisionEngineFromScores(moduleScores, flat, options.context || verifiedDecisionContext());
+}
+
+for (const wording of ["weak contact evidence", "no verified outreach", "insufficient contact evidence"]) {
+  test(`structured eligibility resolves model wording: ${wording}`, () => {
+    const result = deterministicDecision(wording);
+    assert.equal(result.model_recommendation, "DO NOT CONTACT");
+    assert.equal(result.decision, "CONTACT");
+    assert.equal(result.decision_basis, "structured_eligibility");
+    assert.equal(result.stale_contact_block_resolved, true);
+    assert.equal(result.structured_eligibility.usable_recipient_email, true);
+    assert.equal(result.blocking_reason, "");
+  });
+}
+
+test("structured eligibility blocks a genuinely missing recipient email", () => {
+  const context = verifiedDecisionContext({ email: "" });
+  const result = deterministicDecision("no verified outreach", { context });
+  assert.equal(result.decision, "DO NOT CONTACT");
+  assert.equal(result.blocking_code, "RECIPIENT_EMAIL_NOT_VERIFIED");
+  assert.match(result.blocking_reason, /No usable recipient email/i);
+});
+
+test("structured eligibility preserves the contactability threshold of 35", () => {
+  const result = deterministicDecision("weak contact evidence", { contactability: 34 });
+  assert.equal(result.decision, "DO NOT CONTACT");
+  assert.equal(result.blocking_code, "CONTACTABILITY_BELOW_THRESHOLD");
+  assert.match(result.blocking_reason, /34.*35/);
+});
+
+test("structured eligibility preserves the opportunity minimum of 25", () => {
+  const result = deterministicDecision("no verified outreach", { opportunity: 24 });
+  assert.equal(result.decision, "DO NOT CONTACT");
+  assert.equal(result.blocking_code, "OPPORTUNITY_BELOW_THRESHOLD");
+  assert.match(result.blocking_reason, /24.*25/);
+});
+
+test("verified identity, matching email evidence, and strong opportunity deterministically allow outreach", () => {
+  const result = deterministicDecision("Model wording should remain visible but must not control eligibility.");
+  assert.equal(result.decision, "CONTACT");
+  assert.equal(result.structured_eligibility.identity_verified, true);
+  assert.equal(result.structured_eligibility.verified_contact_evidence, true);
+  assert.equal(result.structured_eligibility.contactability_threshold_met, true);
+  assert.equal(result.structured_eligibility.strong_opportunity_threshold_met, true);
+  assert.equal(result.model_recommendation_reason, "Model wording should remain visible but must not control eligibility.");
+});
+
+test("structured eligibility preserves explicit suppression blocks", () => {
+  const context = verifiedDecisionContext({ doNotEmail: true });
+  const result = deterministicDecision("weak contact evidence", { context });
+  assert.equal(result.decision, "DO NOT CONTACT");
+  assert.equal(result.blocking_code, "COMPLIANCE_SUPPRESSION_BLOCK");
+  assert.match(result.blocking_reason, /do not email/i);
+});
 
 function enterpriseEvidenceContext(name, website, trade = "Technology Platform") {
   const capturedAt = new Date().toISOString();
@@ -1084,7 +1179,7 @@ test("independent module scores preserve strong business quality when contactabi
   assert.equal(scores.contactability.value, 0);
   assert.equal(result.output.decision_engine.decision, "DO NOT CONTACT");
   assert.equal(result.output.decision_engine.recommendation_status, "Find Better Contact");
-  assert.match(result.output.decision_engine.next_action, /verified owner|email|phone|contact form/i);
+  assert.match(result.output.decision_engine.next_action, /verify the official business identity|verified owner|email|phone|contact form/i);
   assert.match(result.blueprintMarkdown, /Business Foundation: \d+\/100/);
   assert.match(result.blueprintMarkdown, /Contactability: 0\/100/);
   assert.doesNotMatch(result.blueprintMarkdown, /Business Foundation: Not scored|Business Foundation: Failed/i);
@@ -1143,8 +1238,9 @@ test("verified public email survives an omitted model contact and resolves a sta
   assert.equal(result.output.decision_engine.decision, "CONTACT");
   assert.equal(result.output.decision_engine.recommendation_status, "Generate Outreach");
 });
-test("verified contact never overrides a genuine non-contact disqualifier", async () => {
+test("verified contact never overrides an explicit compliance suppression block", async () => {
   const lead = sampleLead(1, {
+    doNotEmail: true,
     identityVerification: {
       status: "Verified",
       verified: true,
@@ -1171,8 +1267,8 @@ test("verified contact never overrides a genuine non-contact disqualifier", asyn
         contact.contact_decision = {
           ...contact.contact_decision,
           decision: "DO NOT CONTACT",
-          primary_reason: "The prospect is outside the approved strategic market.",
-          disqualifying_factors: ["Strategic fit mismatch."],
+          primary_reason: "The recipient is suppressed from outreach.",
+          disqualifying_factors: ["Compliance suppression block."],
           information_gaps: []
         };
         return JSON.stringify(contact);
@@ -1184,6 +1280,7 @@ test("verified contact never overrides a genuine non-contact disqualifier", asyn
   assert.ok(result.output.score_metadata.module_scores.opportunity.value >= 55);
   assert.equal(result.output.decision_engine.stale_contact_block_resolved, false);
   assert.equal(result.output.decision_engine.decision, "DO NOT CONTACT");
+  assert.equal(result.output.decision_engine.blocking_code, "COMPLIANCE_SUPPRESSION_BLOCK");
 });
 test("Brain Zero trust signals prevent insufficient trust when the model omits trust details", async () => {
   const context = enterpriseEvidenceContext("Trust Signal Services", "https://trustsignal.example", "HVAC");

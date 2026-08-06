@@ -59,6 +59,24 @@
       "type": "array",
       "minItems": 1,
       "items": { "$ref": "#/$defs/evidenceItem" }
+    },
+    "outreachEligibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identityVerified", "identityStatus", "recipientEmail", "recipientMatchesIdentity", "verifiedContactEvidenceId", "verifiedContactEvidenceStatus", "emailEvidenceOwnedByBusiness", "recipientUsable", "recipientBlockReason", "complianceBlocked", "complianceBlockReason"],
+      "properties": {
+        "identityVerified": { "type": "boolean" },
+        "identityStatus": { "type": "string" },
+        "recipientEmail": { "type": "string" },
+        "recipientMatchesIdentity": { "type": "boolean" },
+        "verifiedContactEvidenceId": { "type": "string" },
+        "verifiedContactEvidenceStatus": { "type": "string", "enum": ["confirmed", "missing"] },
+        "emailEvidenceOwnedByBusiness": { "type": "boolean" },
+        "recipientUsable": { "type": "boolean" },
+        "recipientBlockReason": { "type": "string" },
+        "complianceBlocked": { "type": "boolean" },
+        "complianceBlockReason": { "type": "string" }
+      }
     }
   },
   "$defs": {

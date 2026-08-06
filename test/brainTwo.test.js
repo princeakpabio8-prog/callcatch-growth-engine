@@ -180,9 +180,11 @@ test("Brain Two is blocked when Brain One decision is DO NOT CONTACT", () => {
   const run = approvedBrainOne();
   run.validatedOutput.modules.contact_decision.output.contact_decision.decision = "DO NOT CONTACT";
   run.validatedOutput.decision_engine.decision = "DO NOT CONTACT";
+  run.validatedOutput.decision_engine.blocking_reason = "Opportunity score 20 is below the required minimum of 25.";
+  run.validatedOutput.decision_engine.blocking_code = "OPPORTUNITY_BELOW_THRESHOLD";
   const result = evaluateBrainTwoEligibility({ lead: lead(), brainOneRun: run });
   assert.equal(result.eligible, false);
-  assert.match(result.reasons.join(" "), /DO NOT CONTACT/);
+  assert.match(result.reasons.join(" "), /Opportunity score 20.*minimum of 25/);
 });
 
 test("Brain Two uses the deterministic final decision instead of a stale raw model label", () => {
@@ -487,12 +489,13 @@ test("blocked opportunity handoff preserves the exact requirements", () => {
 test("blocked opportunity reports the exact failed guard expression", () => {
   const run = approvedBrainOne({ id: "brain1-do-not-contact" });
   run.validatedOutput.decision_engine.decision = "DO NOT CONTACT";
+  run.validatedOutput.decision_engine.blocking_reason = "No usable recipient email is verified against this business identity and retained source evidence.";
   const result = evaluateBrainTwoEligibility({ lead: lead(), brainOneRun: run });
   const guard = result.blocking_conditions.find(item => item.condition === 'decision !== "DO NOT CONTACT"');
 
   assert.equal(result.eligible, false);
   assert.equal(guard.actual, "DO NOT CONTACT");
-  assert.equal(guard.reason, "Brain One decision is DO NOT CONTACT.");
+  assert.equal(guard.reason, "No usable recipient email is verified against this business identity and retained source evidence.");
 });
 test("server source exposes Brain Two routes without touching sending endpoints", () => {
   const source = [fs.readFileSync("callcatch-lead-server.js", "utf8"), fs.readFileSync("lead-engine/brainTwoService.js", "utf8")].join("\n");

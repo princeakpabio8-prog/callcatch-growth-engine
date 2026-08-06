@@ -196,7 +196,9 @@ test("outreach eligibility and report tone use the deterministic final contact d
     const html = read(file);
     assert.match(html, /const decisionEngine = combinedOutput\.decision_engine \|\| \{\};/);
     assert.match(html, /const decision = decisionEngine\.decision \|\| flat\.contact_decision\?\.decision/);
-    assert.match(html, /decisionEngine\.why_recommended \|\| decisionEngine\.reason/);
+    assert.match(html, /decisionEngine\.blocking_reason \|\| decisionEngine\.why_recommended/);
+    assert.match(html, /<strong>Model recommendation:<\/strong>/);
+    assert.match(html, /Outreach blocked\. \$\{decisionEngine\.blocking_reason \|\|/);
   }
 });
 test("Verify Business runs identity verification before opening outreach", () => {

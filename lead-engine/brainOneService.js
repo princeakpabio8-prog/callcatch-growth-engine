@@ -8,6 +8,7 @@ const opportunitiesSchema = require("../schemas/brain-one-opportunities.json");
 const strategicSchema = require("../schemas/brain-one-strategic-interpretation.json");
 const contactDecisionSchema = require("../schemas/brain-one-contact-decision.json");
 const combinedSchema = require("../schemas/brain-one-combined-output.json");
+const { isIdentityVerified } = require("./businessIdentity");
 
 const DEFAULT_MODEL = process.env.NVIDIA_MODEL || "meta/llama-3.1-8b-instruct";
 const NVIDIA_URL = process.env.NVIDIA_API_URL || "https://integrate.api.nvidia.com/v1/chat/completions";
@@ -1795,7 +1796,72 @@ function scoreContactability(flat = {}) {
   });
 }
 
-function decisionEngineFromScores(moduleScores = {}, flat = {}) {
+function structuredOutreachEligibility(moduleScores = {}, contextPackage = {}) {
+  const snapshot = contextPackage.outreachEligibility || {};
+  const verifiedContact = verifiedContextEmail(contextPackage);
+  const contactability = moduleScores.contactability?.value ?? null;
+  const opportunity = moduleScores.opportunity?.value ?? null;
+  const recipientMatches = snapshot.recipientMatchesIdentity === true
+    && verifiedContact?.email === String(snapshot.recipientEmail || "").trim().toLowerCase();
+  const evidenceOwned = snapshot.emailEvidenceOwnedByBusiness === true
+    && snapshot.verifiedContactEvidenceStatus === "confirmed"
+    && verifiedContact?.evidenceId === snapshot.verifiedContactEvidenceId;
+  const identityVerified = snapshot.identityVerified === true;
+  const complianceClear = snapshot.complianceBlocked !== true;
+  const usableRecipientEmail = snapshot.recipientUsable === true
+    && recipientMatches
+    && evidenceOwned
+    && isEmailLike(verifiedContact?.email || "");
+  const blockingReasons = [];
+  const block = (condition, code, reason) => {
+    if (condition) blockingReasons.push({ code, reason });
+  };
+
+  block(
+    !identityVerified,
+    "IDENTITY_NOT_VERIFIED",
+    `Business identity verification failed: ${snapshot.identityStatus || "verification status is missing"}.`
+  );
+  block(
+    snapshot.complianceBlocked === true,
+    "COMPLIANCE_SUPPRESSION_BLOCK",
+    `Outreach is suppressed${snapshot.complianceBlockReason ? `: ${snapshot.complianceBlockReason}` : "."}`
+  );
+  block(
+    identityVerified && !usableRecipientEmail,
+    "RECIPIENT_EMAIL_NOT_VERIFIED",
+    snapshot.recipientBlockReason || "No usable recipient email is verified against this business identity and retained source evidence."
+  );
+  block(
+    contactability === null || contactability < 35,
+    "CONTACTABILITY_BELOW_THRESHOLD",
+    `Contactability score ${contactability === null ? "not available" : contactability} does not meet the required minimum of 35.`
+  );
+  block(
+    opportunity !== null && opportunity < 25,
+    "OPPORTUNITY_BELOW_THRESHOLD",
+    `Opportunity score ${opportunity} is below the required minimum of 25.`
+  );
+
+  return {
+    identity_verified: identityVerified,
+    identity_status: snapshot.identityStatus || "missing",
+    usable_recipient_email: usableRecipientEmail,
+    recipient_matches_identity: recipientMatches,
+    verified_contact_evidence: evidenceOwned,
+    verified_contact_evidence_id: verifiedContact?.evidenceId || "",
+    compliance_clear: complianceClear,
+    contactability_score: contactability,
+    contactability_threshold_met: contactability !== null && contactability >= 35,
+    opportunity_score: opportunity,
+    opportunity_minimum_met: opportunity === null || opportunity >= 25,
+    strong_opportunity_threshold_met: opportunity !== null && opportunity >= 55,
+    hard_blocked: blockingReasons.length > 0,
+    blocking_reasons: blockingReasons
+  };
+}
+
+function decisionEngineFromScores(moduleScores = {}, flat = {}, contextPackage = {}) {
   const contactability = moduleScores.contactability?.value ?? null;
   const opportunity = moduleScores.opportunity?.value ?? null;
   const businessQuality = averageScore([
@@ -1807,54 +1873,53 @@ function decisionEngineFromScores(moduleScores = {}, flat = {}) {
     moduleScores.trust?.value
   ]);
   const modelDecision = flat.contact_decision || {};
-  const hasWeakContactability = contactability !== null && contactability < 35;
+  const eligibility = structuredOutreachEligibility(moduleScores, contextPackage);
+  const primaryBlock = eligibility.blocking_reasons[0] || null;
   const hasStrongBusiness = businessQuality !== null && businessQuality >= 65;
-  const disqualifyingFactors = Array.isArray(modelDecision.disqualifying_factors) ? modelDecision.disqualifying_factors : [];
-  const contactBlockText = [
-    modelDecision.primary_reason,
-    ...disqualifyingFactors
-  ].filter(Boolean).join(" ").toLowerCase();
-  const contactOnlyDisqualifiers = disqualifyingFactors.every(item =>
-    /contact|email|phone|recipient|owner|outreach path/.test(String(item || "").toLowerCase())
-  );
-  const staleContactBlockResolved = modelDecision.decision === "DO NOT CONTACT"
-    && contactability !== null
-    && contactability >= 35
-    && opportunity !== null
-    && opportunity >= 55
-    && /no verified contact|no usable contact|missing contact|contact path|find better contact/.test(contactBlockText)
-    && contactOnlyDisqualifiers;
-  const decision = contactability !== null && contactability < 35
+  const strongStructuredEligibility = !eligibility.hard_blocked
+    && eligibility.contactability_threshold_met
+    && eligibility.strong_opportunity_threshold_met;
+  const staleContactBlockResolved = modelDecision.decision === "DO NOT CONTACT" && strongStructuredEligibility;
+  const decision = eligibility.hard_blocked
     ? "DO NOT CONTACT"
-    : opportunity !== null && opportunity < 25
-      ? "DO NOT CONTACT"
-      : staleContactBlockResolved
-        ? "CONTACT"
-        : modelDecision.decision || "DO NOT CONTACT";
-  const reason = staleContactBlockResolved
-    ? "A verified public contact path and substantial opportunity are present, so the model's missing-contact block was resolved from validated evidence."
-    : decision === "DO NOT CONTACT" && hasWeakContactability
-      ? "Excellent business signals may exist, but outreach feasibility is low because no strong verified contact path was found."
-      : modelDecision.primary_reason || "Decision is based on independent module scores.";
-  const recommendationStatus = hasWeakContactability && hasStrongBusiness
+    : strongStructuredEligibility
+      ? "CONTACT"
+      : modelDecision.decision || "DO NOT CONTACT";
+  const blockingReason = decision === "DO NOT CONTACT"
+    ? primaryBlock?.reason || (
+      opportunity === null || opportunity < 55
+        ? `Structured eligibility did not reach the strong-opportunity threshold of 55 (actual: ${opportunity === null ? "not available" : opportunity}); the model recommendation remains ${modelDecision.decision || "DO NOT CONTACT"}.`
+        : "Structured outreach eligibility did not pass."
+    )
+    : "";
+  const reason = strongStructuredEligibility
+    ? "Verified business identity, matching recipient evidence, contactability, and substantial opportunity satisfy the structured outreach rules."
+    : blockingReason || modelDecision.primary_reason || "Decision is based on independent module scores.";
+  const contactPathBlocked = ["IDENTITY_NOT_VERIFIED", "RECIPIENT_EMAIL_NOT_VERIFIED", "CONTACTABILITY_BELOW_THRESHOLD"]
+    .includes(primaryBlock?.code);
+  const recommendationStatus = contactPathBlocked && hasStrongBusiness
     ? "Find Better Contact"
     : decision === "CONTACT" && opportunity !== null && opportunity >= 55
       ? "Generate Outreach"
       : decision === "CONTACT"
         ? "Review Manually"
-        : opportunity !== null && opportunity < 25
+        : ["OPPORTUNITY_BELOW_THRESHOLD", "COMPLIANCE_SUPPRESSION_BLOCK"].includes(primaryBlock?.code)
           ? "Skip"
           : "Review Manually";
-  const nextAction = recommendationStatus === "Find Better Contact"
-    ? "Find a verified owner, email, phone, LinkedIn profile, or contact form before creating outreach."
-    : recommendationStatus === "Generate Outreach"
-      ? "Approve the business analysis, then generate an outreach draft for manual review."
-      : recommendationStatus === "Skip"
-        ? "Do not spend time on this prospect unless new evidence appears."
-        : "Review the evidence and decide whether to research contacts or move on.";
-  const why = hasWeakContactability && hasStrongBusiness
-    ? "The business appears worthwhile, but the contact path is too weak for clean outreach."
-    : reason;
+  const nextAction = primaryBlock?.code === "IDENTITY_NOT_VERIFIED"
+    ? "Verify the official business identity before creating outreach."
+    : primaryBlock?.code === "RECIPIENT_EMAIL_NOT_VERIFIED"
+      ? "Verify a matching public recipient email and retain its official source before creating outreach."
+      : primaryBlock?.code === "COMPLIANCE_SUPPRESSION_BLOCK"
+        ? "Do not create outreach while the compliance or suppression block remains active."
+        : recommendationStatus === "Find Better Contact"
+          ? "Find a verified owner, email, phone, LinkedIn profile, or contact form before creating outreach."
+          : recommendationStatus === "Generate Outreach"
+            ? "Approve the business analysis, then generate an outreach draft for manual review."
+            : recommendationStatus === "Skip"
+              ? "Do not spend time on this prospect unless new evidence appears."
+              : "Review the evidence and decide whether to research contacts or move on.";
+  const why = blockingReason || reason;
   return {
     decision,
     reason,
@@ -1865,6 +1930,11 @@ function decisionEngineFromScores(moduleScores = {}, flat = {}) {
     sales_opportunity_score: averageScore([opportunity, contactability, moduleScores.decision?.value]),
     contactability_score: contactability,
     model_recommendation: modelDecision.decision || "",
+    model_recommendation_reason: modelDecision.primary_reason || "",
+    decision_basis: eligibility.hard_blocked ? "structured_hard_block" : strongStructuredEligibility ? "structured_eligibility" : "model_recommendation",
+    blocking_reason: blockingReason,
+    blocking_code: primaryBlock?.code || "",
+    structured_eligibility: eligibility,
     stale_contact_block_resolved: staleContactBlockResolved,
     preserves_module_scores: true
   };
@@ -1938,7 +2008,7 @@ function calculateScoreMetadata(combined = {}, contextPackage = {}) {
       evidenceIdList(flat.contact_decision || {})
     )
   };
-  combined.decision_engine = decisionEngineFromScores(module_scores, flat);
+  combined.decision_engine = decisionEngineFromScores(module_scores, flat, contextPackage);
   combined.score_metadata = score_metadata;
   combined.module_diagnostics = {
     ...(combined.module_diagnostics || {}),
@@ -2674,6 +2744,19 @@ function buildBrainOneContextPackage(lead = {}, scan = null) {
   }
   const scraperEvidence = evidenceLog.filter(item => ["scraper", "website"].includes(item.sourceType));
   const directoryEvidence = evidenceLog.filter(item => ["lead-record", "directory", "social"].includes(item.sourceType));
+  const verifiedContactEvidence = evidenceLog.find(item => item.id === "ev-verified-contact-email") || null;
+  const identityVerified = isIdentityVerified(identity);
+  const recipientMatchesIdentity = !!verifiedEmail && verifiedEmail === identityEmail;
+  const complianceFlags = [
+    [lead.unsubscribed || lead.unsubscribe, "The recipient has unsubscribed."],
+    [lead.doNotEmail, "The business is marked do not email."],
+    [lead.suppressed || lead.emailSuppressed, "The recipient is suppressed."],
+    [lead.optOut || lead.optedOut, "The recipient has opted out."]
+  ];
+  const complianceBlockReason = complianceFlags.find(([blocked]) => !!blocked)?.[1] || "";
+  const recipientBlockReason = lead.emailBounced
+    ? "The verified recipient email previously bounced and is not usable."
+    : "";
   return {
     businessIdentity: {
       businessId: lead.id || "",
@@ -2696,7 +2779,20 @@ function buildBrainOneContextPackage(lead = {}, scan = null) {
     scraperEvidence,
     sourceUrls,
     analysisTimestamp: capturedAt,
-    evidenceLog
+    evidenceLog,
+    outreachEligibility: {
+      identityVerified,
+      identityStatus: identity.status || "missing",
+      recipientEmail: verifiedEmail,
+      recipientMatchesIdentity,
+      verifiedContactEvidenceId: verifiedContactEvidence?.id || "",
+      verifiedContactEvidenceStatus: verifiedContactEvidence ? "confirmed" : "missing",
+      emailEvidenceOwnedByBusiness: !!verifiedContactEvidence && identityVerified && recipientMatchesIdentity,
+      recipientUsable: !!verifiedContactEvidence && identityVerified && recipientMatchesIdentity && !lead.emailBounced && !complianceBlockReason,
+      recipientBlockReason,
+      complianceBlocked: !!complianceBlockReason,
+      complianceBlockReason
+    }
   };
 }
 
@@ -2749,6 +2845,7 @@ module.exports = {
   buildBrainOneContextPackage,
   buildFounderBlueprintFromOutput,
   callNvidia,
+  decisionEngineFromScores,
   duplicateBrainOneRun,
   flattenCombinedOutput,
   parseMaybeJson,

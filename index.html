@@ -1610,12 +1610,14 @@
       const scores = combinedOutput.score_metadata?.module_scores || {};
       const recommendation = decisionEngine.recommendation_status || decision.recommendation_status || decisionEngine.decision || decision.decision || "Review Manually";
       const nextAction = decisionEngine.next_action || "Review the evidence and decide the next sales step.";
-      const why = decisionEngine.why_recommended || decision.primary_reason || output.brain_two_handoff?.summary || "The recommendation is based on the available public evidence.";
+      const why = decisionEngine.blocking_reason || decisionEngine.why_recommended || decision.primary_reason || output.brain_two_handoff?.summary || "The recommendation is based on the available public evidence.";
+      const modelRecommendation = decisionEngine.model_recommendation || "";
+      const modelNote = modelRecommendation ? `<p class="hint"><strong>Model recommendation:</strong> ${esc(modelRecommendation)}${decisionEngine.model_recommendation_reason ? ` - ${esc(decisionEngine.model_recommendation_reason)}` : ""}${decisionEngine.decision_basis === "structured_eligibility" && modelRecommendation !== decisionEngine.decision ? " (superseded by verified structured eligibility)" : ""}</p>` : "";
       const scoreWhy = [
         scores.opportunity?.explanation,
         scores.contactability?.explanation
       ].filter(Boolean).slice(0,2);
-      return `<div class="queue-item" style="margin-top:12px;"><div class="lead-top"><div><strong>What needs attention now</strong><p class="hint">Recommendation: ${esc(recommendation)}</p></div><span class="tag ${recommendation === "Generate Outreach" ? "hot" : recommendation === "Skip" ? "bad" : "warn"}">${esc(recommendation)}</span></div><p>${esc(why)}</p><p class="hint"><strong>Next Action:</strong> ${esc(nextAction)}</p>${scoreWhy.length ? `<ul>${scoreWhy.map(item=>`<li>${esc(item)}</li>`).join("")}</ul>` : ""}</div>`;
+      return `<div class="queue-item" style="margin-top:12px;"><div class="lead-top"><div><strong>What needs attention now</strong><p class="hint">Recommendation: ${esc(recommendation)}</p></div><span class="tag ${recommendation === "Generate Outreach" ? "hot" : recommendation === "Skip" ? "bad" : "warn"}">${esc(recommendation)}</span></div><p>${esc(why)}</p>${modelNote}<p class="hint"><strong>Next Action:</strong> ${esc(nextAction)}</p>${scoreWhy.length ? `<ul>${scoreWhy.map(item=>`<li>${esc(item)}</li>`).join("")}</ul>` : ""}</div>`;
     }
     function brainZeroLatestRun(leadId){
       return (brainZeroRuns || [])
@@ -1782,7 +1784,7 @@
         !brainOne ? "Run Business Analysis first." : "",
         brainOne && brainOne.executionStatus !== "completed" ? "Business Analysis must complete first." : "",
         brainOne && !brainOneApproved ? "Manually approve Business Analysis first." : "",
-        decision === "DO NOT CONTACT" ? `Recommendation is DO NOT CONTACT. ${decisionEngine.why_recommended || decisionEngine.reason || flat.contact_decision?.primary_reason || ""}` : "",
+        decision === "DO NOT CONTACT" ? `Outreach blocked. ${decisionEngine.blocking_reason || decisionEngine.why_recommended || decisionEngine.reason || flat.contact_decision?.primary_reason || "Exact structured eligibility reason unavailable."}` : "",
         manualTest ? "Manual Test mode blocks outreach drafts." : ""
       ].filter(Boolean);
       if (!run) {
