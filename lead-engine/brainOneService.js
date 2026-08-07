@@ -569,9 +569,14 @@ function verifiedContextEmail(contextPackage = {}) {
   const snapshot = contextPackage.outreachEligibility || {};
   const email = String(snapshot.recipientEmail || contextPackage.publicContactDetails?.email || "").trim().toLowerCase();
   if (!isValidEmailAddress(email) || snapshot.recipientUsable === false) return null;
+  const expectedEvidenceId = snapshot.verifiedContactEvidenceId || "ev-verified-contact-email";
   const evidence = (contextPackage.evidenceLog || []).find(item => {
-    if ((item?.id || item?.evidence_id) !== "ev-verified-contact-email") return false;
-    const text = [item.excerpt, item.source_excerpt, item.value].filter(Boolean).join(" ").toLowerCase();
+    if ((item?.id || item?.evidence_id) !== expectedEvidenceId) return false;
+    const text = [item.excerpt, item.source_excerpt, item.value]
+      .filter(Boolean)
+      .map(value => typeof value === "string" ? value : JSON.stringify(value))
+      .join(" ")
+      .toLowerCase();
     return text.includes(email);
   });
   if (!evidence) return null;
@@ -2930,6 +2935,7 @@ module.exports = {
   resolvedNvidiaModel,
   resolvedNvidiaTimeoutMs,
   runBrainOne,
+  scoreContactability,
   normalizeBrainOneOutput,
   markdownToSafeHtml,
   validateModuleOutput,

@@ -27,13 +27,16 @@ const { activeProvider, configured: emailConfigured, emailConfig, maskEmail, par
 const { configured: smsConfigured, normalizePhone, smsConfig } = require("./lead-engine/smsAdapter");
 const {
   applyBrainOneReviewState,
-  buildBrainOneContextPackage,
   callNvidia,
   duplicateBrainOneRun,
   resolvedNvidiaModel,
   resolvedNvidiaTimeoutMs,
   runBrainOne
 } = require("./lead-engine/brainOneService");
+const {
+  brainZeroEvidenceToBrainOneContext,
+  selectAuthoritativeResearchRun
+} = require("./lead-engine/brainOneHandoff");
 const {
   applyBrainTwoReviewState,
   createBrainTwoRunForApprovedOpportunity
@@ -907,84 +910,6 @@ async function startBrainZeroForLead(lead, { force = false } = {}) {
   return { statusCode: 202, body: { run, message: "Brain Zero evidence collection started." } };
 }
 
-function brainZeroEvidenceToBrainOneContext(lead = {}, run = null) {
-  const packageValue = run?.evidence_package || {};
-  const evidence = Array.isArray(packageValue.evidence_log) ? packageValue.evidence_log : [];
-  const convertedEvidence = evidence.map(item => ({
-    id: item.evidence_id,
-    sourceType: item.provider || item.category || "brain-zero",
-    sourceProvider: item.provider || "",
-    sourceCategory: item.category || "",
-    category: item.category || "",
-    field: item.field || "",
-    confidence: item.confidence || "unknown",
-    claimType: item.claim_type || "",
-    sourceUrl: item.source_url || "",
-    excerpt: item.source_excerpt || (typeof item.value === "string" ? item.value : JSON.stringify(item.value || "")),
-    value: item.value,
-    capturedAt: item.collected_at || run?.completed_at || new Date().toISOString()
-  }));
-  const identityValue = field => (packageValue.business_identity_candidates || [])
-    .find(item => item.field === field)?.value || "";
-  const officialName = identityValue("business_name") || lead.business || "";
-  const officialWebsite = identityValue("website_url") || lead.website || packageValue.source_urls?.[0] || "";
-  const officialLocation = identityValue("stated_location") || [lead.city, lead.state, lead.country].filter(Boolean).join(", ") || lead.area || "";
-  const firstEmail = (packageValue.contacts || [])
-    .flatMap(item => Array.isArray(item.value) ? item.value : [item.value])
-    .find(value => /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i.test(String(value || ""))) || lead.email || "";
-  const firstPhone = (packageValue.contacts || [])
-    .flatMap(item => Array.isArray(item.value) ? item.value : [item.value])
-    .map(value => typeof value === "object" ? value.original || value.normalized : value)
-    .find(value => /\d{7,}/.test(String(value || "").replace(/\D/g, ""))) || lead.phone || "";
-  const websiteText = [
-    ...(packageValue.website_pages || []).map(page => page.excerpt || ""),
-    ...(packageValue.content_evidence || []).map(item => item.source_excerpt || ""),
-    ...(packageValue.trust_evidence || []).map(item => item.source_excerpt || "")
-  ].filter(Boolean).join("\n\n");
-  const base = buildBrainOneContextPackage({ ...lead, email: lead.email || firstEmail, phone: lead.phone || firstPhone }, {
-    ok: true,
-    url: officialWebsite,
-    text: websiteText,
-    description: `Brain Zero evidence collection ${run?.status || "completed"} with ${evidence.length} evidence records.`
-  });
-  return {
-    ...base,
-    businessIdentity: {
-      ...base.businessIdentity,
-      businessName: officialName || base.businessIdentity.businessName,
-      websiteUrl: officialWebsite || base.businessIdentity.websiteUrl,
-      city: lead.city || base.businessIdentity.city,
-      state: lead.state || base.businessIdentity.state,
-      country: lead.country || base.businessIdentity.country || "US",
-      location: officialLocation || base.businessIdentity.location || ""
-    },
-    websitePublicText: websiteText || base.websitePublicText,
-    publicContactDetails: {
-      ...base.publicContactDetails,
-      email: base.publicContactDetails.email || firstEmail || "",
-      phone: base.publicContactDetails.phone || firstPhone || ""
-    },
-    publicSocialOrDirectoryEvidence: convertedEvidence.filter(item => /identity|existing|directory|trust/i.test(item.sourceType)),
-    scraperEvidence: convertedEvidence,
-    sourceUrls: [...new Set([...(base.sourceUrls || []), ...(packageValue.source_urls || [])].filter(Boolean))],
-    evidenceLog: [
-      ...convertedEvidence,
-      ...base.evidenceLog.filter(item => !convertedEvidence.some(existing => existing.id === item.id))
-    ],
-    brainZero: {
-      runId: run?.run_id || run?.id || "",
-      status: run?.status || "",
-      evidenceQuality: packageValue.overall_evidence_quality || run?.overall_evidence_quality || "weak",
-      evidenceCoverage: packageValue.evidence_coverage || run?.evidence_coverage || null,
-      brainOneReady: packageValue.brain_one_ready ?? run?.brain_one_ready ?? false,
-      missingCriticalCategories: packageValue.missing_critical_categories || run?.missing_critical_categories || [],
-      providerDiagnostics: packageValue.provider_diagnostics || {},
-      providerStatuses: packageValue.provider_statuses || {},
-      collectionLimitations: packageValue.collection_limitations || []
-    }
-  };
-}
-
 async function completeBrainZeroRun(runId, context, logger = log) {
   const startedMemory = memorySummary();
   try {
@@ -1025,6 +950,21 @@ async function completeBrainZeroRun(runId, context, logger = log) {
       });
       state.brainZeroRuns = state.brainZeroRuns.slice(0, 300);
       return record || result;
+    });
+    logger("info", "brain_zero_research_persisted", {
+      brainZeroRunId: runId,
+      leadId: result.business_id || "",
+      businessName: context.business_name || "",
+      canonicalWebsite: context.website_url || "",
+      recipientEmail: maskEmail(context.known_email || ""),
+      recipientEmailDomain: String(context.known_email || "").split("@")[1] || "",
+      verifiedIdentityStatus: context.existing_scraper_data?.identityVerification?.status || "missing",
+      evidenceCount: result.evidence_count || 0,
+      sourceCount: result.source_count || 0,
+      pageCount: result.pages_scanned || 0,
+      researchQuality: result.overall_evidence_quality || "unknown",
+      coverage: result.evidence_coverage?.coverage_score ?? null,
+      contactRecords: result.evidence_package?.contacts?.length || 0
     });
   } catch (error) {
     log("error", "brain_zero_run_failed", { runId, error: sanitizedError(error), memory: memorySummary() });
@@ -1175,12 +1115,32 @@ async function completeBrainOneRun(runId, contextPackage, modelName, logger = lo
   try {
     await setStage("brain_one_job_started", { model: modelName });
     await setStage("evidence_loaded", {
+      leadId: contextPackage?.businessIdentity?.businessId || "",
+      businessName: contextPackage?.businessIdentity?.businessName || "",
+      canonicalWebsite: contextPackage?.businessIdentity?.websiteUrl || "",
+      recipientEmail: maskEmail(contextPackage?.publicContactDetails?.email || ""),
+      recipientEmailDomain: contextPackage?.outreachEligibility?.recipientDomain || "",
+      verifiedIdentityStatus: contextPackage?.outreachEligibility?.identityStatus || "missing",
       evidenceCount: contextPackage?.evidenceLog?.length || 0,
-      sourceCount: contextPackage?.sourceUrls?.length || 0
+      sourceCount: contextPackage?.brainZero?.sourceCount || contextPackage?.sourceUrls?.length || 0,
+      pageCount: contextPackage?.brainZero?.pageCount || 0,
+      researchQuality: contextPackage?.brainZero?.evidenceQuality || "unknown",
+      coverage: contextPackage?.brainZero?.evidenceCoverage?.coverage_score ?? null,
+      contactRecords: contextPackage?.publicContactDetails?.email ? 1 : 0,
+      brainZeroRunId: contextPackage?.brainZero?.runId || ""
     });
     const analysisPromise = (async () => {
       await setStage("prompt_built", { mode: "modular_phase_a" });
       const result = await runBrainOne(contextPackage, { model: modelName, logger: workerLogger, timeoutMs: resolvedNvidiaTimeoutMs() });
+      const moduleScores = result.output?.score_metadata?.module_scores || {};
+      logger("info", "brain_one_research_handoff_scored", {
+        runId,
+        leadId: contextPackage?.businessIdentity?.businessId || "",
+        brainZeroRunId: contextPackage?.brainZero?.runId || "",
+        evidenceCount: contextPackage?.evidenceLog?.length || 0,
+        contactability: moduleScores.contactability?.value ?? null,
+        opportunity: moduleScores.opportunity?.value ?? null
+      });
       await setStage("database_write_started", { outputBytes: String(result.rawResponse || "").length });
       const completed = await mutateStore(state => {
         state.brainOneRuns = state.brainOneRuns || [];
@@ -1715,7 +1675,7 @@ const server = http.createServer(async (req, res) => {
         timeoutMs: resolvedNvidiaTimeoutMs()
       });
       const state = await readStore();
-      const lead = (state.leads || []).find(item => item.id === body.leadId) || body.lead;
+      const lead = (state.leads || []).find(item => item.id === body.leadId);
       if (!lead || !lead.id) {
         responseMeta = send(res, 404, brainOneStartResponse(404, {
           ok: false,
@@ -1737,26 +1697,35 @@ const server = http.createServer(async (req, res) => {
         log("info", "brain_one_json_response_sent", { status: responseMeta.status, bodyLength: responseMeta.bodyLength, runId: duplicateRunning.id });
         return;
       }
-      const requestedBrainZeroRun = body.brainZeroRunId
-        ? (state.brainZeroRuns || []).find(item => item.run_id === body.brainZeroRunId || item.id === body.brainZeroRunId)
-        : null;
-      const brainZeroRun = requestedBrainZeroRun || latestBrainZeroRun(state.brainZeroRuns || [], lead.id);
-      const brainZeroBusinessId = brainZeroRun?.business_id || brainZeroRun?.businessId || "";
-      if (brainZeroRun && brainZeroBusinessId !== lead.id) {
-        return send(res, 409, brainOneStartResponse(409, {
+      let brainZeroRun = null;
+      try {
+        brainZeroRun = selectAuthoritativeResearchRun(state.brainZeroRuns || [], {
+          leadId: lead.id,
+          requestedRunId: body.brainZeroRunId || "",
+          acceptPartial: !!body.acceptPartial
+        });
+      } catch (error) {
+        log("warn", "brain_one_research_handoff_blocked", {
+          leadId: lead.id,
+          requestedBrainZeroRunId: body.brainZeroRunId || "",
+          code: error.code || "RESEARCH_HANDOFF_BLOCKED",
+          details: error.details || {}
+        });
+        return send(res, error.statusCode || 409, brainOneStartResponse(error.statusCode || 409, {
           ok: false,
           status: "blocked",
-          error: { code: "BUSINESS_IDENTITY_MISMATCH", message: "Business identity mismatch" }
+          error: { code: error.code || "RESEARCH_HANDOFF_BLOCKED", message: error.message },
+          details: error.details || {}
         }));
       }
-      const gate = brainZeroCanRunBrainOne(brainZeroRun, { acceptPartial: !!body.acceptPartial && !!requestedBrainZeroRun });
+      const gate = brainZeroCanRunBrainOne(brainZeroRun, { acceptPartial: !!body.acceptPartial });
       if (!gate.allowed) {
         responseMeta = send(res, 409, brainOneStartResponse(409, {
           ok: false,
           status: "blocked",
           error: {
             code: "evidence_not_ready",
-            message: "The evidence package is not ready."
+            message: gate.reason || "The evidence package is not ready."
           },
           warning: gate.warning || "",
           brainZeroRun
@@ -1764,24 +1733,39 @@ const server = http.createServer(async (req, res) => {
         log("info", "brain_one_json_response_sent", { status: responseMeta.status, bodyLength: responseMeta.bodyLength, leadId: lead.id });
         return;
       }
-      if (brainZeroRun && ["completed", "partial"].includes(brainZeroRun.status)) {
-        contextPackage = brainZeroEvidenceToBrainOneContext(lead, brainZeroRun);
-      } else {
-        let scan = null;
-        if (lead.website) {
-          try {
-            scan = await scanWebsite(lead.website);
-          } catch (error) {
-            scan = { ok: false, url: lead.website, text: "", description: `Website scan failed: ${error.message}` };
-          }
-        }
-        contextPackage = buildBrainOneContextPackage(lead, scan);
-      }
+      log("info", "brain_one_research_selected", {
+        leadId: lead.id,
+        businessName: lead.business || "",
+        canonicalWebsite: lead.identityVerification?.canonicalWebsite || lead.website || "",
+        recipientEmail: maskEmail(lead.email || ""),
+        recipientEmailDomain: String(lead.email || "").split("@")[1] || "",
+        verifiedIdentityStatus: lead.identityVerification?.status || "missing",
+        brainZeroRunId: brainZeroRun?.run_id || brainZeroRun?.id || "",
+        evidenceCount: brainZeroRun?.evidence_package?.evidence_log?.length || 0,
+        sourceCount: brainZeroRun?.source_count || 0,
+        pageCount: brainZeroRun?.pages_scanned || 0,
+        researchQuality: brainZeroRun?.overall_evidence_quality || brainZeroRun?.evidence_package?.overall_evidence_quality || "unknown",
+        coverage: brainZeroRun?.evidence_package?.evidence_coverage?.coverage_score ?? brainZeroRun?.evidence_coverage?.coverage_score ?? null,
+        contactRecords: lead.email ? [{ email: maskEmail(lead.email), domain: String(lead.email).split("@")[1] || "", status: lead.identityVerification?.status || "missing" }] : []
+      });
+      contextPackage = brainZeroEvidenceToBrainOneContext(lead, brainZeroRun);
       log("info", "brain_one_evidence_package_validated", {
         leadId: lead.id,
         brainZeroRunId: brainZeroRun?.run_id || brainZeroRun?.id || "",
         evidencePackageVersion: brainZeroRun?.version || "",
         evidenceCount: contextPackage.evidenceLog?.length || 0,
+        businessName: contextPackage.businessIdentity?.businessName || "",
+        canonicalWebsite: contextPackage.businessIdentity?.websiteUrl || "",
+        recipientEmail: maskEmail(contextPackage.publicContactDetails?.email || ""),
+        recipientEmailDomain: contextPackage.outreachEligibility?.recipientDomain || "",
+        verifiedIdentityStatus: contextPackage.outreachEligibility?.identityStatus || "missing",
+        sourceCount: contextPackage.brainZero?.sourceCount || 0,
+        pageCount: contextPackage.brainZero?.pageCount || 0,
+        researchQuality: contextPackage.brainZero?.evidenceQuality || "unknown",
+        coverage: contextPackage.brainZero?.evidenceCoverage?.coverage_score ?? null,
+        contactRecords: contextPackage.publicContactDetails?.email ? [{ email: maskEmail(contextPackage.publicContactDetails.email), domain: contextPackage.outreachEligibility?.recipientDomain || "", evidenceId: contextPackage.outreachEligibility?.verifiedContactEvidenceId || "" }] : [],
+        verifiedContactEvidenceId: contextPackage.outreachEligibility?.verifiedContactEvidenceId || "",
+        recipientUsable: contextPackage.outreachEligibility?.recipientUsable === true,
         evidenceCountsByCategory: contextPackage.brainZero?.evidenceCoverage?.evidence_counts_by_category || {},
         evidenceCountsByConfidence: contextPackage.brainZero?.evidenceCoverage?.evidence_counts_by_confidence || {},
         evidenceWithValidId: contextPackage.brainZero?.evidenceCoverage?.evidence_with_valid_id || 0,
